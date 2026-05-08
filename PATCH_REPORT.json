@@ -1,0 +1,16 @@
+{
+  "patch": "strategy2560_webui_run_patch",
+  "compile_status": "success",
+  "files": [
+    "app/api/strategy2560.py",
+    "app/static/index.html",
+    "app/static/styles.css",
+    "app/static/app.js",
+    "README_PATCH.md"
+  ],
+  "new_features": [
+    "WebUI stock search/select",
+    "POST /api/strategy/2560/run",
+    "GET /api/strategy/2560/stocks"
+  ]
+}

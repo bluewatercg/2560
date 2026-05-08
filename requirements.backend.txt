@@ -1,0 +1,7 @@
+# 补齐后端运行依赖
+SQLAlchemy==2.0.30
+PyMySQL==1.1.1
+pydantic-settings==2.3.4
+python-dotenv==1.0.1
+fastapi==0.111.0
+uvicorn[standard]==0.30.1

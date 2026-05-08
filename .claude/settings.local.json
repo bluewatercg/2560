@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 *)",
+      "Bash(/mnt/d/Project/Miller/strategy2560_project_v2_engine/.venv/bin/pip install *)",
+      "Bash(.venv/bin/python *)",
+      "Bash(PYTHONPATH=/mnt/d/Project/Miller/strategy2560_project_v2_engine .venv/bin/python *)",
+      "Bash(.venv/bin/pip install *)"
+    ]
+  }
+}
