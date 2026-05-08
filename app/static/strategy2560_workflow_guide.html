@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>2560工作流指导</title>
+<style>
+body{font-family:Arial,"Microsoft YaHei",sans-serif;background:#f6f8fb;color:#0f172a;margin:0;padding:24px}
+.workflow{max-width:1180px;margin:auto;background:#fff;border-radius:16px;padding:24px;box-shadow:0 6px 18px rgba(15,23,42,.08)}
+h1{margin:0 0 8px;font-size:28px}.sub{color:#64748b;margin-bottom:22px}.lane{display:grid;grid-template-columns:180px 1fr;gap:16px;margin:16px 0}.lane-title{font-weight:700;color:#334155;padding-top:16px}.steps{display:flex;gap:12px;flex-wrap:wrap}.step{min-width:170px;background:#eef6ff;border:1px solid #bfdbfe;border-radius:12px;padding:14px;position:relative}.step strong{display:block;margin-bottom:8px}.step small{color:#475569;line-height:1.5}.step.prod{background:#ecfdf5;border-color:#bbf7d0}.step.ui{background:#fff7ed;border-color:#fed7aa}.step.warn{background:#fff1f2;border-color:#fecdd3}.arrow{align-self:center;font-size:22px;color:#94a3b8}.legend{margin-top:24px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.card{border:1px solid #e2e8f0;border-radius:12px;padding:14px;background:#f8fafc}.card h3{margin:0 0 8px}.card ul{margin:8px 0 0;padding-left:20px;line-height:1.7}
+</style>
+</head>
+<body>
+<div class="workflow">
+<h1>2560结构分析系统工作流指导</h1>
+<div class="sub">用于说明每天应该点什么、什么时候用手动计算、什么时候用任务队列、怎么看结果。</div>
+<div class="lane"><div class="lane-title">① 数据准备</div><div class="steps"><div class="step"><strong>下载中金数据</strong><small>先在客户端完成日线和5分钟数据更新。</small></div><div class="arrow">→</div><div class="step"><strong>导入 daily / lc5</strong><small>脚本：import_vipdoc_with_pytdx.py</small></div><div class="arrow">→</div><div class="step"><strong>聚合 30m</strong><small>脚本：build_30m_from_5m.py</small></div></div></div>
+<div class="lane"><div class="lane-title">② 指标计算</div><div class="steps"><div class="step prod"><strong>重算 technical_indicator</strong><small>脚本：rebuild_technical_indicator.py<br>负责 MA / ATR / VOL / 偏离度。</small></div><div class="arrow">→</div><div class="step prod"><strong>指标缓存完成</strong><small>2560扫描只读指标，不再重复计算。</small></div></div></div>
+<div class="lane"><div class="lane-title">③ 任务执行</div><div class="steps"><div class="step ui"><strong>手动计算</strong><small>少量股票测试；不要用于全市场正式任务。</small></div><div class="step ui"><strong>任务队列</strong><small>正式入口：all/sh/sz + shards + priority。支持入队和立即执行。</small></div><div class="arrow">→</div><div class="step prod"><strong>run_2560_analysis</strong><small>扫描信号，写 structure_2560_analysis。</small></div></div></div>
+<div class="lane"><div class="lane-title">④ 结果查看</div><div class="steps"><div class="step ui"><strong>最新分析结果</strong><small>每只股票一行，看最近一次分析状态。</small></div><div class="step ui"><strong>信号列表</strong><small>历史事件视图，看发生过的2560信号。</small></div><div class="step ui"><strong>任务队列</strong><small>看 job_queue / job_execution / job_task_item。</small></div><div class="step ui"><strong>批次管理</strong><small>看每次 run 的 batch。</small></div></div></div>
+<div class="legend"><div class="card"><h3>日常收盘后怎么用</h3><ul><li>先下载中金数据。</li><li>执行增量更新脚本或在任务队列中入队全市场任务。</li><li>完成后看「最新分析结果」和「信号列表」。</li></ul></div><div class="card"><h3>什么时候用哪个页面</h3><ul><li>手动计算：单只/少量股票调试。</li><li>任务队列：正式全市场、并行、定时任务。</li><li>最新分析结果：每股票最近状态。</li><li>信号列表：历史信号事件。</li></ul></div></div>
+</div>
+</body>
+</html>
