@@ -55,12 +55,48 @@ def now_str() -> str:
 
 
 def get_database_url() -> str:
+    """
+    支持两种数据库配置方式：
+
+    方式一：
+        DATABASE_URL=mysql+pymysql://user:password@host:3306/dbname?charset=utf8mb4
+
+    方式二：
+        DB_HOST=host
+        DB_PORT=3306
+        DB_USER=user
+        DB_PASSWORD=password
+        DB_NAME=dbname
+    """
+
     url = os.getenv("DATABASE_URL")
-    if not url:
+    if url:
+        return url
+
+    db_host = os.getenv("DB_HOST")
+    db_port = os.getenv("DB_PORT", "3306")
+    db_user = os.getenv("DB_USER")
+    db_password = os.getenv("DB_PASSWORD", "")
+    db_name = os.getenv("DB_NAME")
+
+    missing = []
+    if not db_host:
+        missing.append("DB_HOST")
+    if not db_user:
+        missing.append("DB_USER")
+    if not db_name:
+        missing.append("DB_NAME")
+
+    if missing:
         raise RuntimeError(
-            "DATABASE_URL is not set. Please define DATABASE_URL in .env"
+            "Database config missing. Please set DATABASE_URL or "
+            f"{', '.join(missing)} in .env"
         )
-    return url
+
+    return (
+        f"mysql+pymysql://{db_user}:{db_password}"
+        f"@{db_host}:{db_port}/{db_name}?charset=utf8mb4"
+    )
 
 
 def make_engine() -> Engine:
