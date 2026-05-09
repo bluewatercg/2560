@@ -599,6 +599,5 @@
         <script src="/static/module_reorg.js?v=final-reorg-1"></script>
         <script src="/static/nested_menu_reorg.js?v=1"></script>
         <script src="/static/data_import_page.js?v=1"></script>
-      <script src="/static/data_import_type_addon.js?v=2"></script>
-</body>
+    </body>
 </html>
