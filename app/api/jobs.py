@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -32,10 +31,10 @@ class RunNowRequest(BaseModel):
 
 
 def _table_exists(db: Session, table_name: str) -> bool:
-    return db.execute(text("""
+    return bool(db.execute(text("""
         SELECT COUNT(*) FROM information_schema.tables
         WHERE table_schema = DATABASE() AND table_name=:t
-    """), {"t": table_name}).scalar() > 0
+    """), {"t": table_name}).scalar() or 0)
 
 
 def _ensure_tables(db: Session) -> None:
@@ -101,26 +100,19 @@ def _ensure_tables(db: Session) -> None:
 def _market_where(alias: str, market: str) -> str:
     col = f"{alias}.code"
     m = (market or "all").lower()
-    if m == "sh":
-        return f"{col} LIKE 'sh.%'"
-    if m == "sz":
-        return f"{col} LIKE 'sz.%'"
-    if m == "sh60":
-        return f"{col} LIKE 'sh.60%'"
-    if m == "sh68":
-        return f"{col} LIKE 'sh.68%'"
-    if m == "sz00":
-        return f"{col} LIKE 'sz.00%'"
-    if m == "sz30":
-        return f"{col} LIKE 'sz.30%'"
+    if m == "sh": return f"{col} LIKE 'sh.%'"
+    if m == "sz": return f"{col} LIKE 'sz.%'"
+    if m == "sh60": return f"{col} LIKE 'sh.60%'"
+    if m == "sh68": return f"{col} LIKE 'sh.68%'"
+    if m == "sz00": return f"{col} LIKE 'sz.00%'"
+    if m == "sz30": return f"{col} LIKE 'sz.30%'"
     return f"({col} LIKE 'sh.%' OR {col} LIKE 'sz.%')"
 
 
 def _count_codes(db: Session, market: str) -> int:
     if not _table_exists(db, "stock_info"):
         return 0
-    sql = f"SELECT COUNT(*) FROM stock_info s WHERE {_market_where('s', market)}"
-    return int(db.execute(text(sql)).scalar() or 0)
+    return int(db.execute(text(f"SELECT COUNT(*) FROM stock_info s WHERE {_market_where('s', market)}")).scalar() or 0)
 
 
 @router.get("/queue")
@@ -186,16 +178,9 @@ def execution_progress(job_id: int, db: Session = Depends(get_db)):
     percent = round(done * 100 / total, 2) if total else 0.0
     avg = round(elapsed / done, 3) if done else None
     eta = int((total - done) * avg) if avg and total >= done else None
-    d.update({
-        "ok": True,
-        "done": done,
-        "total": total,
-        "percent": percent,
-        "avg_seconds_per_code": avg,
-        "eta_seconds": eta,
-        "eta_text": _format_seconds(eta),
-        "elapsed_text": _format_seconds(elapsed),
-    })
+    d.update({"ok": True, "done": done, "total": total, "percent": percent,
+              "avg_seconds_per_code": avg, "eta_seconds": eta,
+              "eta_text": _format_seconds(eta), "elapsed_text": _format_seconds(elapsed)})
     return d
 
 
@@ -210,8 +195,7 @@ def execution_logs(job_id: int, tail: int = Query(200, ge=1, le=2000), db: Sessi
     if not log_file.is_absolute():
         log_file = PROJECT_ROOT / log_file
     try:
-        lines = _tail_lines(log_file, tail)
-        return {"ok": True, "job_id": job_id, "log_file": str(log_file), "lines": lines}
+        return {"ok": True, "job_id": job_id, "log_file": str(log_file), "lines": _tail_lines(log_file, tail)}
     except FileNotFoundError:
         return {"ok": False, "job_id": job_id, "log_file": str(log_file), "lines": []}
 
@@ -223,34 +207,23 @@ def enqueue_job(payload: EnqueueJobRequest, db: Session = Depends(get_db)):
     res = db.execute(text("""
         INSERT INTO job_queue (job_type, strategy_code, priority, payload, status, created_at)
         VALUES (:job_type, :strategy_code, :priority, CAST(:payload AS JSON), 'pending', NOW())
-    """), {
-        "job_type": payload.job_type,
-        "strategy_code": payload.strategy_code,
-        "priority": payload.priority,
-        "payload": json.dumps(job_payload, ensure_ascii=False),
-    })
+    """), {"job_type": payload.job_type, "strategy_code": payload.strategy_code, "priority": payload.priority,
+            "payload": json.dumps(job_payload, ensure_ascii=False)})
     db.commit()
     return {"ok": True, "job_id": res.lastrowid, "payload": job_payload}
 
 
 @router.post("/run-now")
 def run_now(payload: RunNowRequest, db: Session = Depends(get_db)):
-    """立即执行并跟踪：创建 job_execution，并启动 progress_run_now.py。
-
-    与旧版不同：返回 job_id / total / progress_url / logs_url，前端可实时轮询。
-    """
     _ensure_tables(db)
     total = _count_codes(db, payload.market)
     log_dir = PROJECT_ROOT / "logs"
     log_dir.mkdir(exist_ok=True)
-    # 注意：容器部署时 logs 目录需要 appuser 可写。
     res = db.execute(text("""
         INSERT INTO job_execution
         (job_type, status, progress_current, progress_total, success_count, failed_count,
          current_code, market, shards, message, started_at, updated_at)
-        VALUES
-        ('run_2560_now', 'running', 0, :total, 0, 0, NULL, :market, :shards,
-         :message, NOW(), NOW())
+        VALUES ('run_2560_now', 'running', 0, :total, 0, 0, NULL, :market, :shards, :message, NOW(), NOW())
     """), {"total": total, "market": payload.market, "shards": payload.shards, "message": "starting"})
     job_id = int(res.lastrowid)
     log_file = log_dir / f"job_{job_id}_progress.log"
@@ -278,29 +251,18 @@ def run_now(payload: RunNowRequest, db: Session = Depends(get_db)):
     db.execute(text("UPDATE job_execution SET message=:msg, updated_at=NOW() WHERE id=:id"),
                {"id": job_id, "msg": f"started pid={proc.pid}, total={total}"})
     db.commit()
-
-    return {
-        "ok": True,
-        "job_id": job_id,
-        "pid": proc.pid,
-        "total": total,
-        "market": payload.market,
-        "shards": payload.shards,
-        "log_file": str(log_file),
-        "progress_url": f"/api/jobs/executions/{job_id}/progress",
-        "logs_url": f"/api/jobs/executions/{job_id}/logs?tail=200",
-    }
+    return {"ok": True, "job_id": job_id, "pid": proc.pid, "total": total, "market": payload.market,
+            "shards": payload.shards, "log_file": str(log_file),
+            "progress_url": f"/api/jobs/executions/{job_id}/progress",
+            "logs_url": f"/api/jobs/executions/{job_id}/logs?tail=200"}
 
 
 def _format_seconds(seconds: int | None) -> str:
-    if seconds is None:
-        return "-"
+    if seconds is None: return "-"
     seconds = int(seconds)
     h, rem = divmod(seconds, 3600)
     m, s = divmod(rem, 60)
-    if h:
-        return f"{h:02d}:{m:02d}:{s:02d}"
-    return f"{m:02d}:{s:02d}"
+    return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
 
 
 def _tail_lines(path: Path, n: int) -> list[str]:
@@ -314,5 +276,4 @@ def _tail_lines(path: Path, n: int) -> list[str]:
             end -= step
             f.seek(end)
             data = f.read(step) + data
-        lines = data.decode("utf-8", errors="replace").splitlines()
-        return lines[-n:]
+        return data.decode("utf-8", errors="replace").splitlines()[-n:]

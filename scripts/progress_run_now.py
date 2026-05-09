@@ -2,13 +2,11 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-import json
 import os
 import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any
 
 import requests
 from sqlalchemy import create_engine, text
@@ -18,7 +16,6 @@ JOB_ID = int(os.getenv("JOB_ID", "0"))
 MARKET = os.getenv("MARKET", "all")
 SHARDS = int(os.getenv("SHARDS", "1"))
 WEB_BASE_URL = os.getenv("WEB_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
-LOG_FILE = Path(os.getenv("LOG_FILE", str(PROJECT_ROOT / "logs" / f"job_{JOB_ID}_progress.log")))
 
 
 def log(msg: str):
@@ -27,8 +24,7 @@ def log(msg: str):
 
 def db_url() -> str:
     url = os.getenv("DATABASE_URL")
-    if url:
-        return url
+    if url: return url
     host = os.getenv("DB_HOST")
     port = os.getenv("DB_PORT", "3306")
     user = os.getenv("DB_USER")
@@ -62,85 +58,63 @@ def load_codes(en) -> list[str]:
 
 
 def init_items(en, codes: list[str]):
-    total = len(codes)
     with en.begin() as conn:
         conn.execute(text("UPDATE job_execution SET progress_total=:total, message=:msg, updated_at=NOW() WHERE id=:id"),
-                     {"id": JOB_ID, "total": total, "msg": f"initialized total={total}, shards={SHARDS}"})
+                     {"id": JOB_ID, "total": len(codes), "msg": f"initialized total={len(codes)}, shards={SHARDS}"})
         for idx, code in enumerate(codes):
-            shard = idx % max(SHARDS, 1)
             conn.execute(text("""
                 INSERT IGNORE INTO job_task_item (job_id, shard_id, code, status, updated_at)
                 VALUES (:job_id, :shard_id, :code, 'pending', NOW())
-            """), {"job_id": JOB_ID, "shard_id": shard, "code": code})
+            """), {"job_id": JOB_ID, "shard_id": idx % max(SHARDS, 1), "code": code})
 
 
-def update_execution_counts(en, current_code: str | None = None, message: str | None = None):
+def update_counts(en, current_code=None, message=None):
     with en.begin() as conn:
-        counts = conn.execute(text("""
-            SELECT
-              SUM(CASE WHEN status IN ('success','failed') THEN 1 ELSE 0 END) AS done,
-              SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) AS success_count,
-              SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed_count,
-              COUNT(*) AS total
+        c = conn.execute(text("""
+            SELECT SUM(CASE WHEN status IN ('success','failed') THEN 1 ELSE 0 END) done,
+                   SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) success_count,
+                   SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) failed_count,
+                   COUNT(*) total
             FROM job_task_item WHERE job_id=:job_id
         """), {"job_id": JOB_ID}).mappings().first()
         conn.execute(text("""
-            UPDATE job_execution
-            SET progress_current=:done,
-                progress_total=:total,
-                success_count=:success_count,
-                failed_count=:failed_count,
-                current_code=:current_code,
-                message=COALESCE(:message, message),
-                updated_at=NOW()
+            UPDATE job_execution SET progress_current=:done, progress_total=:total,
+              success_count=:success_count, failed_count=:failed_count,
+              current_code=:current_code, message=COALESCE(:message, message), updated_at=NOW()
             WHERE id=:job_id
-        """), {
-            "job_id": JOB_ID,
-            "done": int(counts["done"] or 0),
-            "total": int(counts["total"] or 0),
-            "success_count": int(counts["success_count"] or 0),
-            "failed_count": int(counts["failed_count"] or 0),
-            "current_code": current_code,
-            "message": message,
-        })
+        """), {"job_id": JOB_ID, "done": int(c["done"] or 0), "total": int(c["total"] or 0),
+                "success_count": int(c["success_count"] or 0), "failed_count": int(c["failed_count"] or 0),
+                "current_code": current_code, "message": message})
 
 
 def process_code(en, code: str, idx: int, total: int):
     t0 = time.time()
     with en.begin() as conn:
-        conn.execute(text("UPDATE job_task_item SET status='running', started_at=NOW(), updated_at=NOW() WHERE job_id=:job_id AND code=:code"),
-                     {"job_id": JOB_ID, "code": code})
-        conn.execute(text("UPDATE job_execution SET current_code=:code, message=:msg, updated_at=NOW() WHERE id=:job_id"),
-                     {"job_id": JOB_ID, "code": code, "msg": f"processing {idx}/{total} {code}"})
+        conn.execute(text("UPDATE job_task_item SET status='running', started_at=NOW(), updated_at=NOW() WHERE job_id=:job_id AND code=:code"), {"job_id": JOB_ID, "code": code})
+        conn.execute(text("UPDATE job_execution SET current_code=:code, message=:msg, updated_at=NOW() WHERE id=:job_id"), {"job_id": JOB_ID, "code": code, "msg": f"processing {idx}/{total} {code}"})
     try:
-        payload = {"codes": [code], "market_type": MARKET, "rebuild_statistics": False}
-        r = requests.post(f"{WEB_BASE_URL}/api/strategy/2560/run", json=payload, timeout=3600)
+        r = requests.post(f"{WEB_BASE_URL}/api/strategy/2560/run", json={"codes": [code], "market_type": MARKET, "rebuild_statistics": False}, timeout=3600)
         ok = r.status_code < 400
         err = "" if ok else f"HTTP {r.status_code}: {r.text[:500]}"
     except Exception as exc:
-        ok = False
-        err = str(exc)
+        ok, err = False, str(exc)
     elapsed_ms = int((time.time() - t0) * 1000)
-    status = "success" if ok else "failed"
     with en.begin() as conn:
         conn.execute(text("""
-            UPDATE job_task_item
-            SET status=:status, elapsed_ms=:elapsed_ms, last_error=:err,
-                finished_at=NOW(), updated_at=NOW()
-            WHERE job_id=:job_id AND code=:code
-        """), {"job_id": JOB_ID, "code": code, "status": status, "elapsed_ms": elapsed_ms, "err": err[:2000] if err else None})
+            UPDATE job_task_item SET status=:status, elapsed_ms=:elapsed_ms, last_error=:err,
+              finished_at=NOW(), updated_at=NOW() WHERE job_id=:job_id AND code=:code
+        """), {"job_id": JOB_ID, "code": code, "status": "success" if ok else "failed", "elapsed_ms": elapsed_ms, "err": err[:2000] if err else None})
     return code, ok, elapsed_ms, err
 
 
 def main():
-    if not JOB_ID:
-        raise RuntimeError("JOB_ID is required")
+    if not JOB_ID: raise RuntimeError("JOB_ID is required")
     en = engine()
     codes = load_codes(en)
     total = len(codes)
     log(f"[progress] job_id={JOB_ID} market={MARKET} shards={SHARDS} total={total}")
     init_items(en, codes)
-    update_execution_counts(en, None, f"started total={total}, shards={SHARDS}")
+    update_counts(en, None, f"started total={total}, shards={SHARDS}")
     done = 0
     try:
         with ThreadPoolExecutor(max_workers=max(SHARDS, 1)) as pool:
@@ -149,19 +123,16 @@ def main():
                 done += 1
                 code, ok, elapsed_ms, err = fut.result()
                 log(f"[{done}/{total}] {code} {'OK' if ok else 'FAIL'} {elapsed_ms}ms {err[:120] if err else ''}")
-                update_execution_counts(en, code, f"done {done}/{total}, current={code}")
+                update_counts(en, code, f"done {done}/{total}, current={code}")
         with en.begin() as conn:
-            status = conn.execute(text("SELECT failed_count FROM job_execution WHERE id=:id"), {"id": JOB_ID}).scalar()
-            final_status = "success" if int(status or 0) == 0 else "failed"
+            failed = int(conn.execute(text("SELECT failed_count FROM job_execution WHERE id=:id"), {"id": JOB_ID}).scalar() or 0)
             conn.execute(text("UPDATE job_execution SET status=:status, message=:msg, finished_at=NOW(), updated_at=NOW() WHERE id=:id"),
-                         {"id": JOB_ID, "status": final_status, "msg": f"finished done={total}, failed={status or 0}"})
+                         {"id": JOB_ID, "status": "success" if failed == 0 else "failed", "msg": f"finished done={total}, failed={failed}"})
         log(f"[progress] finished job_id={JOB_ID}")
     except Exception as exc:
-        tb = traceback.format_exc()
-        log(tb)
+        log(traceback.format_exc())
         with en.begin() as conn:
-            conn.execute(text("UPDATE job_execution SET status='failed', message=:msg, finished_at=NOW(), updated_at=NOW() WHERE id=:id"),
-                         {"id": JOB_ID, "msg": str(exc)[:1000]})
+            conn.execute(text("UPDATE job_execution SET status='failed', message=:msg, finished_at=NOW(), updated_at=NOW() WHERE id=:id"), {"id": JOB_ID, "msg": str(exc)[:1000]})
         raise
 
 
