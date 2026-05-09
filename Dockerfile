@@ -22,7 +22,6 @@ RUN pip install --no-cache-dir --upgrade pip && \
 
 COPY app/ ./app/
 COPY scripts/ ./scripts/
-COPY sql/ ./sql/
 
 RUN mkdir -p /app/logs && \
     chmod +x /app/scripts/*.sh || true
