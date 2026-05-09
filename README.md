@@ -60,6 +60,8 @@ rsync -av --progress --prune-empty-dirs \
       --exclude='*' \
       /mnt/e/zd_ciccwm/vipdoc/ user@192.168.1.18:/data1/2560/zd_ciccwm/vipdoc/
 
+scp /mnt/c/Users/miller/Downloads/strategy2560_feature-v8-job-queue-ui-ee22b12f.tar.gz user@192.168.1.18:/tmp/
+
 ## 3. 目录结构
 
 ```text

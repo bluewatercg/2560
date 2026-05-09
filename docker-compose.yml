@@ -2,38 +2,34 @@ services:
   web:
     image: strategy2560:latest
     container_name: strategy2560-web
-    ports: ["${APP_PORT:-8000}:8000"]
-    env_file: [.env]
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    env_file:
+      - .env
     environment:
       - APP_HOST=0.0.0.0
       - APP_PORT=8000
       - PYTHONPATH=/app
-      - ZD_CICCWM_ROOT=/data/zd_ciccwm
-      - VIPDOC_ROOT=/data/zd_ciccwm/vipdoc
+      - VIPDOC_ROOT=/data/vipdoc
     volumes:
       - ./logs:/app/logs
       - ./sql:/app/sql
-      - ./zd_ciccwm:/data/zd_ciccwm:ro
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
+      - ./zd_ciccwm/vipdoc:/data/vipdoc:ro
   worker:
     image: strategy2560:latest
     container_name: strategy2560-worker
-    env_file: [.env]
+    env_file:
+      - .env
     environment:
       - PYTHONPATH=/app
-      - ZD_CICCWM_ROOT=/data/zd_ciccwm
-      - VIPDOC_ROOT=/data/zd_ciccwm/vipdoc
+      - VIPDOC_ROOT=/data/vipdoc
     volumes:
       - ./logs:/app/logs
       - ./sql:/app/sql
-      - ./zd_ciccwm:/data/zd_ciccwm:ro
+      - ./zd_ciccwm/vipdoc:/data/vipdoc:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     command: ["python", "scripts/job_worker.py"]
     restart: unless-stopped
-    depends_on: [web]
-    healthcheck:
-      disable: true
+    depends_on:
+      - web
