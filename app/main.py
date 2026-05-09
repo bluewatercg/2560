@@ -7,6 +7,7 @@ from app.api.strategy2568_report import router as strategy2568_report_router
 from app.api.data_quality import router as quality_router
 from app.api.latest import router as latest_router
 from app.api.jobs import router as jobs_router
+from app.api.import_data import router as import_router
 from app.db.session import ping_database
 
 app = FastAPI(title='2560结构分析系统', description='结构化行情分析与历史复盘，不提供买卖决策。', version='3.0.0')
@@ -16,6 +17,7 @@ app.include_router(strategy2568_report_router)
 app.include_router(quality_router)
 app.include_router(latest_router)
 app.include_router(jobs_router)
+app.include_router(import_router)
 app.mount('/static', StaticFiles(directory='app/static'), name='static')
 
 @app.get('/health')

@@ -1,241 +1,340 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-import_vipdoc_with_pytdx.py
+Vipdoc 行情导入工具。
 
-功能：
-- 导入中金/通达信 vipdoc 本地数据
-- 支持 daily (.day)
-- 支持 5m (.lc5, fzline)
-- date 使用 BIGINT
-- 自动跳过 Unknown security type
-- 重复执行 = 覆盖更新（先删后插）
+支持：
+- 通达信/中金 vipdoc 日线 lday -> daily_kline
+- 通达信/中金 vipdoc 5m fzline/minline -> minute_kline_period(period='5m')
+- 多线程导入
+- 写入 data_import_file 明细
+- 更新 stock_calc_status.last_import_at
 
-依赖：
-pip install pytdx pandas sqlalchemy pymysql
+注意：本脚本只导入行情文件，不触发 2560 / 2568 计算。
 """
-
 from __future__ import annotations
 
 import argparse
+import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 from pathlib import Path
-import sys
+from typing import Iterable, Optional
+
 import pandas as pd
 from sqlalchemy import text
 
-from pytdx.reader import TdxDailyBarReader, TdxLCMinBarReader
+try:
+    from pytdx.reader import TdxDailyBarReader, TdxLCMinBarReader
+except Exception:  # pragma: no cover
+    TdxDailyBarReader = None
+    TdxLCMinBarReader = None
+
 from app.db.session import SessionLocal
 
-
-# ------------------------
-# 参数解析
-# ------------------------
-def parse_args():
-    p = argparse.ArgumentParser()
-    p.add_argument("--root", required=True, help="vipdoc 根目录")
-    p.add_argument("--start", required=True, help="YYYY-MM-DD")
-    p.add_argument("--end", required=True, help="YYYY-MM-DD")
-    p.add_argument("--daily", action="store_true")
-    p.add_argument("--lc5", action="store_true")
-    p.add_argument("--markets", default="sh,sz")
-    p.add_argument("--limit-files", type=int)
-    return p.parse_args()
+SOURCE = "vipdoc"
 
 
-# ------------------------
-# 工具函数
-# ------------------------
+def _norm_market(market: str) -> str:
+    return (market or "sh").lower().strip()
+
+
+def _side_from_market(market: str) -> str:
+    m = _norm_market(market)
+    return "sh" if m.startswith("sh") else "sz" if m.startswith("sz") else m
+
+
 def code_from_filename(path: Path, market: str) -> str:
     name = path.stem.lower()
     digits = "".join(c for c in name if c.isdigit())
-    return f"{market}.{digits[-6:]}"
+    if len(digits) < 6:
+        raise ValueError(f"Cannot parse stock code from file name: {path.name}")
+    side = _side_from_market(market)
+    return f"{side}.{digits[-6:]}"
 
 
-def day_int(dt) -> int:
-    return int(pd.to_datetime(dt).strftime("%Y%m%d"))
+def _file_match(path: Path, market: str) -> bool:
+    name = path.name.lower()
+    m = _norm_market(market)
+    if m == "sh":
+        return name.startswith("sh")
+    if m == "sz":
+        return name.startswith("sz")
+    if m == "sh60":
+        return name.startswith("sh60")
+    if m == "sh68":
+        return name.startswith("sh68")
+    if m == "sz00":
+        return name.startswith("sz00")
+    if m == "sz30":
+        return name.startswith("sz30")
+    return name.startswith("sh") or name.startswith("sz")
 
 
-def minute_int(dt) -> int:
-    return int(pd.to_datetime(dt).strftime("%Y%m%d%H%M%S"))
+def _date_int(v) -> int:
+    return int(pd.to_datetime(v).strftime("%Y%m%d"))
 
 
-# ------------------------
-# daily 导入
-# ------------------------
-def import_daily(db, reader, path: Path, market: str, start, end):
-    code = code_from_filename(path, market)
-
-    try:
-        df = reader.get_df(str(path))
-    except Exception as e:
-        if "Unknown security type" in str(e):
-            print(f"[daily][SKIP] {path.name}: Unknown security type")
-            return 0
-        print(f"[daily][ERROR] {path.name}: {e}")
-        return 0
-
-    if df is None or df.empty:
-        return 0
-
-    df = df.reset_index()
-    df["date"] = pd.to_datetime(df["date"])
-    df = df[(df["date"] >= start) & (df["date"] <= end)]
-    if df.empty:
-        return 0
-
-    start_i = day_int(start)
-    end_i = day_int(end)
-
-    db.execute(
-        text("""
-            DELETE FROM daily_kline
-            WHERE code=:code AND date BETWEEN :s AND :e
-        """),
-        {"code": code, "s": start_i, "e": end_i},
-    )
-
-    rows = []
-    for _, r in df.iterrows():
-        rows.append({
-            "code": code,
-            "date": day_int(r["date"]),
-            "open": float(r["open"]),
-            "high": float(r["high"]),
-            "low": float(r["low"]),
-            "close": float(r["close"]),
-            "volume": float(r.get("volume", 0) or 0),
-            "amount": float(r.get("amount", 0) or 0),
-            "source": "pytdx_day",
-        })
-
-    if rows:
-        db.execute(
-            text("""
-                INSERT INTO daily_kline
-                (code,date,open,high,low,close,volume,amount,source)
-                VALUES
-                (:code,:date,:open,:high,:low,:close,:volume,:amount,:source)
-            """),
-            rows,
-        )
-
-    return len(rows)
+def _minute_int(v) -> int:
+    return int(pd.to_datetime(v).strftime("%Y%m%d%H%M%S"))
 
 
-# ------------------------
-# lc5 导入
-# ------------------------
-def import_lc5(db, reader, path: Path, market: str, start, end):
-    code = code_from_filename(path, market)
-
-    try:
-        df = reader.get_df(str(path))
-    except Exception as e:
-        if "Unknown security type" in str(e):
-            print(f"[lc5][SKIP] {path.name}: Unknown security type")
-            return 0
-        print(f"[lc5][ERROR] {path.name}: {e}")
-        return 0
-
-    if df is None or df.empty:
-        return 0
-
-    df = df.reset_index()
-    df["datetime"] = pd.to_datetime(df["datetime"])
-    df = df[(df["datetime"] >= start) & (df["datetime"] <= end)]
-    if df.empty:
-        return 0
-
-    start_i = minute_int(pd.to_datetime(start))
-    end_i = minute_int(pd.to_datetime(end) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1))
-
-    db.execute(
-        text("""
-            DELETE FROM minute_kline_period
-            WHERE code=:code AND period='5m' AND date BETWEEN :s AND :e
-        """),
-        {"code": code, "s": start_i, "e": end_i},
-    )
-
-    rows = []
-    for _, r in df.iterrows():
-        rows.append({
-            "code": code,
-            "period": "5m",
-            "date": minute_int(r["datetime"]),
-            "open": float(r["open"]),
-            "high": float(r["high"]),
-            "low": float(r["low"]),
-            "close": float(r["close"]),
-            "volume": float(r.get("volume", 0) or 0),
-            "amount": float(r.get("amount", 0) or 0),
-            "source": "pytdx_lc5",
-        })
-
-    if rows:
-        db.execute(
-            text("""
-                INSERT INTO minute_kline_period
-                (code,period,date,open,high,low,close,volume,amount,source)
-                VALUES
-                (:code,:period,:date,:open,:high,:low,:close,:volume,:amount,:source)
-            """),
-            rows,
-        )
-
-    return len(rows)
+def _start_day_i(start: Optional[str]) -> Optional[int]:
+    return int(pd.to_datetime(start).strftime("%Y%m%d")) if start else None
 
 
-# ------------------------
-# 主入口
-# ------------------------
-def main():
-    args = parse_args()
+def _end_day_i(end: Optional[str]) -> Optional[int]:
+    return int(pd.to_datetime(end).strftime("%Y%m%d")) if end else None
 
-    if not args.daily and not args.lc5:
-        print("必须指定 --daily 或 --lc5")
-        sys.exit(1)
 
-    root = Path(args.root)
-    start = pd.to_datetime(args.start)
-    end = pd.to_datetime(args.end)
+def _start_min_i(start: Optional[str]) -> Optional[int]:
+    return int(pd.to_datetime(start).strftime("%Y%m%d000000")) if start else None
 
-    markets = [m.strip() for m in args.markets.split(",")]
 
-    daily_reader = TdxDailyBarReader()
-    lc5_reader = TdxLCMinBarReader()
+def _end_min_i(end: Optional[str]) -> Optional[int]:
+    return int(pd.to_datetime(end).strftime("%Y%m%d235959")) if end else None
 
-    total_daily = 0
-    total_lc5 = 0
 
+def _volume(row) -> float:
+    for k in ("volume", "vol", "amount_volume"):
+        if k in row and pd.notna(row[k]):
+            return float(row[k])
+    return 0.0
+
+
+def _amount(row) -> float:
+    for k in ("amount", "money"):
+        if k in row and pd.notna(row[k]):
+            return float(row[k])
+    return 0.0
+
+
+def _scan_dirs(root: Path, market: str, import_type: str) -> list[Path]:
+    side = _side_from_market(market)
+    base = root / side
+    t = (import_type or "all").lower()
+    dirs: list[Path] = []
+    if t in ("all", "lday", "daily"):
+        dirs.append(base / "lday")
+    if t in ("all", "5m", "lc5", "fzline"):
+        dirs.append(base / "fzline")
+    if t in ("all", "minline"):
+        dirs.append(base / "minline")
+    return [d for d in dirs if d.exists() and d.is_dir()]
+
+
+def scan_vipdoc_files(source_dir: str, market: str = "sh", import_type: str = "all") -> dict:
+    root = Path(source_dir)
+    scan_dirs = _scan_dirs(root, market, import_type) if root.exists() else []
+    files: list[Path] = []
+    for d in scan_dirs:
+        dtype = d.name.lower()
+        if dtype == "lday":
+            candidates = list(d.glob("*.day"))
+        elif dtype == "fzline":
+            candidates = list(d.glob("*.lc5")) + list(d.glob("*.lc1"))
+        else:
+            candidates = list(d.iterdir())
+        for p in candidates:
+            if p.is_file() and _file_match(p, market):
+                files.append(p)
+    files = sorted(set(files), key=lambda x: str(x))
+    return {
+        "source_dir": str(root),
+        "market": market,
+        "import_type": import_type,
+        "scan_dirs": [str(x) for x in scan_dirs],
+        "total_files": len(files),
+        "files": [str(x) for x in files],
+    }
+
+
+def _read_daily(path: Path) -> pd.DataFrame:
+    if TdxDailyBarReader is None:
+        raise RuntimeError("pytdx is not installed or TdxDailyBarReader unavailable")
+    reader = TdxDailyBarReader()
+    df = reader.get_df(str(path))
+    if df is None:
+        return pd.DataFrame()
+    return df.reset_index() if not isinstance(df.index, pd.RangeIndex) else df.copy()
+
+
+def _read_lc5(path: Path) -> pd.DataFrame:
+    if TdxLCMinBarReader is None:
+        raise RuntimeError("pytdx is not installed or TdxLCMinBarReader unavailable")
+    reader = TdxLCMinBarReader()
+    df = reader.get_df(str(path))
+    if df is None:
+        return pd.DataFrame()
+    return df.reset_index() if not isinstance(df.index, pd.RangeIndex) else df.copy()
+
+
+def _filter_rows_by_date(rows: list[dict], start_i: Optional[int], end_i: Optional[int], key: str = "date") -> list[dict]:
+    out = []
+    for r in rows:
+        d = int(r[key])
+        if start_i is not None and d < start_i:
+            continue
+        if end_i is not None and d > end_i:
+            continue
+        out.append(r)
+    return out
+
+
+def _chunks(rows: list[dict], size: int = 1000) -> Iterable[list[dict]]:
+    for i in range(0, len(rows), size):
+        yield rows[i:i + size]
+
+
+def _update_import_file(db, import_file_id: Optional[int], status: str, rows: int = 0, err: Optional[str] = None):
+    if not import_file_id:
+        return
+    db.execute(text("""
+        UPDATE data_import_file
+        SET status=:status,
+            rows_imported=:rows_imported,
+            last_error=:err,
+            finished_at=NOW(),
+            updated_at=NOW()
+        WHERE id=:id
+    """), {"id": import_file_id, "status": status, "rows_imported": rows, "err": err[:2000] if err else None})
+
+
+def _touch_stock_import(db, codes: Iterable[str]):
+    data = [{"code": c, "strategy_code": "S2560"} for c in sorted(set(codes))]
+    if not data:
+        return
+    db.execute(text("""
+        INSERT INTO stock_calc_status (code, strategy_code, last_import_at, updated_at)
+        VALUES (:code, :strategy_code, NOW(), NOW())
+        ON DUPLICATE KEY UPDATE last_import_at=VALUES(last_import_at), updated_at=NOW()
+    """), data)
+
+
+def import_daily_file(path: str, market: str, start: Optional[str] = None, end: Optional[str] = None, import_file_id: Optional[int] = None) -> dict:
+    p = Path(path)
+    code = code_from_filename(p, market)
+    start_i = _start_day_i(start)
+    end_i = _end_day_i(end)
     with SessionLocal() as db:
-        for market in markets:
-            if args.daily:
-                base = root / market / "lday"
-                files = sorted(base.glob("*.day"))
-                if args.limit_files:
-                    files = files[:args.limit_files]
+        try:
+            df = _read_daily(p)
+            rows: list[dict] = []
+            for _, row in df.iterrows():
+                d = _date_int(row.get("date") if "date" in row else row.iloc[0])
+                rows.append({
+                    "code": code,
+                    "date": d,
+                    "open": float(row.get("open", 0) or 0),
+                    "high": float(row.get("high", 0) or 0),
+                    "low": float(row.get("low", 0) or 0),
+                    "close": float(row.get("close", 0) or 0),
+                    "volume": int(_volume(row)),
+                    "amount": float(_amount(row)),
+                    "source": SOURCE,
+                })
+            rows = _filter_rows_by_date(rows, start_i, end_i, "date")
+            for part in _chunks(rows):
+                db.execute(text("""
+                    INSERT INTO daily_kline (code, date, open, high, low, close, volume, amount, source)
+                    VALUES (:code, :date, :open, :high, :low, :close, :volume, :amount, :source)
+                    ON DUPLICATE KEY UPDATE open=VALUES(open), high=VALUES(high), low=VALUES(low),
+                        close=VALUES(close), volume=VALUES(volume), amount=VALUES(amount)
+                """), part)
+            _touch_stock_import(db, [code])
+            _update_import_file(db, import_file_id, "success", len(rows))
+            db.commit()
+            return {"ok": True, "file": str(p), "code": code, "rows": len(rows), "type": "lday"}
+        except Exception as exc:
+            db.rollback()
+            err = traceback.format_exc()
+            _update_import_file(db, import_file_id, "failed", 0, err)
+            db.commit()
+            return {"ok": False, "file": str(p), "code": code, "rows": 0, "type": "lday", "error": str(exc)}
 
-                for f in files:
-                    total_daily += import_daily(db, daily_reader, f, market, start, end)
 
-                db.commit()
+def import_lc5_file(path: str, market: str, start: Optional[str] = None, end: Optional[str] = None, import_file_id: Optional[int] = None) -> dict:
+    p = Path(path)
+    code = code_from_filename(p, market)
+    start_i = _start_min_i(start)
+    end_i = _end_min_i(end)
+    with SessionLocal() as db:
+        try:
+            df = _read_lc5(p)
+            rows: list[dict] = []
+            for _, row in df.iterrows():
+                dtv = row.get("datetime", None) or row.get("date", None) or row.iloc[0]
+                d = _minute_int(dtv)
+                rows.append({
+                    "code": code,
+                    "date": d,
+                    "period": "5m",
+                    "source": SOURCE,
+                    "open": float(row.get("open", 0) or 0),
+                    "high": float(row.get("high", 0) or 0),
+                    "low": float(row.get("low", 0) or 0),
+                    "close": float(row.get("close", 0) or 0),
+                    "volume": float(_volume(row)),
+                    "amount": float(_amount(row)),
+                })
+            rows = _filter_rows_by_date(rows, start_i, end_i, "date")
+            for part in _chunks(rows):
+                db.execute(text("""
+                    INSERT INTO minute_kline_period (code, date, period, source, open, high, low, close, volume, amount)
+                    VALUES (:code, :date, :period, :source, :open, :high, :low, :close, :volume, :amount)
+                    ON DUPLICATE KEY UPDATE open=VALUES(open), high=VALUES(high), low=VALUES(low),
+                        close=VALUES(close), volume=VALUES(volume), amount=VALUES(amount)
+                """), part)
+            _touch_stock_import(db, [code])
+            _update_import_file(db, import_file_id, "success", len(rows))
+            db.commit()
+            return {"ok": True, "file": str(p), "code": code, "rows": len(rows), "type": "5m"}
+        except Exception as exc:
+            db.rollback()
+            err = traceback.format_exc()
+            _update_import_file(db, import_file_id, "failed", 0, err)
+            db.commit()
+            return {"ok": False, "file": str(p), "code": code, "rows": 0, "type": "5m", "error": str(exc)}
 
-            if args.lc5:
-                base = root / market / "fzline"
-                files = sorted(base.glob("*.lc5"))
-                if args.limit_files:
-                    files = files[:args.limit_files]
 
-                for f in files:
-                    total_lc5 += import_lc5(db, lc5_reader, f, market, start, end)
+def import_vipdoc_files_parallel(files: list[str], market: str, import_type: str, start: Optional[str] = None, end: Optional[str] = None, workers: int = 4, import_file_ids: Optional[dict[str, int]] = None) -> dict:
+    workers = max(1, int(workers or 1))
+    results = []
+    def submit_one(f: str):
+        p = Path(f)
+        iid = import_file_ids.get(f) if import_file_ids else None
+        parent = p.parent.name.lower()
+        suffix = p.suffix.lower()
+        if parent == "lday" or suffix == ".day" or import_type in ("lday", "daily"):
+            return import_daily_file(f, market, start, end, iid)
+        return import_lc5_file(f, market, start, end, iid)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futs = [pool.submit(submit_one, f) for f in files]
+        for fut in as_completed(futs):
+            results.append(fut.result())
+    ok = sum(1 for r in results if r.get("ok"))
+    failed = len(results) - ok
+    rows = sum(int(r.get("rows") or 0) for r in results)
+    return {"ok": failed == 0, "total_files": len(results), "success_files": ok, "failed_files": failed, "total_rows": rows, "results": results}
 
-                db.commit()
 
-    print({
-        "daily_rows": total_daily,
-        "lc5_rows": total_lc5,
-    })
+def parse_args():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--root", required=True)
+    ap.add_argument("--market", default="sh")
+    ap.add_argument("--import-type", default="lday", choices=["all", "lday", "daily", "5m", "lc5", "fzline", "minline"])
+    ap.add_argument("--start", default=None)
+    ap.add_argument("--end", default=None)
+    ap.add_argument("--workers", type=int, default=4)
+    ap.add_argument("--limit-files", type=int, default=None)
+    return ap.parse_args()
+
+
+def main():
+    a = parse_args()
+    scan = scan_vipdoc_files(a.root, a.market, a.import_type)
+    files = scan["files"][:a.limit_files] if a.limit_files else scan["files"]
+    print(import_vipdoc_files_parallel(files, a.market, a.import_type, a.start, a.end, a.workers))
 
 
 if __name__ == "__main__":
