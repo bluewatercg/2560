@@ -31,14 +31,19 @@ services:
       - .env
     environment:
       - PYTHONPATH=/app
+      - ZD_CICCWM_ROOT=/data/zd_ciccwm
+      - VIPDOC_ROOT=/data/zd_ciccwm/vipdoc
+      - JOB_WORKER_POLL_INTERVAL=10
+      - JOB_WORKER_NAME=strategy2560-worker
     volumes:
       - ./logs:/app/logs
       - ./sql:/app/sql
-      # 如果 worker 需要行情数据目录，按实际路径打开：
-      # - /data/zd_ciccwm/vipdoc:/data/vipdoc:ro
+      - ./zd_ciccwm:/data/zd_ciccwm:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     command: ["python", "scripts/job_worker.py"]
     restart: unless-stopped
     depends_on:
       - web
+    healthcheck:
+      disable: true

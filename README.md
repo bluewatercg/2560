@@ -51,6 +51,15 @@ python scripts/run_2560_analysis.py --codes 000001,600000
 bash scripts/start_webui.sh
 ```
 
+rsync -av --progress --prune-empty-dirs \
+      --include='*/' \
+      --include='sh60*' \
+      --include='sh68*' \
+      --include='sz00*' \
+      --include='sz30*' \
+      --exclude='*' \
+      /mnt/e/zd_ciccwm/vipdoc/ user@192.168.1.18:/data1/2560/zd_ciccwm/vipdoc/
+
 ## 3. 目录结构
 
 ```text
