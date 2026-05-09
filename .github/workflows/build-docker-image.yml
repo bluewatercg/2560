@@ -1,62 +1,31 @@
 name: Build Strategy2560 Docker Image
-
 on:
   push:
-    branches:
-      - main
-      - feature/v8-job-queue-ui
+    branches: [ main, feature/v8-job-queue-ui ]
   workflow_dispatch:
     inputs:
       image_tag:
-        description: "Docker image tag"
+        description: Docker image tag
         required: false
-        default: "manual"
-
+        default: manual
 jobs:
   build:
     runs-on: ubuntu-latest
-
     env:
       IMAGE_NAME: strategy2560
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
+      - uses: actions/checkout@v4
       - name: Set image tag
-        id: vars
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TAG="${{ github.event.inputs.image_tag }}"
-          else
-            TAG="${GITHUB_REF_NAME}-${GITHUB_SHA::8}"
-          fi
-
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then TAG="${{ github.event.inputs.image_tag }}"; else TAG="${GITHUB_REF_NAME}-${GITHUB_SHA::8}"; fi
           TAG=$(echo "$TAG" | tr '/' '-')
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "IMAGE_TAG=$TAG" >> $GITHUB_ENV
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
+      - uses: docker/setup-buildx-action@v3
       - name: Build Docker image
-        run: |
-          docker build \
-            -t $IMAGE_NAME:${IMAGE_TAG} \
-            -t $IMAGE_NAME:latest \
-            .
-
-      - name: Test image health command
-        run: |
-          docker image inspect $IMAGE_NAME:${IMAGE_TAG}
-
+        run: docker build -t $IMAGE_NAME:${IMAGE_TAG} -t $IMAGE_NAME:latest .
       - name: Save Docker image
-        run: |
-          docker save $IMAGE_NAME:${IMAGE_TAG} | gzip > ${IMAGE_NAME}_${IMAGE_TAG}.tar.gz
-          ls -lh ${IMAGE_NAME}_${IMAGE_TAG}.tar.gz
-
-      - name: Upload Docker image artifact
-        uses: actions/upload-artifact@v4
+        run: docker save $IMAGE_NAME:${IMAGE_TAG} | gzip > ${IMAGE_NAME}_${IMAGE_TAG}.tar.gz
+      - uses: actions/upload-artifact@v4
         with:
           name: strategy2560-docker-image-${{ env.IMAGE_TAG }}
           path: strategy2560_${{ env.IMAGE_TAG }}.tar.gz

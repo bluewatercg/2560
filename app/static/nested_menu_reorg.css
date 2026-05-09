@@ -1,0 +1,63 @@
+
+/* Nested menu reorg */
+
+.nav {
+  gap: 4px;
+}
+
+.nav-group {
+  margin: 6px 0;
+  border-top: 1px solid rgba(148, 163, 184, 0.25);
+  padding-top: 6px;
+}
+
+.nav-group-title {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: #64748b;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 8px 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  border-radius: 8px;
+}
+
+.nav-group-title:hover {
+  background: rgba(148, 163, 184, 0.12);
+  color: #334155;
+}
+
+.nav-group-arrow {
+  font-size: 11px;
+  transition: transform 0.15s ease;
+}
+
+.nav-group.collapsed .nav-group-arrow {
+  transform: rotate(-90deg);
+}
+
+.nav-sub {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-left: 8px;
+  padding-left: 8px;
+  border-left: 2px solid rgba(148, 163, 184, 0.18);
+}
+
+.nav-group.collapsed .nav-sub {
+  display: none;
+}
+
+.nav-sub-item {
+  font-size: 13px;
+  padding-left: 14px !important;
+}
+
+.nav-sub-item.active {
+  font-weight: 700;
+}

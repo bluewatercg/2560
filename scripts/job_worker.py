@@ -5,10 +5,14 @@ from __future__ import annotations
 import json, os, signal, time, traceback, subprocess
 from datetime import datetime
 from pathlib import Path
+from dotenv import load_dotenv
 from typing import Any
 from sqlalchemy import create_engine, text
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+# 独立 worker 必须主动读取项目根目录 .env。
+load_dotenv(PROJECT_ROOT / ".env")
 STOP = False
 
 def sig(*_):

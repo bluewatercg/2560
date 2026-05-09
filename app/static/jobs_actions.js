@@ -41,10 +41,13 @@
         <label style="display:flex;flex-direction:column;gap:6px;font-size:13px;font-weight:600;color:#334155">
           市场范围
           <select id="jobMarket" title="选择要执行的股票市场范围">
-            <option value="all">all 全市场</option>
-            <option value="sh">sh 上海</option>
-            <option value="sz">sz 深圳</option>
-          </select>
+                  <option value="sh">sh 上海</option>
+                  <option value="sz">sz 深圳</option>
+                  <option value="sh60">sh60 沪主板60</option>
+                  <option value="sh68">sh68 科创68</option>
+                  <option value="sz00">sz00 深主板00</option>
+                  <option value="sz30">sz30 创业板30</option>
+                </select>
         </label>
 
         <label style="display:flex;flex-direction:column;gap:6px;font-size:13px;font-weight:600;color:#334155">
