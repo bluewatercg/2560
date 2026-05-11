@@ -4,6 +4,29 @@ import pandas as pd
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+
+def _column_exists(db: Session, table_name: str, column_name: str) -> bool:
+    return bool(db.execute(text("""
+        SELECT COUNT(*)
+        FROM information_schema.columns
+        WHERE table_schema = DATABASE()
+          AND table_name = :table_name
+          AND column_name = :column_name
+    """), {"table_name": table_name, "column_name": column_name}).scalar() or 0)
+
+
+def ensure_analysis_batch_columns(db: Session) -> None:
+    columns = {
+        "batch_name": "ALTER TABLE analysis_batch ADD COLUMN batch_name VARCHAR(255) NULL AFTER batch_id",
+        "data_source": "ALTER TABLE analysis_batch ADD COLUMN data_source VARCHAR(100) NULL AFTER run_time",
+        "param_snapshot": "ALTER TABLE analysis_batch ADD COLUMN param_snapshot JSON NULL AFTER strategy_version",
+    }
+    for column, ddl in columns.items():
+        if not _column_exists(db, "analysis_batch", column):
+            db.execute(text(ddl))
+    db.commit()
+
+
 class KlineRepository:
     def __init__(self, db: Session):
         self.db = db
@@ -76,6 +99,7 @@ class KlineRepository:
         """), rows)
 
     def insert_batch(self, batch: dict) -> None:
+        ensure_analysis_batch_columns(self.db)
         self.db.execute(text("""
             INSERT INTO analysis_batch (batch_id,batch_name,run_time,data_source,strategy_code,strategy_version,param_snapshot,status,message)
             VALUES (:batch_id,:batch_name,:run_time,:data_source,:strategy_code,:strategy_version,:param_snapshot,:status,:message)

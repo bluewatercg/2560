@@ -14,6 +14,8 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
+from app.services.job_orchestrator import create_job_execution
+from app.services.job_orchestrator import ensure_job_tables as _ensure_tables
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -25,6 +27,7 @@ class EnqueueJobRequest(BaseModel):
     priority: int = Field(default=3, ge=1, le=9)
     market: str = Field(default="all")
     shards: int = Field(default=4, ge=1, le=32)
+    limit_codes: int | None = Field(default=None, ge=1)
 
 
 class RunNowRequest(BaseModel):
@@ -43,72 +46,6 @@ def _table_exists(db: Session, table_name: str) -> bool:
         ).scalar()
         or 0
     )
-
-
-def _ensure_tables(db: Session) -> None:
-    db.execute(
-        text("""
-        CREATE TABLE IF NOT EXISTS job_queue (
-            id BIGINT PRIMARY KEY AUTO_INCREMENT,
-            job_type VARCHAR(50) NOT NULL,
-            strategy_code VARCHAR(20) NOT NULL,
-            priority INT NOT NULL DEFAULT 5,
-            payload JSON NOT NULL,
-            status VARCHAR(20) NOT NULL DEFAULT 'pending',
-            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            started_at DATETIME NULL,
-            finished_at DATETIME NULL,
-            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            KEY idx_queue (status, priority, created_at),
-            KEY idx_strategy (strategy_code)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-    """)
-    )
-    db.execute(
-        text("""
-        CREATE TABLE IF NOT EXISTS job_execution (
-            id BIGINT PRIMARY KEY AUTO_INCREMENT,
-            job_type VARCHAR(50) NOT NULL,
-            batch_id VARCHAR(100) NULL,
-            status VARCHAR(20) NOT NULL DEFAULT 'running',
-            progress_current INT NOT NULL DEFAULT 0,
-            progress_total INT NOT NULL DEFAULT 0,
-            success_count INT NOT NULL DEFAULT 0,
-            failed_count INT NOT NULL DEFAULT 0,
-            current_code VARCHAR(30) NULL,
-            market VARCHAR(20) NULL,
-            shards INT NULL,
-            log_file VARCHAR(500) NULL,
-            message TEXT NULL,
-            started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            finished_at DATETIME NULL,
-            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            KEY idx_status_started (status, started_at),
-            KEY idx_updated (updated_at)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-    """)
-    )
-    db.execute(
-        text("""
-        CREATE TABLE IF NOT EXISTS job_task_item (
-            id BIGINT PRIMARY KEY AUTO_INCREMENT,
-            job_id BIGINT NOT NULL,
-            shard_id INT NOT NULL DEFAULT 0,
-            code VARCHAR(30) NOT NULL,
-            status VARCHAR(20) NOT NULL DEFAULT 'pending',
-            retry_count INT NOT NULL DEFAULT 0,
-            elapsed_ms INT NULL,
-            last_error TEXT NULL,
-            started_at DATETIME NULL,
-            finished_at DATETIME NULL,
-            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            UNIQUE KEY uk_job_code (job_id, code),
-            KEY idx_job_status (job_id, status),
-            KEY idx_shard (job_id, shard_id)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-    """)
-    )
-    db.commit()
 
 
 def _market_where(alias: str, market: str) -> str:
@@ -172,7 +109,7 @@ def executions(limit: int = Query(100, ge=1, le=1000), db: Session = Depends(get
             text("""
         SELECT id, job_type, batch_id, status,
                progress_current, progress_total, success_count, failed_count,
-               current_code, market, shards, log_file, message,
+               current_code, market, shards, pid, log_file, message,
                started_at, finished_at, updated_at
         FROM job_execution
         ORDER BY started_at DESC, id DESC
@@ -217,7 +154,7 @@ def execution_progress(job_id: int, db: Session = Depends(get_db)):
             text("""
         SELECT id, job_type, status, progress_current, progress_total,
                success_count, failed_count, current_code, market, shards,
-               log_file, message, started_at, finished_at, updated_at,
+               pid, log_file, message, started_at, finished_at, updated_at,
                TIMESTAMPDIFF(SECOND, started_at, COALESCE(finished_at, NOW())) AS elapsed_seconds
         FROM job_execution WHERE id=:id
     """),
@@ -342,6 +279,19 @@ def execution_logs(
 def enqueue_job(payload: EnqueueJobRequest, db: Session = Depends(get_db)):
     _ensure_tables(db)
     job_payload: dict[str, Any] = {"market": payload.market, "shards": payload.shards}
+    if payload.limit_codes is not None:
+        job_payload["limit_codes"] = payload.limit_codes
+    if payload.job_type == "run_2560":
+        job_execution_id = create_job_execution(
+            db,
+            payload.job_type,
+            market=payload.market,
+            shards=payload.shards,
+            total=0,
+            message="queued",
+            status="queued",
+        )
+        job_payload["job_execution_id"] = job_execution_id
     res = db.execute(
         text("""
         INSERT INTO job_queue (job_type, strategy_code, priority, payload, status, created_at)
@@ -368,8 +318,8 @@ def run_now(payload: RunNowRequest, db: Session = Depends(get_db)):
         text("""
         INSERT INTO job_execution
         (job_type, status, progress_current, progress_total, success_count, failed_count,
-         current_code, market, shards, message, started_at, updated_at)
-        VALUES ('run_2560_now', 'running', 0, :total, 0, 0, NULL, :market, :shards, :message, NOW(), NOW())
+         current_code, market, shards, pid, message, started_at, updated_at)
+        VALUES ('run_2560_now', 'running', 0, :total, 0, 0, NULL, :market, :shards, NULL, :message, NOW(), NOW())
     """),
         {
             "total": total,

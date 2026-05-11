@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pathlib import Path
+import os
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
@@ -9,20 +9,21 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from scripts.import_vipdoc_with_pytdx import scan_vipdoc_files, import_vipdoc_files_parallel
-from scripts.build_30m_from_5m import build_30m_parallel
+from app.services.job_orchestrator import create_job_execution, enqueue_job, ensure_job_tables
+from scripts.import_vipdoc_with_pytdx import scan_vipdoc_files
 
 router = APIRouter(prefix="/api/import", tags=["import"])
+DEFAULT_VIPDOC_ROOT = os.getenv("VIPDOC_ROOT", "/data/vipdoc")
 
 
 class ImportScanRequest(BaseModel):
-    source_dir: str = Field(default="/data/vipdoc")
+    source_dir: str = Field(default=DEFAULT_VIPDOC_ROOT)
     market: str = Field(default="sh")
     import_type: str = Field(default="all")
 
 
 class ImportRunRequest(BaseModel):
-    source_dir: str = Field(default="/data/vipdoc")
+    source_dir: str = Field(default=DEFAULT_VIPDOC_ROOT)
     market: str = Field(default="sh")
     import_type: str = Field(default="lday")
     start: Optional[str] = None
@@ -48,13 +49,14 @@ def _table_exists(db: Session, table_name: str) -> bool:
 
 
 def _ensure_import_tables(db: Session) -> None:
+    ensure_job_tables(db)
     db.execute(text("""
         CREATE TABLE IF NOT EXISTS data_import_batch (
           id BIGINT PRIMARY KEY AUTO_INCREMENT,
           import_type VARCHAR(50) NOT NULL DEFAULT 'vipdoc',
           source_dir VARCHAR(500) NULL,
           market VARCHAR(20) NULL,
-          status VARCHAR(20) NOT NULL DEFAULT 'running',
+          status VARCHAR(20) NOT NULL DEFAULT 'queued',
           total_files INT NOT NULL DEFAULT 0,
           success_files INT NOT NULL DEFAULT 0,
           failed_files INT NOT NULL DEFAULT 0,
@@ -85,12 +87,69 @@ def _ensure_import_tables(db: Session) -> None:
     db.commit()
 
 
+def _merge_job_progress(batch: dict, job: dict | None) -> dict:
+    d = dict(batch)
+    total = int(d.get("total_files") or 0)
+    batch_success = int(d.get("success_files") or 0)
+    batch_failed = int(d.get("failed_files") or 0)
+    batch_done = batch_success + batch_failed
+    d["batch_done_files"] = batch_done
+    d["batch_progress_percent"] = round(batch_done * 100 / total, 2) if total else 0.0
+
+    if job:
+        job_id = int(job.get("id") or 0)
+        current = int(job.get("progress_current") or 0)
+        job_total = int(job.get("progress_total") or 0)
+        d.update({
+            "job_id": job_id,
+            "progress_url": f"/api/jobs/executions/{job_id}/progress",
+            "job_status": job.get("status"),
+            "job_progress_current": current,
+            "job_progress_total": job_total,
+            "job_success_count": int(job.get("success_count") or 0),
+            "job_failed_count": int(job.get("failed_count") or 0),
+            "current_code": job.get("current_code"),
+            "done_files": current,
+            "progress_percent": round(current * 100 / job_total, 2) if job_total else 0.0,
+        })
+    else:
+        d.update({
+            "job_id": None,
+            "progress_url": None,
+            "job_status": None,
+            "job_progress_current": None,
+            "job_progress_total": None,
+            "job_success_count": None,
+            "job_failed_count": None,
+            "current_code": None,
+            "done_files": batch_done,
+            "progress_percent": d["batch_progress_percent"],
+        })
+    return d
+
+
+def _latest_job_for_batch(db: Session, batch_id: int) -> dict | None:
+    if not _table_exists(db, "job_execution"):
+        return None
+    row = db.execute(text("""
+        SELECT id, job_type, status, progress_current, progress_total,
+               success_count, failed_count, current_code, market, shards,
+               message, started_at, finished_at, updated_at
+        FROM job_execution
+        WHERE batch_id = CAST(:batch_id AS CHAR)
+          AND job_type IN ('import_vipdoc', 'build_30m')
+        ORDER BY id DESC
+        LIMIT 1
+    """), {"batch_id": batch_id}).mappings().first()
+    return dict(row) if row else None
+
+
 def _create_batch_and_files(db: Session, payload: ImportRunRequest, files: list[str]) -> tuple[int, dict[str, int]]:
     _ensure_import_tables(db)
     res = db.execute(text("""
         INSERT INTO data_import_batch
         (import_type, source_dir, market, status, total_files, success_files, failed_files, total_rows, started_at, message)
-        VALUES (:import_type, :source_dir, :market, 'running', :total_files, 0, 0, 0, NOW(), :message)
+        VALUES (:import_type, :source_dir, :market, 'queued', :total_files, 0, 0, 0, NOW(), :message)
     """), {
         "import_type": payload.import_type,
         "source_dir": payload.source_dir,
@@ -109,6 +168,34 @@ def _create_batch_and_files(db: Session, payload: ImportRunRequest, files: list[
         id_map[f] = int(r.lastrowid)
     db.commit()
     return batch_id, id_map
+
+
+def _batch_detail(db: Session, batch_id: int) -> dict | None:
+    batch = db.execute(text("""
+        SELECT id, import_type, source_dir, market, status, total_files, success_files, failed_files,
+               total_rows, started_at, finished_at, message, updated_at
+        FROM data_import_batch
+        WHERE id=:id
+    """), {"id": batch_id}).mappings().first()
+    if not batch:
+        return None
+    stats = db.execute(text("""
+        SELECT
+            SUM(status='pending') AS pending_files,
+            SUM(status='running') AS running_files,
+            SUM(status='success') AS success_files_actual,
+            SUM(status='failed') AS failed_files_actual
+        FROM data_import_file
+        WHERE import_batch_id=:id
+    """), {"id": batch_id}).mappings().first() or {}
+    d = _merge_job_progress(dict(batch), _latest_job_for_batch(db, batch_id))
+    d.update({
+        "pending_files": int(stats.get("pending_files") or 0),
+        "running_files": int(stats.get("running_files") or 0),
+        "success_files_actual": int(stats.get("success_files_actual") or 0),
+        "failed_files_actual": int(stats.get("failed_files_actual") or 0),
+    })
+    return d
 
 
 @router.post("/scan")
@@ -131,24 +218,44 @@ def run_import(payload: ImportRunRequest, db: Session = Depends(get_db)):
     files = scan["files"]
     if payload.limit_files:
         files = files[:payload.limit_files]
+    _ensure_import_tables(db)
     batch_id, id_map = _create_batch_and_files(db, payload, files)
-    result = import_vipdoc_files_parallel(files, payload.market, payload.import_type, payload.start, payload.end, payload.workers, id_map)
-    status = "success" if result["failed_files"] == 0 else "failed"
+    job_id = create_job_execution(
+        db,
+        "import_vipdoc",
+        market=payload.market,
+        shards=payload.workers,
+        batch_id=str(batch_id),
+        total=len(files),
+        message=f"queued import batch={batch_id}",
+        status="queued",
+    )
+    enqueue_job(db, "import_vipdoc", "S2560", 3, {
+        "job_execution_id": job_id,
+        "import_batch_id": batch_id,
+        "source_dir": payload.source_dir,
+        "market": payload.market,
+        "import_type": payload.import_type,
+        "start": payload.start,
+        "end": payload.end,
+        "workers": payload.workers,
+    })
     db.execute(text("""
         UPDATE data_import_batch
-        SET status=:status, success_files=:success_files, failed_files=:failed_files, total_rows=:total_rows,
-            finished_at=NOW(), message=:message, updated_at=NOW()
+        SET status='queued', message=:message, updated_at=NOW()
         WHERE id=:id
-    """), {
-        "id": batch_id,
-        "status": status,
-        "success_files": result["success_files"],
-        "failed_files": result["failed_files"],
-        "total_rows": result["total_rows"],
-        "message": f"finished import_type={payload.import_type}, workers={payload.workers}",
-    })
+    """), {"id": batch_id, "message": f"queued import job #{job_id}"})
     db.commit()
-    return {"ok": status == "success", "import_batch_id": batch_id, "scan_dirs": scan["scan_dirs"], **{k:v for k,v in result.items() if k != "results"}, "results_sample": result["results"][:20]}
+    return {
+        "ok": True,
+        "import_batch_id": batch_id,
+        "job_id": job_id,
+        "status": "queued",
+        "scan_dirs": scan["scan_dirs"],
+        "total_files": len(files),
+        "message": "import job queued",
+        "progress_url": f"/api/jobs/executions/{job_id}/progress",
+    }
 
 
 @router.post("/build-30m")
@@ -157,33 +264,64 @@ def build_30m(payload: Build30mRequest, db: Session = Depends(get_db)):
     res = db.execute(text("""
         INSERT INTO data_import_batch
         (import_type, source_dir, market, status, total_files, started_at, message)
-        VALUES ('build_30m', 'minute_kline_period:5m', :market, 'running', 0, NOW(), :message)
+        VALUES ('build_30m', 'minute_kline_period:5m', :market, 'queued', 0, NOW(), :message)
     """), {"market": payload.market, "message": f"build 30m started, workers={payload.workers}"})
     batch_id = int(res.lastrowid)
-    db.commit()
-    result = build_30m_parallel(payload.start, payload.end, payload.market, payload.workers, payload.limit_codes, payload.dry_run)
-    status = "success" if result.get("ok") else "failed"
+    job_id = create_job_execution(
+        db,
+        "build_30m",
+        market=payload.market,
+        shards=payload.workers,
+        batch_id=str(batch_id),
+        total=0,
+        message=f"queued build_30m batch={batch_id}",
+        status="queued",
+    )
+    enqueue_job(db, "build_30m", "S2560", 3, {
+        "job_execution_id": job_id,
+        "import_batch_id": batch_id,
+        "start": payload.start,
+        "end": payload.end,
+        "market": payload.market,
+        "workers": payload.workers,
+        "limit_codes": payload.limit_codes,
+        "dry_run": payload.dry_run,
+    })
     db.execute(text("""
         UPDATE data_import_batch
-        SET status=:status, total_files=:codes, success_files=:codes, total_rows=:rows,
-            finished_at=NOW(), message=:message, updated_at=NOW()
+        SET status='queued', message=:message, updated_at=NOW()
         WHERE id=:id
-    """), {"id": batch_id, "status": status, "codes": result["codes"], "rows": result["inserted_30m_rows"], "message": "finished build_30m"})
+    """), {"id": batch_id, "message": f"queued build_30m job #{job_id}"})
     db.commit()
-    return {"ok": result.get("ok"), "import_batch_id": batch_id, **result}
+    return {
+        "ok": True,
+        "import_batch_id": batch_id,
+        "job_id": job_id,
+        "status": "queued",
+        "message": "build_30m job queued",
+        "progress_url": f"/api/jobs/executions/{job_id}/progress",
+    }
 
 
 @router.get("/batches")
 def import_batches(limit: int = Query(50, ge=1, le=500), db: Session = Depends(get_db)):
     if not _table_exists(db, "data_import_batch"):
         return []
-    return db.execute(text("""
+    rows = db.execute(text("""
         SELECT id, import_type, source_dir, market, status, total_files, success_files, failed_files,
                total_rows, started_at, finished_at, message, updated_at
         FROM data_import_batch
         ORDER BY id DESC
         LIMIT :limit
     """), {"limit": limit}).mappings().all()
+    return [_merge_job_progress(dict(r), _latest_job_for_batch(db, int(r["id"]))) for r in rows]
+
+
+@router.get("/batches/{batch_id}")
+def import_batch_detail(batch_id: int, db: Session = Depends(get_db)):
+    if not _table_exists(db, "data_import_batch"):
+        return None
+    return _batch_detail(db, batch_id)
 
 
 @router.get("/files")

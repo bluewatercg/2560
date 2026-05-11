@@ -2,6 +2,9 @@
 (function(){
   function $(id){ return document.getElementById(id); }
   function all(sel, root=document){ return Array.from(root.querySelectorAll(sel)); }
+  let importWatchTimer = null;
+  let activeImportBatchId = null;
+  let activeImportProgressUrl = null;
 
   async function postJson(url, body){
     const r = await fetch(url, {
@@ -83,9 +86,10 @@
       help.id = 'importTypeHelp';
       help.style.cssText = 'margin-top:10px;color:#64748b;font-size:13px;line-height:1.7';
       help.innerHTML = `
-        <div><b>日线 lday</b>：扫描 <code>sh/lday</code> 或 <code>sz/lday</code>，写入 <code>daily_kline</code></div>
-        <div><b>5分钟线 5m</b>：扫描 <code>sh/fzline</code> 或 <code>sz/fzline</code>，写入 <code>minute_kline_period(period='5m')</code></div>
-        <div><b>生成30m</b>：从 <code>minute_kline_period(period='5m')</code> 聚合生成 <code>period='30m'</code></div>
+        <div><b>步骤 1</b>：导入 <code>lday</code> 到 <code>daily_kline</code></div>
+        <div><b>步骤 2</b>：导入 <code>fzline/*.lc5</code> 到 <code>minute_kline_period(period='5m')</code></div>
+        <div><b>步骤 3</b>：从 <code>5m</code> 聚合生成 <code>period='30m'</code></div>
+        <div><b>步骤 4</b>：重算指标，再跑 <code>2560</code> 分析</div>
       `;
       result.insertAdjacentElement('beforebegin', help);
     }
@@ -115,16 +119,21 @@
 
       table.innerHTML =
         '<thead><tr>' +
-        ['ID','类型','目录','市场','状态','文件数','成功','失败','记录数','开始时间','结束时间','信息']
+        ['ID','类型','目录','市场','状态','进度','文件数','成功','失败','记录数','开始时间','结束时间','信息']
           .map(c => `<th>${c}</th>`).join('') +
         '</tr></thead><tbody>' +
-        rows.map(r => `
+        rows.map(r => {
+          const done = Number(r.success_files || 0) + Number(r.failed_files || 0);
+          const total = Number(r.total_files || 0);
+          const progress = total ? `${done}/${total} (${((done * 100) / total).toFixed(1)}%)` : '-';
+          return `
           <tr>
             <td>${r.id ?? '-'}</td>
             <td>${r.import_type ?? '-'}</td>
             <td>${r.source_dir ?? '-'}</td>
             <td>${r.market ?? '-'}</td>
             <td>${r.status ?? '-'}</td>
+            <td>${progress}</td>
             <td>${r.total_files ?? '-'}</td>
             <td>${r.success_files ?? '-'}</td>
             <td>${r.failed_files ?? '-'}</td>
@@ -133,17 +142,19 @@
             <td>${r.finished_at ?? '-'}</td>
             <td>${r.message ?? '-'}</td>
           </tr>
-        `).join('') +
+        `;
+        }).join('') +
         '</tbody>';
     }catch(e){}
   }
 
-  async function loadImportFiles(){
+  async function loadImportFiles(batchId){
     const table = $('importFileTable');
     if(!table) return;
 
     try{
-      const rows = await getJson('/api/import/files?limit=100');
+      const url = '/api/import/files?limit=100' + (batchId ? '&batch_id=' + encodeURIComponent(batchId) : '');
+      const rows = await getJson(url);
       if(!rows || !rows.length){
         table.innerHTML = '<tbody><tr><td>暂无导入文件明细</td></tr></tbody>';
         return;
@@ -169,6 +180,65 @@
         `).join('') +
         '</tbody>';
     }catch(e){}
+  }
+
+  function renderLiveStatus(d, job){
+    const box = $('importLiveStatus');
+    if(!box) return;
+    if(!d){
+      box.textContent = '暂无正在导入的批次';
+      return;
+    }
+    const total = Number((job && job.total) || d.job_progress_total || d.total_files || 0);
+    const done = Number((job && job.done) || d.job_progress_current || d.done_files || 0);
+    const percentValue = (job && job.percent !== undefined) ? Number(job.percent) : Number(d.progress_percent || 0);
+    const percent = total ? percentValue.toFixed(2) + '%' : '-';
+    const status = (job && job.status) || d.job_status || d.status || '-';
+    box.textContent =
+      `当前批次：#${d.id}\n` +
+      `任务：#${d.job_id || (job && job.id) || '-'} ${d.progress_url || activeImportProgressUrl || ''}\n` +
+      `状态：${status}\n` +
+      `进度：${done}/${total} (${percent})\n` +
+      `成功：${(job && job.success_count) ?? d.job_success_count ?? d.success_files ?? 0}，失败：${(job && job.failed_count) ?? d.job_failed_count ?? d.failed_files ?? 0}，当前：${(job && job.current_code) || d.current_code || '-'}\n` +
+      `批次结果：成功 ${d.success_files || 0}，失败 ${d.failed_files || 0}，记录数 ${d.total_rows || 0}\n` +
+      `更新时间：${d.updated_at || '-'}`;
+  }
+
+  async function refreshImportWatch(batchId, progressUrl){
+    if(!batchId) return;
+    const d = await getJson('/api/import/batches/' + encodeURIComponent(batchId));
+    const url = progressUrl || (d && d.progress_url);
+    let job = null;
+    if(url){
+      job = await getJson(url);
+      activeImportProgressUrl = url;
+    }
+    renderLiveStatus(d, job);
+    await loadImportBatches();
+    await loadImportFiles(batchId);
+    const status = (job && job.status) || (d && d.job_status) || (d && d.status);
+    if(status && !['queued', 'pending', 'running'].includes(status)){
+      stopImportWatch();
+    }
+  }
+
+  function startImportWatch(batchOrId, progressUrl){
+    stopImportWatch();
+    const batchId = typeof batchOrId === 'object' ? batchOrId.import_batch_id : batchOrId;
+    activeImportProgressUrl = progressUrl || (typeof batchOrId === 'object' ? batchOrId.progress_url : null);
+    activeImportBatchId = batchId;
+    refreshImportWatch(batchId, activeImportProgressUrl).catch(() => {});
+    importWatchTimer = setInterval(function(){
+      refreshImportWatch(batchId, activeImportProgressUrl).catch(() => {});
+    }, 2000);
+  }
+
+  function stopImportWatch(){
+    if(importWatchTimer){
+      clearInterval(importWatchTimer);
+      importWatchTimer = null;
+    }
+    activeImportProgressUrl = null;
   }
 
   function bindButtons(){
@@ -215,8 +285,12 @@
         try{
           const data = await postJson('/api/import/run', p);
           if(out) out.textContent = JSON.stringify(data, null, 2);
-          await loadImportBatches();
-          await loadImportFiles();
+          if(data && data.import_batch_id){
+            startImportWatch(data);
+          }else{
+            await loadImportBatches();
+            await loadImportFiles();
+          }
         }catch(e){
           if(out) out.textContent = '导入失败：' + (e && e.message ? e.message : String(e));
         }
@@ -251,7 +325,11 @@
         try{
           const data = await postJson('/api/import/build-30m', body);
           if(out) out.textContent = JSON.stringify(data, null, 2);
-          await loadImportBatches();
+          if(data && data.import_batch_id){
+            startImportWatch(data);
+          }else{
+            await loadImportBatches();
+          }
         }catch(e){
           if(out) out.textContent = '生成30m失败：' + (e && e.message ? e.message : String(e));
         }
@@ -261,7 +339,7 @@
     if(refreshBtn){
       refreshBtn.onclick = async function(){
         await loadImportBatches();
-        await loadImportFiles();
+        await loadImportFiles(activeImportBatchId);
       };
     }
   }

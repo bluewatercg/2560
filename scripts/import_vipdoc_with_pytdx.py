@@ -5,7 +5,7 @@ Vipdoc 行情导入工具。
 
 支持：
 - 通达信/中金 vipdoc 日线 lday -> daily_kline
-- 通达信/中金 vipdoc 5m fzline/minline -> minute_kline_period(period='5m')
+- 通达信/中金 vipdoc 5m fzline -> minute_kline_period(period='5m')
 - 多线程导入
 - 写入 data_import_file 明细
 - 更新 stock_calc_status.last_import_at
@@ -19,7 +19,7 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Callable, Iterable, Optional
 
 import pandas as pd
 from sqlalchemy import text
@@ -118,8 +118,6 @@ def _scan_dirs(root: Path, market: str, import_type: str) -> list[Path]:
         dirs.append(base / "lday")
     if t in ("all", "5m", "lc5", "fzline"):
         dirs.append(base / "fzline")
-    if t in ("all", "minline"):
-        dirs.append(base / "minline")
     return [d for d in dirs if d.exists() and d.is_dir()]
 
 
@@ -132,7 +130,7 @@ def scan_vipdoc_files(source_dir: str, market: str = "sh", import_type: str = "a
         if dtype == "lday":
             candidates = list(d.glob("*.day"))
         elif dtype == "fzline":
-            candidates = list(d.glob("*.lc5")) + list(d.glob("*.lc1"))
+            candidates = list(d.glob("*.lc5"))
         else:
             candidates = list(d.iterdir())
         for p in candidates:
@@ -200,6 +198,18 @@ def _update_import_file(db, import_file_id: Optional[int], status: str, rows: in
     """), {"id": import_file_id, "status": status, "rows_imported": rows, "err": err[:2000] if err else None})
 
 
+def _mark_import_file_running(db, import_file_id: Optional[int]):
+    if not import_file_id:
+        return
+    db.execute(text("""
+        UPDATE data_import_file
+        SET status='running',
+            started_at=COALESCE(started_at, NOW()),
+            updated_at=NOW()
+        WHERE id=:id
+    """), {"id": import_file_id})
+
+
 def _touch_stock_import(db, codes: Iterable[str]):
     data = [{"code": c, "strategy_code": "S2560"} for c in sorted(set(codes))]
     if not data:
@@ -211,13 +221,50 @@ def _touch_stock_import(db, codes: Iterable[str]):
     """), data)
 
 
-def import_daily_file(path: str, market: str, start: Optional[str] = None, end: Optional[str] = None, import_file_id: Optional[int] = None) -> dict:
+def _update_import_batch_progress(db, batch_id: Optional[int], rows: int = 0, success_delta: int = 0, failed_delta: int = 0):
+    if not batch_id:
+        return
+    db.execute(text("""
+        UPDATE data_import_batch
+        SET success_files = success_files + :success_delta,
+            failed_files = failed_files + :failed_delta,
+            total_rows = total_rows + :rows,
+            updated_at = NOW()
+        WHERE id=:id
+    """), {
+        "id": batch_id,
+        "rows": rows,
+        "success_delta": success_delta,
+        "failed_delta": failed_delta,
+    })
+
+
+def _set_import_batch_status(db, batch_id: Optional[int], status: str, message: Optional[str] = None):
+    if not batch_id:
+        return
+    if message is None:
+        db.execute(text("""
+            UPDATE data_import_batch
+            SET status=:status, updated_at=NOW()
+            WHERE id=:id
+        """), {"id": batch_id, "status": status})
+    else:
+        db.execute(text("""
+            UPDATE data_import_batch
+            SET status=:status, message=:message, updated_at=NOW()
+            WHERE id=:id
+        """), {"id": batch_id, "status": status, "message": message})
+
+
+def import_daily_file(path: str, market: str, start: Optional[str] = None, end: Optional[str] = None, import_file_id: Optional[int] = None, batch_id: Optional[int] = None) -> dict:
     p = Path(path)
     code = code_from_filename(p, market)
     start_i = _start_day_i(start)
     end_i = _end_day_i(end)
     with SessionLocal() as db:
         try:
+            _mark_import_file_running(db, import_file_id)
+            db.commit()
             df = _read_daily(p)
             rows: list[dict] = []
             for _, row in df.iterrows():
@@ -243,23 +290,27 @@ def import_daily_file(path: str, market: str, start: Optional[str] = None, end: 
                 """), part)
             _touch_stock_import(db, [code])
             _update_import_file(db, import_file_id, "success", len(rows))
+            _update_import_batch_progress(db, batch_id, rows=len(rows), success_delta=1)
             db.commit()
             return {"ok": True, "file": str(p), "code": code, "rows": len(rows), "type": "lday"}
         except Exception as exc:
             db.rollback()
             err = traceback.format_exc()
             _update_import_file(db, import_file_id, "failed", 0, err)
+            _update_import_batch_progress(db, batch_id, failed_delta=1)
             db.commit()
             return {"ok": False, "file": str(p), "code": code, "rows": 0, "type": "lday", "error": str(exc)}
 
 
-def import_lc5_file(path: str, market: str, start: Optional[str] = None, end: Optional[str] = None, import_file_id: Optional[int] = None) -> dict:
+def import_lc5_file(path: str, market: str, start: Optional[str] = None, end: Optional[str] = None, import_file_id: Optional[int] = None, batch_id: Optional[int] = None) -> dict:
     p = Path(path)
     code = code_from_filename(p, market)
     start_i = _start_min_i(start)
     end_i = _end_min_i(end)
     with SessionLocal() as db:
         try:
+            _mark_import_file_running(db, import_file_id)
+            db.commit()
             df = _read_lc5(p)
             rows: list[dict] = []
             for _, row in df.iterrows():
@@ -287,31 +338,74 @@ def import_lc5_file(path: str, market: str, start: Optional[str] = None, end: Op
                 """), part)
             _touch_stock_import(db, [code])
             _update_import_file(db, import_file_id, "success", len(rows))
+            _update_import_batch_progress(db, batch_id, rows=len(rows), success_delta=1)
             db.commit()
             return {"ok": True, "file": str(p), "code": code, "rows": len(rows), "type": "5m"}
         except Exception as exc:
             db.rollback()
             err = traceback.format_exc()
             _update_import_file(db, import_file_id, "failed", 0, err)
+            _update_import_batch_progress(db, batch_id, failed_delta=1)
             db.commit()
             return {"ok": False, "file": str(p), "code": code, "rows": 0, "type": "5m", "error": str(exc)}
 
 
-def import_vipdoc_files_parallel(files: list[str], market: str, import_type: str, start: Optional[str] = None, end: Optional[str] = None, workers: int = 4, import_file_ids: Optional[dict[str, int]] = None) -> dict:
+def _file_phase(path: str, import_type: str) -> str:
+    p = Path(path)
+    parent = p.parent.name.lower()
+    suffix = p.suffix.lower()
+    if import_type in ("lday", "daily"):
+        return "daily"
+    if import_type in ("5m", "lc5", "fzline"):
+        return "5m"
+    if parent == "lday" or suffix == ".day":
+        return "daily"
+    return "5m"
+
+
+def import_vipdoc_files_parallel(
+    files: list[str],
+    market: str,
+    import_type: str,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    workers: int = 4,
+    batch_id: Optional[int] = None,
+    import_file_ids: Optional[dict[str, int]] = None,
+    on_result: Optional[Callable[[dict, int, int], None]] = None,
+) -> dict:
     workers = max(1, int(workers or 1))
     results = []
+    total_files = len(files)
+    completed = 0
+
     def submit_one(f: str):
-        p = Path(f)
         iid = import_file_ids.get(f) if import_file_ids else None
-        parent = p.parent.name.lower()
-        suffix = p.suffix.lower()
-        if parent == "lday" or suffix == ".day" or import_type in ("lday", "daily"):
-            return import_daily_file(f, market, start, end, iid)
-        return import_lc5_file(f, market, start, end, iid)
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futs = [pool.submit(submit_one, f) for f in files]
-        for fut in as_completed(futs):
-            results.append(fut.result())
+
+        if _file_phase(f, import_type) == "daily":
+            return import_daily_file(f, market, start, end, iid, batch_id=batch_id)
+        return import_lc5_file(f, market, start, end, iid, batch_id=batch_id)
+
+    def run_phase(phase_name: str, phase_files: list[str]):
+        nonlocal completed
+        if not phase_files:
+            return
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futs = [pool.submit(submit_one, f) for f in phase_files]
+            for fut in as_completed(futs):
+                r = fut.result()
+                r["phase"] = phase_name
+                results.append(r)
+                completed += 1
+                if on_result:
+                    on_result(r, completed, total_files)
+
+    daily_files = [f for f in files if _file_phase(f, import_type) == "daily"]
+    minute_files = [f for f in files if _file_phase(f, import_type) == "5m"]
+
+    run_phase("daily", daily_files)
+    run_phase("5m", minute_files)
+
     ok = sum(1 for r in results if r.get("ok"))
     failed = len(results) - ok
     rows = sum(int(r.get("rows") or 0) for r in results)
@@ -322,7 +416,7 @@ def parse_args():
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", required=True)
     ap.add_argument("--market", default="sh")
-    ap.add_argument("--import-type", default="lday", choices=["all", "lday", "daily", "5m", "lc5", "fzline", "minline"])
+    ap.add_argument("--import-type", default="lday", choices=["all", "lday", "daily", "5m", "lc5", "fzline"])
     ap.add_argument("--start", default=None)
     ap.add_argument("--end", default=None)
     ap.add_argument("--workers", type=int, default=4)

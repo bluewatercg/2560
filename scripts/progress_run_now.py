@@ -38,6 +38,7 @@ JOB_ID = int(os.getenv("JOB_ID", "0"))
 MARKET = os.getenv("MARKET", "all")
 SHARDS = int(os.getenv("SHARDS", "1"))
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", "30"))
+LIMIT_CODES = int(os.getenv("LIMIT_CODES", "0") or 0)
 WEB_BASE_URL = os.getenv("WEB_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
 
 
@@ -86,7 +87,8 @@ def market_where(alias: str, market: str) -> str:
 def load_codes(en) -> list[str]:
     sql = f"SELECT code FROM stock_info s WHERE {market_where('s', MARKET)} ORDER BY code"
     with en.connect() as conn:
-        return [r[0] for r in conn.execute(text(sql)).all()]
+        codes = [r[0] for r in conn.execute(text(sql)).all()]
+    return codes[:LIMIT_CODES] if LIMIT_CODES > 0 else codes
 
 
 def chunks(seq: list[str], size: int) -> Iterable[list[str]]:

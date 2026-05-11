@@ -6,12 +6,13 @@ from __future__ import annotations
 import argparse
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Optional
+from typing import Callable, Optional
 
 import pandas as pd
 from sqlalchemy import text
 
 from app.db.session import SessionLocal
+from app.services.job_orchestrator import update_data_import_batch_progress
 
 SOURCE = "build_from_5m"
 
@@ -86,71 +87,116 @@ def _chunks(rows: list[dict], size: int = 1000):
         yield rows[i:i+size]
 
 
-def build_30m_for_code(code: str, start: Optional[str], end: Optional[str], dry_run: bool = False) -> dict:
-    si = start_i(start) or 0
-    ei = end_i(end)
-    params = {"code": code, "start": si}
-    q = """
-        SELECT code, date, open, high, low, close, volume, amount
-        FROM minute_kline_period
-        WHERE code=:code AND period='5m' AND date>=:start
-    """
-    if ei:
-        q += " AND date<=:end"
-        params["end"] = ei
-    q += " ORDER BY date"
-    with SessionLocal() as db:
-        rows = db.execute(text(q), params).mappings().all()
-        if not rows:
-            return {"ok": True, "code": code, "rows": 0}
-        df = pd.DataFrame([dict(r) for r in rows])
-        df["dt"] = df["date"].map(date_to_dt)
-        df["bucket"] = df["dt"].map(bucket_30m)
-        df = df[df["bucket"].notna()]
-        out = []
-        for bucket, g in df.groupby("bucket"):
-            g = g.sort_values("dt")
-            out.append({
-                "code": code,
-                "period": "30m",
-                "date": dt_to_int(bucket),
-                "source": SOURCE,
-                "open": float(g.iloc[0]["open"]),
-                "high": float(g["high"].max()),
-                "low": float(g["low"].min()),
-                "close": float(g.iloc[-1]["close"]),
-                "volume": float(g["volume"].sum()),
-                "amount": float(g["amount"].sum()),
-            })
-        if dry_run:
-            return {"ok": True, "code": code, "rows": len(out), "dry_run": True}
-        dp = {"code": code, "start": si}
-        del_sql = "DELETE FROM minute_kline_period WHERE code=:code AND period='30m' AND date>=:start"
+def build_30m_for_code(code: str, start: Optional[str], end: Optional[str], dry_run: bool = False, batch_id: Optional[int] = None) -> dict:
+    try:
+        si = start_i(start) or 0
+        ei = end_i(end)
+        params = {"code": code, "start": si}
+        q = """
+            SELECT code, date, open, high, low, close, volume, amount
+            FROM minute_kline_period
+            WHERE code=:code AND period='5m' AND date>=:start
+        """
         if ei:
-            del_sql += " AND date<=:end"
-            dp["end"] = ei
-        db.execute(text(del_sql), dp)
-        for part in _chunks(out):
+            q += " AND date<=:end"
+            params["end"] = ei
+        q += " ORDER BY date"
+        with SessionLocal() as db:
+            rows = db.execute(text(q), params).mappings().all()
+            if not rows:
+                if batch_id is not None:
+                    update_data_import_batch_progress(db, batch_id, success_delta=1)
+                return {"ok": True, "code": code, "rows": 0}
+            df = pd.DataFrame([dict(r) for r in rows])
+            df["dt"] = df["date"].map(date_to_dt)
+            df["bucket"] = df["dt"].map(bucket_30m)
+            df = df[df["bucket"].notna()]
+            out = []
+            for bucket, g in df.groupby("bucket"):
+                g = g.sort_values("dt")
+                out.append({
+                    "code": code,
+                    "period": "30m",
+                    "date": dt_to_int(bucket),
+                    "source": SOURCE,
+                    "open": float(g.iloc[0]["open"]),
+                    "high": float(g["high"].max()),
+                    "low": float(g["low"].min()),
+                    "close": float(g.iloc[-1]["close"]),
+                    "volume": float(g["volume"].sum()),
+                    "amount": float(g["amount"].sum()),
+                })
+            if dry_run:
+                if batch_id is not None:
+                    update_data_import_batch_progress(
+                        db,
+                        batch_id,
+                        success_delta=1,
+                        total_rows_delta=len(out),
+                    )
+                return {"ok": True, "code": code, "rows": len(out), "dry_run": True}
+            dp = {"code": code, "start": si}
+            del_sql = "DELETE FROM minute_kline_period WHERE code=:code AND period='30m' AND date>=:start"
+            if ei:
+                del_sql += " AND date<=:end"
+                dp["end"] = ei
+            db.execute(text(del_sql), dp)
+            for part in _chunks(out):
+                db.execute(text("""
+                    INSERT INTO minute_kline_period (code, date, period, source, open, high, low, close, volume, amount)
+                    VALUES (:code, :date, :period, :source, :open, :high, :low, :close, :volume, :amount)
+                """), part)
             db.execute(text("""
-                INSERT INTO minute_kline_period (code, date, period, source, open, high, low, close, volume, amount)
-                VALUES (:code, :date, :period, :source, :open, :high, :low, :close, :volume, :amount)
-            """), part)
-        db.execute(text("""
-            INSERT INTO stock_calc_status (code, strategy_code, last_import_at, updated_at)
-            VALUES (:code, 'S2560', NOW(), NOW())
-            ON DUPLICATE KEY UPDATE last_import_at=VALUES(last_import_at), updated_at=NOW()
-        """), {"code": code})
-        db.commit()
-        return {"ok": True, "code": code, "rows": len(out)}
+                INSERT INTO stock_calc_status (code, strategy_code, last_import_at, updated_at)
+                VALUES (:code, 'S2560', NOW(), NOW())
+                ON DUPLICATE KEY UPDATE last_import_at=VALUES(last_import_at), updated_at=NOW()
+            """), {"code": code})
+            if batch_id is not None:
+                update_data_import_batch_progress(
+                    db,
+                    batch_id,
+                    success_delta=1,
+                    total_rows_delta=len(out),
+                )
+            db.commit()
+            return {"ok": True, "code": code, "rows": len(out)}
+    except Exception as exc:
+        if batch_id is not None:
+            with SessionLocal() as db:
+                update_data_import_batch_progress(
+                    db,
+                    batch_id,
+                    failed_delta=1,
+                    message=f"build_30m failed code={code}",
+                )
+        return {"ok": False, "code": code, "rows": 0, "error": str(exc)}
 
 
-def build_30m_parallel(start: Optional[str], end: Optional[str], market: str = "all", workers: int = 4, limit_codes: Optional[int] = None, dry_run: bool = False) -> dict:
+def build_30m_parallel(
+    start: Optional[str],
+    end: Optional[str],
+    market: str = "all",
+    workers: int = 4,
+    limit_codes: Optional[int] = None,
+    dry_run: bool = False,
+    batch_id: Optional[int] = None,
+    on_result: Optional[Callable[[dict, int, int], None]] = None,
+) -> dict:
     codes = get_codes(market, start, end, limit_codes)
     results = []
+    total_codes = len(codes)
+    completed = 0
     with ThreadPoolExecutor(max_workers=max(1, int(workers or 1))) as pool:
-        futs = [pool.submit(build_30m_for_code, code, start, end, dry_run) for code in codes]
+        futs = [pool.submit(build_30m_for_code, code, start, end, dry_run, batch_id) for code in codes]
         for fut in as_completed(futs):
-            results.append(fut.result())
+            try:
+                r = fut.result()
+            except Exception as exc:
+                r = {"ok": False, "code": None, "rows": 0, "error": str(exc)}
+            results.append(r)
+            completed += 1
+            if on_result:
+                on_result(r, completed, total_codes)
     return {
         "ok": all(r.get("ok") for r in results),
         "codes": len(codes),

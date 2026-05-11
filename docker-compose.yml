@@ -23,6 +23,7 @@ services:
     environment:
       - PYTHONPATH=/app
       - VIPDOC_ROOT=/data/vipdoc
+      - WEB_BASE_URL=http://web:8000
     volumes:
       - ./logs:/app/logs
       - ./sql:/app/sql

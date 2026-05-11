@@ -2,6 +2,9 @@
 (function(){
   function $(id){ return document.getElementById(id); }
   function all(sel, root=document){ return Array.from(root.querySelectorAll(sel)); }
+  let importWatchTimer = null;
+  let activeImportBatchId = null;
+  let activeImportProgressUrl = null;
 
   async function getJson(url){
     const r = await fetch(url);
@@ -94,7 +97,7 @@
         <div class="filters" style="gap:8px;flex-wrap:wrap">
           <label>
             导入目录
-            <input id="importSourceDir" type="text" value="/data/zd_ciccwm/vipdoc" style="min-width:320px" />
+            <input id="importSourceDir" type="text" value="/data/vipdoc" style="min-width:320px" title="Docker 部署默认挂载路径：/data/vipdoc" />
           </label>
 
           <label>
@@ -114,6 +117,7 @@
           <button id="refreshImportBtn">刷新导入记录</button>
         </div>
 
+        <pre id="importLiveStatus" class="json-box">暂无正在导入的批次</pre>
         <pre id="importActionResult" class="json-box">等待操作</pre>
       </div>
 
@@ -164,16 +168,21 @@
 
       table.innerHTML =
         '<thead><tr>' +
-        ['ID','类型','目录','市场','状态','文件数','成功','失败','记录数','开始时间','结束时间','信息']
+        ['ID','类型','目录','市场','状态','进度','文件数','成功','失败','记录数','开始时间','结束时间','信息']
           .map(c => `<th>${c}</th>`).join('') +
         '</tr></thead><tbody>' +
-        rows.map(r => `
+        rows.map(r => {
+          const done = Number(r.success_files || 0) + Number(r.failed_files || 0);
+          const total = Number(r.total_files || 0);
+          const progress = total ? `${done}/${total} (${((done * 100) / total).toFixed(1)}%)` : '-';
+          return `
           <tr>
             <td>${cell(r.id)}</td>
             <td>${cell(r.import_type)}</td>
             <td>${cell(r.source_dir)}</td>
             <td>${cell(r.market)}</td>
             <td>${cell(r.status)}</td>
+            <td>${progress}</td>
             <td>${cell(r.total_files)}</td>
             <td>${cell(r.success_files)}</td>
             <td>${cell(r.failed_files)}</td>
@@ -182,19 +191,21 @@
             <td>${cell(r.finished_at)}</td>
             <td>${cell(r.message)}</td>
           </tr>
-        `).join('') +
+        `;
+        }).join('') +
         '</tbody>';
     }catch(e){
       table.innerHTML = '<tbody><tr><td>导入批次接口未实现：GET /api/import/batches</td></tr></tbody>';
     }
   }
 
-  async function loadImportFiles(){
+  async function loadImportFiles(batchId){
     const table = $('importFileTable');
     if(!table) return;
 
     try{
-      const rows = await getJson('/api/import/files?limit=100');
+      const url = '/api/import/files?limit=100' + (batchId ? '&batch_id=' + encodeURIComponent(batchId) : '');
+      const rows = await getJson(url);
 
       if(!rows || !rows.length){
         table.innerHTML = '<tbody><tr><td>暂无导入文件明细</td></tr></tbody>';
@@ -223,6 +234,65 @@
     }catch(e){
       table.innerHTML = '<tbody><tr><td>导入文件接口未实现：GET /api/import/files</td></tr></tbody>';
     }
+  }
+
+  function renderLiveStatus(d, job){
+    const box = $('importLiveStatus');
+    if(!box) return;
+    if(!d){
+      box.textContent = '暂无正在导入的批次';
+      return;
+    }
+    const total = Number((job && job.total) || d.job_progress_total || d.total_files || 0);
+    const done = Number((job && job.done) || d.job_progress_current || d.done_files || 0);
+    const percentValue = (job && job.percent !== undefined) ? Number(job.percent) : Number(d.progress_percent || 0);
+    const percent = total ? percentValue.toFixed(2) + '%' : '-';
+    const status = (job && job.status) || d.job_status || d.status || '-';
+    box.textContent =
+      `当前批次：#${d.id}\n` +
+      `任务：#${d.job_id || (job && job.id) || '-'} ${d.progress_url || activeImportProgressUrl || ''}\n` +
+      `状态：${status}\n` +
+      `进度：${done}/${total} (${percent})\n` +
+      `成功：${(job && job.success_count) ?? d.job_success_count ?? d.success_files ?? 0}，失败：${(job && job.failed_count) ?? d.job_failed_count ?? d.failed_files ?? 0}，当前：${(job && job.current_code) || d.current_code || '-'}\n` +
+      `批次结果：成功 ${d.success_files || 0}，失败 ${d.failed_files || 0}，记录数 ${d.total_rows || 0}\n` +
+      `更新时间：${d.updated_at || '-'}`;
+  }
+
+  async function refreshImportWatch(batchId, progressUrl){
+    if(!batchId) return;
+    const d = await getJson('/api/import/batches/' + encodeURIComponent(batchId));
+    const url = progressUrl || (d && d.progress_url);
+    let job = null;
+    if(url){
+      job = await getJson(url);
+      activeImportProgressUrl = url;
+    }
+    renderLiveStatus(d, job);
+    await loadImportBatches();
+    await loadImportFiles(batchId);
+    const status = (job && job.status) || (d && d.job_status) || (d && d.status);
+    if(status && !['queued', 'pending', 'running'].includes(status)){
+      stopImportWatch();
+    }
+  }
+
+  function startImportWatch(batchOrId, progressUrl){
+    stopImportWatch();
+    const batchId = typeof batchOrId === 'object' ? batchOrId.import_batch_id : batchOrId;
+    activeImportProgressUrl = progressUrl || (typeof batchOrId === 'object' ? batchOrId.progress_url : null);
+    activeImportBatchId = batchId;
+    refreshImportWatch(batchId, activeImportProgressUrl).catch(() => {});
+    importWatchTimer = setInterval(function(){
+      refreshImportWatch(batchId, activeImportProgressUrl).catch(() => {});
+    }, 2000);
+  }
+
+  function stopImportWatch(){
+    if(importWatchTimer){
+      clearInterval(importWatchTimer);
+      importWatchTimer = null;
+    }
+    activeImportProgressUrl = null;
   }
 
   function bindButtons(){
@@ -256,8 +326,12 @@
         try{
           const data = await postJson('/api/import/run', {source_dir, market});
           $('importActionResult').textContent = JSON.stringify(data, null, 2);
-          await loadImportBatches();
-          await loadImportFiles();
+          if(data && data.import_batch_id){
+            startImportWatch(data);
+          }else{
+            await loadImportBatches();
+            await loadImportFiles();
+          }
         }catch(e){
           $('importActionResult').textContent =
             '导入接口未实现或调用失败：' + (e && e.message ? e.message : String(e)) +
@@ -271,7 +345,7 @@
       refreshBtn.dataset.bound = '1';
       refreshBtn.onclick = async function(){
         await loadImportBatches();
-        await loadImportFiles();
+        await loadImportFiles(activeImportBatchId);
       };
     }
 
@@ -284,7 +358,7 @@
     const refreshFilesBtn = $('refreshImportFilesBtn');
     if(refreshFilesBtn && !refreshFilesBtn.dataset.bound){
       refreshFilesBtn.dataset.bound = '1';
-      refreshFilesBtn.onclick = loadImportFiles;
+      refreshFilesBtn.onclick = function(){ loadImportFiles(activeImportBatchId); };
     }
   }
 

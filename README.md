@@ -13,6 +13,8 @@
 - Docker 编排：`docker-compose.yml`
 - 后台 worker：`scripts/job_worker.py`
 - 并行任务 runner：`scripts/progress_run_now.py`
+- 导入 job runner：`scripts/import_job_runner.py`
+- 30m job runner：`scripts/build_30m_job_runner.py`
 
 `docker-compose.yml` 是当前保留的唯一 Compose 文件；历史 `compose.yaml`、`Dockerfile.prod`、旧部署说明和补丁脚本已清理。
 
@@ -72,6 +74,26 @@ docker compose -f docker-compose.yml logs -f web
 - `worker`：后台任务 worker，执行 `scripts/job_worker.py`。
 - `./logs`：挂载到容器 `/app/logs`。
 - `./zd_ciccwm/vipdoc`：按当前 compose 文件挂载到 `/data/vipdoc:ro`。
+- `WEB_BASE_URL=http://web:8000`：worker 容器调用 web 容器的内部地址，用于 2560 后台执行。
+
+服务器 Docker 部署时，行情数据统一放在 compose 文件同级目录：
+
+```text
+zd_ciccwm/vipdoc/sh/lday
+zd_ciccwm/vipdoc/sh/fzline
+zd_ciccwm/vipdoc/sz/lday
+zd_ciccwm/vipdoc/sz/fzline
+```
+
+容器内固定通过 `/data/vipdoc` 访问。Web 和 worker 都读取 `VIPDOC_ROOT=/data/vipdoc`，不要在任务里使用本机路径，例如 `/mnt/e/...`。
+
+如果服务器上已经运行过旧版本 worker，部署新镜像后必须重建并重启 worker：
+
+```bash
+docker compose -f docker-compose.yml up -d --build --force-recreate web worker
+```
+
+同一个数据库不能同时跑旧 worker 和新 worker，否则旧 worker 可能会抢走 `job_queue` 里的新任务。
 
 ## 常用命令
 
@@ -105,6 +127,8 @@ scripts/
   run_2560_analysis.py     2560 分析 CLI
   job_worker.py            后台队列 worker
   progress_run_now.py      并行任务 runner
+  import_job_runner.py     导入后台执行器
+  build_30m_job_runner.py  30m 构建后台执行器
   import_vipdoc_with_pytdx.py
   build_30m_from_5m.py
   rebuild_technical_indicator.py

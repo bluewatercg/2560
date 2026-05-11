@@ -127,18 +127,10 @@
                                         <b>先做：</b>中金客户端完成日线和 5
                                         分钟数据下载。
                                     </li>
-                                    <li>
-                                        <b>导入：</b
-                                        ><code
-                                            >import_vipdoc_with_pytdx.py</code
-                                        >
-                                    </li>
-                                    <li>
-                                        <b>聚合：</b
-                                        ><code>build_30m_from_5m.py</code>
-                                    </li>
+                                    <li><b>导入：</b>数据导入页面入队，后台 worker 执行。</li>
+                                    <li><b>聚合：</b>30m 构建入队，按 job 进度刷新。</li>
                                 </ul>
-                                <div class="wf-tag">CLI / 每日数据更新</div>
+                                <div class="wf-tag">Job Queue / 盘后数据更新</div>
                             </div>
 
                             <div class="workflow-card green">

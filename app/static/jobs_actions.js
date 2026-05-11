@@ -33,7 +33,7 @@
     panel.innerHTML = `
       <div class="panel-head split">
         <h3>任务操作</h3>
-        <span class="probe-note">入队任务 / 立即执行并行脚本</span>
+        <span class="probe-note">入队任务 / 立即执行 2560 分析</span>
       </div>
 
       <div class="filters" style="margin-top:12px;gap:14px;flex-wrap:wrap;align-items:flex-end">
@@ -68,8 +68,8 @@
           入队执行
         </button>
 
-        <button id="runNowJobBtn" class="probe-btn danger" title="立即后台启动 daily_update_incremental_sharded.sh">
-          立即执行并行脚本
+        <button id="runNowJobBtn" class="probe-btn danger" title="立即后台启动 2560 并行分析任务">
+          立即执行 2560
         </button>
       </div>
 
@@ -96,9 +96,9 @@
     };
 
     $('runNowJobBtn').onclick = async function(){
-      if (!confirm('确认立即执行并行脚本？这会在后台启动 daily_update_incremental_sharded.sh')) return;
+      if (!confirm('确认立即执行 2560 并行分析？这会在后台创建 job_execution 并实时刷新进度。')) return;
 
-      $('jobActionResult').textContent = '正在启动后台脚本...';
+      $('jobActionResult').textContent = '正在启动 2560 分析...';
       try {
         const data = await postJson('/api/jobs/run-now', {
           market: $('jobMarket').value,
