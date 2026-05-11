@@ -31,6 +31,8 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     command: ["python", "scripts/job_worker.py"]
+    healthcheck:
+      disable: true
     restart: unless-stopped
     depends_on:
       - web
