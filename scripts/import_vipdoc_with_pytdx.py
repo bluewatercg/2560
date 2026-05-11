@@ -15,6 +15,7 @@ Vipdoc 行情导入工具。
 from __future__ import annotations
 
 import argparse
+import struct
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -148,13 +149,45 @@ def scan_vipdoc_files(source_dir: str, market: str = "sh", import_type: str = "a
 
 
 def _read_daily(path: Path) -> pd.DataFrame:
-    if TdxDailyBarReader is None:
+    if path.name.lower().startswith("sh68"):
+        df = _read_daily_binary(path)
+    elif TdxDailyBarReader is None:
         raise RuntimeError("pytdx is not installed or TdxDailyBarReader unavailable")
-    reader = TdxDailyBarReader()
-    df = reader.get_df(str(path))
+    else:
+        reader = TdxDailyBarReader()
+        try:
+            df = reader.get_df(str(path))
+        except NotImplementedError:
+            df = _read_daily_binary(path)
     if df is None:
         return pd.DataFrame()
     return df.reset_index() if not isinstance(df.index, pd.RangeIndex) else df.copy()
+
+
+def _read_daily_binary(path: Path) -> pd.DataFrame:
+    rows = []
+    record_size = 32
+    with path.open("rb") as f:
+        content = f.read()
+    for offset in range(0, len(content) - record_size + 1, record_size):
+        date_i, open_i, high_i, low_i, close_i, amount, volume_i, _reserved = struct.unpack(
+            "<IIIIIfII",
+            content[offset:offset + record_size],
+        )
+        rows.append({
+            "date": pd.to_datetime(str(date_i), format="%Y%m%d"),
+            "open": open_i * 0.01,
+            "high": high_i * 0.01,
+            "low": low_i * 0.01,
+            "close": close_i * 0.01,
+            "amount": float(amount),
+            "volume": volume_i * 0.01,
+        })
+    if not rows:
+        return pd.DataFrame(columns=["open", "high", "low", "close", "amount", "volume"])
+    df = pd.DataFrame(rows)
+    df.index = pd.to_datetime(df["date"])
+    return df[["open", "high", "low", "close", "amount", "volume"]]
 
 
 def _read_lc5(path: Path) -> pd.DataFrame:
