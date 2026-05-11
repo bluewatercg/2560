@@ -5,16 +5,10 @@
 ## Tech Debt
 
 **Schema management split across runtime endpoints, scripts, and missing SQL files:**
-- Issue: Runtime API handlers create operational tables directly with `CREATE TABLE IF NOT EXISTS`, while the standalone schema applicator expects a missing SQL file. The production Dockerfile also copies a missing `sql/` directory.
-- Files: `app/api/jobs.py`, `app/api/import_data.py`, `scripts/apply_schema.py`, `Dockerfile.prod`
-- Impact: Fresh environments can start with incomplete schemas, app-created schemas can drift from production expectations, and `Dockerfile.prod` fails when the build context has no `sql/` directory.
+- Issue: Runtime API handlers create operational tables directly with `CREATE TABLE IF NOT EXISTS`, while the standalone schema applicator expects a missing SQL file.
+- Files: `app/api/jobs.py`, `app/api/import_data.py`, `scripts/apply_schema.py`
+- Impact: Fresh environments can start with incomplete schemas, and app-created schemas can drift from production expectations until a committed migration path exists.
 - Fix approach: Add a committed migration/schema directory, move all table definitions into versioned migrations, make `scripts/apply_schema.py` apply those migrations, and remove runtime DDL from request paths.
-
-**Patch scripts are committed beside canonical source:**
-- Issue: Many `scripts/apply_*_patch.py` files rewrite application files after the fact instead of representing active behavior as normal source changes.
-- Files: `scripts/apply_cancel_market_patch.py`, `scripts/apply_final_reorg_patch.py`, `scripts/apply_data_import_page_patch.py`, `scripts/apply_nested_menu_reorg_patch.py`, `scripts/apply_job_progress_monitor_patch.py`, `scripts/apply_import_backend_full_patch.py`, `scripts/apply_2568_backend_patch.py`
-- Impact: Future changes are hard to reason about because the repo contains both canonical files and historical patch mechanisms. Patch scripts can also reintroduce stale behavior if rerun.
-- Fix approach: Archive or remove one-off patch scripts after confirming their effects are already present in `app/`; keep repeatable migrations or code generators only when they are part of the supported workflow.
 
 **Frontend is assembled from multiple bootstrap scripts with polling installers:**
 - Issue: `app/static/index.html` loads the main app plus several scripts that inject or patch UI sections at runtime; many use `setInterval` to keep reapplying boot logic.
@@ -24,7 +18,7 @@
 
 **Duplicate FastAPI application definitions:**
 - Issue: `app/main.py` defines the full application while `app/__init__.py` defines a second app with only a subset of routers.
-- Files: `app/main.py`, `app/__init__.py`, `Dockerfile`, `Dockerfile.prod`
+- Files: `app/main.py`, `app/__init__.py`, `Dockerfile`
 - Impact: Starting the wrong module exposes a different API surface, which can make deployment and local debugging disagree.
 - Fix approach: Keep only `app/main.py` as the application entry point; make `app/__init__.py` package metadata only, or import `app.main.app` explicitly without constructing another app.
 
@@ -48,15 +42,9 @@
 - Trigger: Call `POST /api/jobs/run-now` after `_ensure_tables()` creates `job_execution` from the in-code schema.
 - Workaround: Manually add `pid` to `job_execution`, or remove the `pid` update until a migration adds the column.
 
-**Production Dockerfile references a missing `sql/` directory:**
-- Symptoms: Building `Dockerfile.prod` fails at `COPY sql/ ./sql/` because no `sql/` directory is present in the repository.
-- Files: `Dockerfile.prod`, `scripts/apply_schema.py`
-- Trigger: Build the production image from the repo root.
-- Workaround: Use `Dockerfile` instead of `Dockerfile.prod`, or add the expected `sql/2560_schema_v2.4.sql` and directory.
-
 **Queued jobs and immediate jobs use different execution models:**
 - Symptoms: `POST /api/jobs/enqueue` creates `job_queue` rows, but `scripts/job_worker.py` runs a legacy shell script when present and does not create or link a `job_execution` row for queue-driven progress tracking.
-- Files: `app/api/jobs.py`, `scripts/job_worker.py`, `scripts/progress_run_now.py`, `scripts/daily_update_incremental_sharded.sh`
+- Files: `app/api/jobs.py`, `scripts/job_worker.py`, `scripts/progress_run_now.py`
 - Trigger: Enqueue a job and run `scripts/job_worker.py` with the legacy script present.
 - Workaround: Use `POST /api/jobs/run-now` for tracked executions, or update `scripts/job_worker.py` to create `job_execution` rows and pass `JOB_ID` into `scripts/progress_run_now.py`.
 
@@ -197,22 +185,22 @@
 - Files: `requirements.txt`, `scripts/import_vipdoc_with_pytdx.py`, `app/api/import_data.py`
 
 **Unpinned system-level runtime behavior in Docker images:**
-- Risk: Dockerfiles install latest `pip` and use different Python base versions (`python:3.11-slim` and `python:3.12-slim`) while the same dependency pins are used.
-- Impact: Container behavior can differ between development and production images, especially for pandas/numpy wheels and Python minor-version compatibility.
+- Risk: The Docker image installs latest `pip`, while local development may use a different Python minor version from the container.
+- Impact: Container behavior can differ from the local virtual environment, especially for pandas/numpy wheels and Python minor-version compatibility.
 - Migration plan: Pick one Python minor version, pin image digests for production, and run build/test checks for that image.
-- Files: `Dockerfile`, `Dockerfile.prod`, `requirements.txt`
+- Files: `Dockerfile`, `requirements.txt`
 
 ## Missing Critical Features
 
 **Automated test suite:**
 - Problem: No `pytest`, unittest, browser, or API test suite is detected; only `app/api/latest.py` has `test` in its filename by substring.
 - Blocks: Safe changes to strategy rules, SQL generation, job lifecycle, imports, and frontend rendering.
-- Files: `app/`, `scripts/`, `requirements.txt`, `requirements.backend.txt`
+- Files: `app/`, `scripts/`, `requirements.txt`
 
 **Database migrations:**
 - Problem: There is no detected migration framework or committed SQL schema directory, while runtime code depends on many MySQL tables.
 - Blocks: Reliable fresh installs, production upgrades, and reproducible CI setup.
-- Files: `app/api/jobs.py`, `app/api/import_data.py`, `scripts/apply_schema.py`, `Dockerfile.prod`
+- Files: `app/api/jobs.py`, `app/api/import_data.py`, `scripts/apply_schema.py`
 
 **Authentication and role separation:**
 - Problem: Read, write, import, run-job, and log APIs are all exposed without route-level authorization.
@@ -220,9 +208,9 @@
 - Files: `app/main.py`, `app/api/jobs.py`, `app/api/import_data.py`, `app/api/strategy2560.py`, `app/api/strategy2568.py`
 
 **Job cancellation and cooperative shutdown:**
-- Problem: Patch scripts describe cancellation behavior, but the active API has no cancel endpoint and `scripts/progress_run_now.py` does not check a cancellation flag while batches are running.
+- Problem: The active API has no cancel endpoint and `scripts/progress_run_now.py` does not check a cancellation flag while batches are running.
 - Blocks: Operators cannot reliably stop long-running full-market jobs from the UI/API.
-- Files: `app/api/jobs.py`, `scripts/progress_run_now.py`, `scripts/apply_cancel_market_patch.py`, `app/static/job_progress_monitor.js`
+- Files: `app/api/jobs.py`, `scripts/progress_run_now.py`, `app/static/job_progress_monitor.js`
 
 ## Test Coverage Gaps
 

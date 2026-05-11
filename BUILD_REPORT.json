@@ -1,8 +1,0 @@
-{
-  "project": "strategy2560_project_complete",
-  "compile_status": "success",
-  "compile_errors": [],
-  "python_files": 22,
-  "entry": "http://localhost:8000",
-  "note": "No real DB password is stored. Configure .env locally."
-}

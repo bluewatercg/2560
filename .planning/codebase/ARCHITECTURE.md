@@ -21,7 +21,7 @@
 - Location: `app/main.py`
 - Contains: `FastAPI(...)`, `app.include_router(...)`, `StaticFiles`, `/health`, `/` HTML response.
 - Depends on: `app/api/strategy2560.py`, `app/api/strategy2568.py`, `app/api/strategy2568_report.py`, `app/api/data_quality.py`, `app/api/latest.py`, `app/api/jobs.py`, `app/api/import_data.py`, `app/db/session.py`.
-- Used by: `Dockerfile`, `Dockerfile.prod`, `README.md`, and runtime command `uvicorn app.main:app`.
+- Used by: `Dockerfile`, `docker-compose.yml`, `README.md`, and runtime command `uvicorn app.main:app`.
 
 **API Router Layer:**
 - Purpose: Define HTTP endpoints, parse request/query models, normalize input, and delegate to services or scripts.
@@ -70,11 +70,11 @@
 - Location: `scripts/`
 - Contains: schema runner `scripts/apply_schema.py`, 2560 runner `scripts/run_2560_analysis.py`, indicator rebuild `scripts/rebuild_technical_indicator.py`, statistics rebuild `scripts/rebuild_statistics.py`, vipdoc import `scripts/import_vipdoc_with_pytdx.py`, 5m-to-30m aggregation `scripts/build_30m_from_5m.py`, recent fill `scripts/fill_recent_with_pytdx_hq.py`, background workers `scripts/job_worker.py` and `scripts/progress_run_now.py`.
 - Depends on: `app/db/session.py`, `app/services/*.py`, SQLAlchemy, pandas, requests, pytdx.
-- Used by: CLI operators, `app/api/jobs.py`, `app/api/import_data.py`, Docker worker service in `compose.yaml` and `docker-compose.yml`.
+- Used by: CLI operators, `app/api/jobs.py`, `app/api/import_data.py`, and the Docker worker service in `docker-compose.yml`.
 
 **Deployment Layer:**
 - Purpose: Package and run the web and worker processes.
-- Location: `Dockerfile`, `Dockerfile.prod`, `compose.yaml`, `docker-compose.yml`, `.github/workflows/build-docker-image.yml`.
+- Location: `Dockerfile`, `docker-compose.yml`, `.github/workflows/build-docker-image.yml`.
 - Contains: Python slim images, `uvicorn app.main:app`, logs and sql volume mounts, worker command `python scripts/job_worker.py`, Docker image build workflow.
 - Depends on: `requirements.txt`, `.env` file existence, `app/`, `scripts/`, optional `sql/` directory.
 - Used by: local and server deployment workflows.
@@ -173,7 +173,7 @@
 
 **ASGI Web Application:**
 - Location: `app/main.py`
-- Triggers: `uvicorn app.main:app --host 0.0.0.0 --port 8000` from `Dockerfile`, `Dockerfile.prod`, and `README.md`.
+- Triggers: `uvicorn app.main:app --host 0.0.0.0 --port 8000` from `Dockerfile`, `docker-compose.yml`, and `README.md`.
 - Responsibilities: Serve API routes, static files, `/health`, and `app/static/index.html`.
 
 **Alternate Package App Object:**
@@ -208,7 +208,7 @@
 
 **Job Worker:**
 - Location: `scripts/job_worker.py`
-- Triggers: Docker worker command in `compose.yaml` and `docker-compose.yml`.
+- Triggers: Docker worker command in `docker-compose.yml`.
 - Responsibilities: Poll `job_queue` and run batch work.
 
 **Progress Runner:**
@@ -240,7 +240,7 @@
 
 **Validation:** HTTP payloads use Pydantic models in router files such as `RunAnalysisRequest` in `app/api/strategy2560.py`, `EnqueueJobRequest` and `RunNowRequest` in `app/api/jobs.py`, and import request models in `app/api/import_data.py`. Query bounds use FastAPI `Query(...)`.
 
-**Authentication:** Not detected in `app/main.py`, `app/api/*.py`, `app/static/*.js`, `compose.yaml`, or `docker-compose.yml`. API and WebUI routes are unauthenticated.
+**Authentication:** Not detected in `app/main.py`, `app/api/*.py`, `app/static/*.js`, or `docker-compose.yml`. API and WebUI routes are unauthenticated.
 
 **Database Transactions:** Request handlers receive `Session` from `app/db/session.py`; service methods and routers call `commit()` and `rollback()` manually. `scripts/*.py` use either `SessionLocal()` or SQLAlchemy engine transaction contexts.
 

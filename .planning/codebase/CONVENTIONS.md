@@ -9,7 +9,7 @@
 - Use domain suffixes for service modules: `app/services/indicator_engine.py`, `app/services/statistics_engine.py`, `app/services/config_service.py`.
 - Use API route modules by feature area: `app/api/jobs.py`, `app/api/import_data.py`, `app/api/data_quality.py`, `app/api/strategy2568_report.py`.
 - Use plain browser asset names for WebUI code in `app/static/`: `app/static/app.js`, `app/static/job_progress_monitor.js`, `app/static/styles.css`.
-- Patch and migration helper scripts live in `scripts/` with `apply_*_patch.py` names: `scripts/apply_nested_menu_reorg_patch.py`, `scripts/apply_import_backend_full_patch.py`.
+- Keep operational helper scripts verb-first and descriptive: `scripts/run_2560_analysis.py`, `scripts/rebuild_technical_indicator.py`, `scripts/import_vipdoc_with_pytdx.py`.
 
 **Functions:**
 - Use snake_case for Python functions and methods: `normalize_code()` in `app/api/strategy2560.py`, `get_db()` in `app/db/session.py`, `enrich_indicators()` in `app/services/indicator_engine.py`.
@@ -87,7 +87,7 @@
 ## Comments
 
 **When to Comment:**
-- Use comments/docstrings for operational scripts, Chinese domain explanations, and non-obvious data maintenance workflows: `scripts/rebuild_technical_indicator.py`, `scripts/run_2560_analysis.py`, and `README_2560_DAILY_OPS.md`.
+- Use comments/docstrings for operational scripts, Chinese domain explanations, and non-obvious data maintenance workflows: `scripts/rebuild_technical_indicator.py`, `scripts/run_2560_analysis.py`, and `README.md`.
 - Keep API route code mostly self-explanatory; add comments only when the endpoint has non-obvious operational behavior such as shard progress in `app/api/jobs.py`.
 - Use inline comments sparingly in static JavaScript; `app/static/app.js` is primarily readable function names and DOM operations without comments.
 

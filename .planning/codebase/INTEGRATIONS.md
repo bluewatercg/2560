@@ -68,7 +68,7 @@
 - None detected.
 
 **Logs:**
-- Container health is checked through `/health` in `Dockerfile`, `Dockerfile.prod`, and `compose.yaml`.
+- Container health is checked through `/health` in `Dockerfile` and `docker-compose.yml`.
 - Worker and run-now logs are written to local files under `logs/` in `scripts/job_worker.py` and `app/api/jobs.py`.
 - Job progress and log tailing are exposed by `/api/jobs/executions/{job_id}/progress`, `/api/jobs/executions/{job_id}/shards`, and `/api/jobs/executions/{job_id}/logs` in `app/api/jobs.py`.
 - Docker Compose exposes service logs through Docker logging; no structured log framework is configured.
@@ -76,7 +76,7 @@
 ## CI/CD & Deployment
 
 **Hosting:**
-- Docker Compose is the primary deployment path in `compose.yaml`, `docker-compose.yml`, and `README_DOCKER_DEPLOY.md`.
+- Docker Compose is the primary deployment path in `docker-compose.yml` and `README.md`.
 - `web` runs Uvicorn/FastAPI; `worker` runs `python scripts/job_worker.py`.
 - Production database hosting is external to the Compose stack; docs recommend a separately deployed MySQL service.
 
@@ -101,7 +101,7 @@
 **Secrets location:**
 - `.env` file present at repository root; contents were not read.
 - `.env.example` file present at repository root; contents were not read.
-- Compose services load `.env` through `env_file` in `compose.yaml` and `docker-compose.yml`.
+- Compose services load `.env` through `env_file` in `docker-compose.yml`.
 - `.dockerignore` excludes `.env` from Docker build context.
 
 ## Webhooks & Callbacks

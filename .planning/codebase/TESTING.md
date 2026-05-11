@@ -8,7 +8,7 @@
 - Not detected. No `pytest`, `unittest`, `nose`, `vitest`, `jest`, or Playwright test configuration is present in the repository.
 - No `jest.config.*`, `vitest.config.*`, `pytest.ini`, `tox.ini`, `setup.cfg`, or `pyproject.toml` file is present.
 - No test files matching `*.test.*`, `*.spec.*`, or `*_test.go` are present.
-- Dependencies in `requirements.txt` and `requirements.backend.txt` do not include pytest or coverage tooling.
+- Dependencies in `requirements.txt` do not include pytest or coverage tooling.
 
 **Assertion Library:**
 - Not detected.
@@ -186,7 +186,7 @@ bash scripts/start_webui.sh
 ```
 
 - These commands are documented in `README.md` and `scripts/start_webui.sh`.
-- Daily operational checks are documented in `README_2560_DAILY_OPS.md` and use `scripts/import_vipdoc_with_pytdx.py`, `scripts/build_30m_from_5m.py`, `scripts/rebuild_technical_indicator.py`, and `scripts/run_2560_analysis.py`.
+- Daily operational checks are documented in `README.md` and use `scripts/import_vipdoc_with_pytdx.py`, `scripts/build_30m_from_5m.py`, `scripts/rebuild_technical_indicator.py`, and `scripts/run_2560_analysis.py`.
 - Treat these as smoke checks only; they depend on configured database credentials, local market data paths, and environment variables from `.env`.
 
 ---

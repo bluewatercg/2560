@@ -5,7 +5,7 @@
 ## Languages
 
 **Primary:**
-- Python 3.11/3.12 - FastAPI backend, analysis engines, import workers, operational scripts in `app/` and `scripts/`. `Dockerfile` uses `python:3.11-slim`; `Dockerfile.prod` and the local `.venv/bin/python` are Python 3.12.3.
+- Python 3.11/3.12 - FastAPI backend, analysis engines, import workers, operational scripts in `app/` and `scripts/`. `Dockerfile` uses `python:3.11-slim`; the local `.venv/bin/python` may be a newer 3.12 build.
 
 **Secondary:**
 - JavaScript - Browser-side WebUI modules in `app/static/*.js`; no bundler or Node package manifest detected.
@@ -17,12 +17,12 @@
 
 **Environment:**
 - CPython 3.11 in `Dockerfile` for the main image.
-- CPython 3.12 in `Dockerfile.prod` and local `.venv/bin/python`.
-- Uvicorn serves `app.main:app` on port 8000 from `Dockerfile`, `Dockerfile.prod`, and `scripts/start_webui.sh`.
-- Docker Compose defines separate `web` and `worker` services in `compose.yaml` and `docker-compose.yml`.
+- CPython 3.12 in the local `.venv/bin/python` environment.
+- Uvicorn serves `app.main:app` on port 8000 from `Dockerfile`, `docker-compose.yml`, and `scripts/start_webui.sh`.
+- Docker Compose defines separate `web` and `worker` services in `docker-compose.yml`.
 
 **Package Manager:**
-- pip via `requirements.txt` and `requirements.backend.txt`.
+- pip via `requirements.txt`.
 - Lockfile: missing. Dependencies are pinned in requirements files but there is no generated lockfile.
 
 ## Frameworks
@@ -38,9 +38,9 @@
 - Not detected. No pytest, unittest, coverage, or test config files were found at repository root.
 
 **Build/Dev:**
-- Uvicorn 0.30.1 - ASGI development/production server in `Dockerfile`, `Dockerfile.prod`, and `scripts/start_webui.sh`.
-- Docker - Image build configured by `Dockerfile`, `Dockerfile.prod`, and `.dockerignore`.
-- Docker Compose - Service orchestration in `compose.yaml` and `docker-compose.yml`.
+- Uvicorn 0.30.1 - ASGI development/production server in `Dockerfile`, `docker-compose.yml`, and `scripts/start_webui.sh`.
+- Docker - Image build configured by `Dockerfile` and `.dockerignore`.
+- Docker Compose - Service orchestration in `docker-compose.yml`.
 - GitHub Actions - Docker image build and artifact upload in `.github/workflows/build-docker-image.yml`.
 - Bash - Local operational wrappers in `scripts/*.sh`.
 
@@ -74,8 +74,6 @@
 
 **Build:**
 - `Dockerfile` builds from `python:3.11-slim`, installs `requirements.txt`, copies `app/` and `scripts/`, exposes 8000, and runs Uvicorn.
-- `Dockerfile.prod` builds from `python:3.12-slim`, installs `requirements.txt`, copies `app/`, `scripts/`, and `sql/`, exposes 8000, and runs Uvicorn.
-- `compose.yaml` builds the local image and runs `web` plus `worker`.
 - `docker-compose.yml` references `strategy2560:latest` for `web` plus `worker` and mounts `./zd_ciccwm/vipdoc` read-only into `/data/vipdoc`.
 - `.dockerignore` excludes `.venv/`, `.git/`, `logs/`, `.env`, archives, Node/build outputs, and editor folders.
 - `.github/workflows/build-docker-image.yml` builds `strategy2560` Docker images on pushes to `main` and `feature/v8-job-queue-ui`, saves a gzipped Docker image tarball, and uploads it as a workflow artifact.
@@ -90,11 +88,11 @@
 - Uvicorn WebUI runs at `http://localhost:8000` and docs at `/docs` per `README.md`.
 
 **Production:**
-- Docker or Docker Compose deployment is documented in `README_DOCKER_DEPLOY.md`.
+- Docker or Docker Compose deployment is documented in `README.md`.
 - `web` service serves FastAPI/WebUI; `worker` service runs `scripts/job_worker.py`.
 - MySQL is expected to be external or host-provided; Compose uses `.env` and `host.docker.internal` support.
 - Local filesystem volumes are used for `logs/`, optional `sql/`, and optional read-only market-data mounts.
-- Host cron is the documented scheduling mechanism in `README_DOCKER_DEPLOY.md`; no in-container cron service is configured.
+- Host cron or an external scheduler can trigger the operational scripts; no in-container cron service is configured.
 
 ---
 
