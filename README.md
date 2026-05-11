@@ -101,11 +101,11 @@ docker compose -f docker-compose.yml up -d --build --force-recreate web worker
 # 测试数据库连接
 PYTHONPATH=$PWD python -c "from app.db.session import ping_database; print(ping_database())"
 
-# 手动运行少量 2560 分析
-PYTHONPATH=$PWD python scripts/run_2560_analysis.py --limit 20
+# 后台 worker 正式执行 2560 队列任务
+PYTHONPATH=$PWD python scripts/job_worker.py
 
-# 指定股票代码
-PYTHONPATH=$PWD python scripts/run_2560_analysis.py --codes 000001,600000
+# 本地小批量验证 2560 runner（需要先有 job_execution.id）
+JOB_ID=1 MARKET=sh60 LIMIT_CODES=20 PYTHONPATH=$PWD python scripts/progress_run_now.py
 
 # 启动 WebUI
 bash scripts/start_webui.sh
@@ -124,9 +124,9 @@ app/
   static/                  原生 HTML/CSS/JS WebUI
 
 scripts/
-  run_2560_analysis.py     2560 分析 CLI
   job_worker.py            后台队列 worker
-  progress_run_now.py      并行任务 runner
+  progress_run_now.py      2560 队列并行 runner
+  run_2560_analysis.py     旧手动 CLI；正式任务不要用它绕过队列
   import_job_runner.py     导入后台执行器
   build_30m_job_runner.py  30m 构建后台执行器
   import_vipdoc_with_pytdx.py
