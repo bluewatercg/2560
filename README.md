@@ -87,6 +87,29 @@ zd_ciccwm/vipdoc/sz/fzline
 
 容器内固定通过 `/data/vipdoc` 访问。Web 和 worker 都读取 `VIPDOC_ROOT=/data/vipdoc`，不要在任务里使用本机路径，例如 `/mnt/e/...`。
 
+## 盘后行情同步
+
+盘后数据来源以 Windows 中金客户端为准：
+
+1. 在 Windows 中金客户端执行盘后数据下载，落盘到 `E:\zd_ciccwm\vipdoc`。
+2. 将本地 vipdoc 同步到 18 服务器：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\sync_vipdoc_to_server.ps1
+```
+
+WSL/Git Bash 下也可以直接运行：
+
+```bash
+bash scripts/sync_vipdoc_to_server.sh /mnt/e/zd_ciccwm/vipdoc user@192.168.1.18:/data1/2560/zd_ciccwm/vipdoc
+```
+
+3. 在 WebUI 的“数据导入”页面先点“扫描导入目录”，确认“源文件数据范围”已经到目标交易日。
+4. 将开始日期和结束日期都设为目标交易日，分别导入 `lday` 和 `5m`。
+5. 导入完成后构建 30m、重算指标，再跑 2560。
+
+页面里的“源文件数据范围”表示服务器 `/data/vipdoc` 里文件本身的日期；“导入批次”的“数据范围”表示已经写入数据库后的日期。两者不一致时，说明上传或导入某一环节还没完成。
+
 如果服务器上已经运行过旧版本 worker，部署新镜像后必须重建并重启 worker：
 
 ```bash

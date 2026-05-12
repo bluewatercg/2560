@@ -86,6 +86,8 @@
       help.id = 'importTypeHelp';
       help.style.cssText = 'margin-top:10px;color:#64748b;font-size:13px;line-height:1.7';
       help.innerHTML = `
+        <div><b>盘后前置</b>：先用 Windows 中金客户端下载到 <code>E:\\zd_ciccwm\\vipdoc</code>，再运行 <code>scripts/sync_vipdoc_to_server.ps1</code> 上传到 18 服务器。</div>
+        <div><b>检查日期</b>：点“扫描导入目录”，确认“源文件数据范围”已到目标交易日；导入批次里的“数据范围”表示数据库已导入到哪天。</div>
         <div><b>步骤 1</b>：导入 <code>lday</code> 到 <code>daily_kline</code></div>
         <div><b>步骤 2</b>：导入 <code>fzline/*.lc5</code> 到 <code>minute_kline_period(period='5m')</code></div>
         <div><b>步骤 3</b>：从 <code>5m</code> 聚合生成 <code>period='30m'</code></div>
