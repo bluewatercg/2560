@@ -119,7 +119,7 @@
 
       table.innerHTML =
         '<thead><tr>' +
-        ['ID','类型','目录','市场','状态','进度','文件数','成功','失败','记录数','开始时间','结束时间','信息']
+        ['ID','类型','目录','市场','状态','并发','进度','文件数','成功','失败','记录数','开始时间','结束时间','信息']
           .map(c => `<th>${c}</th>`).join('') +
         '</tr></thead><tbody>' +
         rows.map(r => {
@@ -133,6 +133,7 @@
             <td>${r.source_dir ?? '-'}</td>
             <td>${r.market ?? '-'}</td>
             <td>${r.status ?? '-'}</td>
+            <td>${r.workers ?? '-'}</td>
             <td>${progress}</td>
             <td>${r.total_files ?? '-'}</td>
             <td>${r.success_files ?? '-'}</td>
@@ -194,10 +195,13 @@
     const percentValue = (job && job.percent !== undefined) ? Number(job.percent) : Number(d.progress_percent || 0);
     const percent = total ? percentValue.toFixed(2) + '%' : '-';
     const status = (job && job.status) || d.job_status || d.status || '-';
+    const workers = (job && job.shards) || d.workers || '-';
+    const runningFiles = d.running_files ?? '-';
     box.textContent =
       `当前批次：#${d.id}\n` +
       `任务：#${d.job_id || (job && job.id) || '-'} ${d.progress_url || activeImportProgressUrl || ''}\n` +
       `状态：${status}\n` +
+      `并发：${workers}，运行中文件：${runningFiles}\n` +
       `进度：${done}/${total} (${percent})\n` +
       `成功：${(job && job.success_count) ?? d.job_success_count ?? d.success_files ?? 0}，失败：${(job && job.failed_count) ?? d.job_failed_count ?? d.failed_files ?? 0}，当前：${(job && job.current_code) || d.current_code || '-'}\n` +
       `批次结果：成功 ${d.success_files || 0}，失败 ${d.failed_files || 0}，记录数 ${d.total_rows || 0}\n` +
