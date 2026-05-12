@@ -122,6 +122,38 @@ def _scan_dirs(root: Path, market: str, import_type: str) -> list[Path]:
     return [d for d in dirs if d.exists() and d.is_dir()]
 
 
+def _day_file_edge_dates(path: Path) -> tuple[int | None, int | None]:
+    record_size = 32
+    size = path.stat().st_size
+    if size < record_size:
+        return None, None
+    with path.open("rb") as f:
+        first = f.read(record_size)
+        f.seek(size - record_size)
+        last = f.read(record_size)
+    return struct.unpack("<I", first[:4])[0], struct.unpack("<I", last[:4])[0]
+
+
+def _scan_file_data_range(files: list[Path]) -> dict:
+    starts: list[int] = []
+    ends: list[int] = []
+    for p in files:
+        if p.suffix.lower() != ".day":
+            continue
+        start, end = _day_file_edge_dates(p)
+        if start:
+            starts.append(start)
+        if end:
+            ends.append(end)
+    data_start = min(starts) if starts else None
+    data_end = max(ends) if ends else None
+    return {
+        "file_data_start": data_start,
+        "file_data_end": data_end,
+        "file_data_range": f"{data_start} - {data_end}" if data_start and data_end else None,
+    }
+
+
 def scan_vipdoc_files(source_dir: str, market: str = "sh", import_type: str = "all") -> dict:
     root = Path(source_dir)
     scan_dirs = _scan_dirs(root, market, import_type) if root.exists() else []
@@ -138,6 +170,7 @@ def scan_vipdoc_files(source_dir: str, market: str = "sh", import_type: str = "a
             if p.is_file() and _file_match(p, market):
                 files.append(p)
     files = sorted(set(files), key=lambda x: str(x))
+    data_range = _scan_file_data_range(files)
     return {
         "source_dir": str(root),
         "market": market,
@@ -145,6 +178,7 @@ def scan_vipdoc_files(source_dir: str, market: str = "sh", import_type: str = "a
         "scan_dirs": [str(x) for x in scan_dirs],
         "total_files": len(files),
         "files": [str(x) for x in files],
+        **data_range,
     }
 
 

@@ -311,7 +311,11 @@
 
         try{
           const data = await postJson('/api/import/scan', {source_dir, market});
-          $('importActionResult').textContent = JSON.stringify(data, null, 2);
+          const summary =
+            `源文件数据范围：${data.file_data_range || '-'}\n` +
+            `文件数：${data.total_files || 0}\n` +
+            `扫描目录：${(data.scan_dirs || []).join(', ') || '-'}\n\n`;
+          $('importActionResult').textContent = summary + JSON.stringify(data, null, 2);
         }catch(e){
           $('importActionResult').textContent =
             '扫描接口未实现或调用失败：' + (e && e.message ? e.message : String(e)) +

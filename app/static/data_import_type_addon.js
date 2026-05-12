@@ -260,7 +260,13 @@
         if(out) out.textContent = '正在扫描...';
         try{
           const data = await postJson('/api/import/scan', p);
-          if(out) out.textContent = JSON.stringify(data, null, 2);
+          if(out){
+            const summary =
+              `源文件数据范围：${data.file_data_range || '-'}\n` +
+              `文件数：${data.total_files || 0}\n` +
+              `扫描目录：${(data.scan_dirs || []).join(', ') || '-'}\n\n`;
+            out.textContent = summary + JSON.stringify(data, null, 2);
+          }
         }catch(e){
           if(out) out.textContent = '扫描失败：' + (e && e.message ? e.message : String(e));
         }

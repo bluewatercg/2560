@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import sys
+import struct
+import tempfile
 import unittest
+from pathlib import Path
 
 from app.api import jobs
 from app.api.import_data import _merge_job_progress, _merge_data_range
 from app.services.job_orchestrator import ensure_job_tables
 from scripts import job_worker
+from scripts.import_vipdoc_with_pytdx import scan_vipdoc_files
 
 
 class JobOrchestrationTests(unittest.TestCase):
@@ -48,6 +52,21 @@ class JobOrchestrationTests(unittest.TestCase):
         self.assertEqual(merged["data_start"], 20260501)
         self.assertEqual(merged["data_end"], 20260511)
         self.assertEqual(merged["data_range"], "20260501 - 20260511")
+
+    def test_scan_vipdoc_files_reports_day_file_date_range(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            lday = Path(tmp) / "sh" / "lday"
+            lday.mkdir(parents=True)
+            with (lday / "sh688001.day").open("wb") as f:
+                for date in (20260508, 20260511):
+                    f.write(struct.pack("<IIIIIfII", date, 100, 110, 90, 105, 1000.0, 200, 0))
+
+            scan = scan_vipdoc_files(tmp, "sh68", "lday")
+
+        self.assertEqual(scan["total_files"], 1)
+        self.assertEqual(scan["file_data_start"], 20260508)
+        self.assertEqual(scan["file_data_end"], 20260511)
+        self.assertEqual(scan["file_data_range"], "20260508 - 20260511")
 
     def test_worker_builds_import_runner_command(self):
         payload = {

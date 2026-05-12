@@ -275,6 +275,9 @@ def scan_import(payload: ImportScanRequest):
         "import_type": data["import_type"],
         "scan_dirs": data["scan_dirs"],
         "total_files": data["total_files"],
+        "file_data_start": data.get("file_data_start"),
+        "file_data_end": data.get("file_data_end"),
+        "file_data_range": data.get("file_data_range"),
         "files_sample": data["files"][:100],
     }
 
