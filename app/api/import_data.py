@@ -5,7 +5,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -130,6 +130,70 @@ def _merge_job_progress(batch: dict, job: dict | None) -> dict:
     return d
 
 
+def _merge_data_range(batch: dict, data_range: dict | None) -> dict:
+    d = dict(batch)
+    start = data_range.get("data_start") if data_range else None
+    end = data_range.get("data_end") if data_range else None
+    d["data_start"] = int(start) if start is not None else None
+    d["data_end"] = int(end) if end is not None else None
+    if d["data_start"] is not None and d["data_end"] is not None:
+        d["data_range"] = f"{d['data_start']} - {d['data_end']}"
+    else:
+        d["data_range"] = None
+    return d
+
+
+def _date_range_for_batch(db: Session, batch: dict) -> dict | None:
+    if not batch:
+        return None
+    import_type = str(batch.get("import_type") or "").lower()
+    batch_id = int(batch.get("id") or 0)
+    if not batch_id:
+        return None
+
+    files = db.execute(text("""
+        SELECT file_path
+        FROM data_import_file
+        WHERE import_batch_id=:id AND status='success'
+    """), {"id": batch_id}).mappings().all()
+    codes = []
+    for row in files:
+        stem = os.path.basename(str(row["file_path"])).split(".")[0].lower()
+        digits = "".join(ch for ch in stem if ch.isdigit())
+        if len(digits) < 6:
+            continue
+        side = "sh" if stem.startswith("sh") else "sz" if stem.startswith("sz") else None
+        if side:
+            codes.append(f"{side}.{digits[-6:]}")
+    codes = sorted(set(codes))
+    if not codes:
+        return None
+
+    if import_type in ("lday", "daily"):
+        table = "daily_kline"
+        where_period = ""
+        params = {"codes": codes}
+    elif import_type in ("5m", "lc5", "fzline"):
+        table = "minute_kline_period"
+        where_period = " AND period='5m'"
+        params = {"codes": codes}
+    elif import_type == "build_30m":
+        table = "minute_kline_period"
+        where_period = " AND period='30m'"
+        params = {"codes": codes}
+    else:
+        return None
+    if not _table_exists(db, table):
+        return None
+
+    stmt = text(f"""
+        SELECT MIN(date) AS data_start, MAX(date) AS data_end
+        FROM {table}
+        WHERE code IN :codes {where_period}
+    """).bindparams(bindparam("codes", expanding=True))
+    row = db.execute(stmt, params).mappings().first()
+    return dict(row) if row and row.get("data_start") is not None else None
+
 def _latest_job_for_batch(db: Session, batch_id: int) -> dict | None:
     if not _table_exists(db, "job_execution"):
         return None
@@ -191,6 +255,7 @@ def _batch_detail(db: Session, batch_id: int) -> dict | None:
         WHERE import_batch_id=:id
     """), {"id": batch_id}).mappings().first() or {}
     d = _merge_job_progress(dict(batch), _latest_job_for_batch(db, batch_id))
+    d = _merge_data_range(d, _date_range_for_batch(db, d))
     d.update({
         "pending_files": int(stats.get("pending_files") or 0),
         "running_files": int(stats.get("running_files") or 0),
@@ -316,7 +381,11 @@ def import_batches(limit: int = Query(50, ge=1, le=500), db: Session = Depends(g
         ORDER BY id DESC
         LIMIT :limit
     """), {"limit": limit}).mappings().all()
-    return [_merge_job_progress(dict(r), _latest_job_for_batch(db, int(r["id"]))) for r in rows]
+    out = []
+    for r in rows:
+        d = _merge_job_progress(dict(r), _latest_job_for_batch(db, int(r["id"])))
+        out.append(_merge_data_range(d, _date_range_for_batch(db, d)))
+    return out
 
 
 @router.get("/batches/{batch_id}")

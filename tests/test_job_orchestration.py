@@ -4,7 +4,7 @@ import sys
 import unittest
 
 from app.api import jobs
-from app.api.import_data import _merge_job_progress
+from app.api.import_data import _merge_job_progress, _merge_data_range
 from app.services.job_orchestrator import ensure_job_tables
 from scripts import job_worker
 
@@ -38,6 +38,16 @@ class JobOrchestrationTests(unittest.TestCase):
         self.assertEqual(merged["progress_percent"], 50.0)
         self.assertEqual(merged["job_status"], "running")
         self.assertEqual(merged["batch_done_files"], 1)
+
+    def test_import_batch_merge_includes_data_range(self):
+        batch = {"id": 12, "total_files": 1, "success_files": 1, "failed_files": 0}
+        data_range = {"data_start": 20260501, "data_end": 20260511}
+
+        merged = _merge_data_range(batch, data_range)
+
+        self.assertEqual(merged["data_start"], 20260501)
+        self.assertEqual(merged["data_end"], 20260511)
+        self.assertEqual(merged["data_range"], "20260501 - 20260511")
 
     def test_worker_builds_import_runner_command(self):
         payload = {

@@ -168,7 +168,7 @@
 
       table.innerHTML =
         '<thead><tr>' +
-        ['ID','类型','目录','市场','状态','并发','进度','文件数','成功','失败','记录数','开始时间','结束时间','信息']
+        ['ID','类型','目录','市场','状态','并发','进度','数据范围','文件数','成功','失败','记录数','开始时间','结束时间','信息']
           .map(c => `<th>${c}</th>`).join('') +
         '</tr></thead><tbody>' +
         rows.map(r => {
@@ -184,6 +184,7 @@
             <td>${cell(r.status)}</td>
             <td>${cell(r.workers)}</td>
             <td>${progress}</td>
+            <td>${cell(r.data_range)}</td>
             <td>${cell(r.total_files)}</td>
             <td>${cell(r.success_files)}</td>
             <td>${cell(r.failed_files)}</td>
@@ -259,6 +260,7 @@
       `进度：${done}/${total} (${percent})\n` +
       `成功：${(job && job.success_count) ?? d.job_success_count ?? d.success_files ?? 0}，失败：${(job && job.failed_count) ?? d.job_failed_count ?? d.failed_files ?? 0}，当前：${(job && job.current_code) || d.current_code || '-'}\n` +
       `批次结果：成功 ${d.success_files || 0}，失败 ${d.failed_files || 0}，记录数 ${d.total_rows || 0}\n` +
+      `数据范围：${d.data_range || '-'}\n` +
       `更新时间：${d.updated_at || '-'}`;
   }
 
