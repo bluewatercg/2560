@@ -108,6 +108,26 @@
     };
   }
 
+  function importRangeText(p){
+    if(p.start || p.end){
+      return `${p.start || '最早'} 至 ${p.end || '最新'}`;
+    }
+    return '全量历史（未填写开始/结束日期）';
+  }
+
+  function confirmFullHistoryImport(p){
+    if(p.start || p.end) return true;
+    return confirm(
+      `你正在执行全量历史导入。\n\n` +
+      `导入内容：${p.import_type}\n` +
+      `市场：${p.market}\n` +
+      `目录：${p.source_dir}\n\n` +
+      `这会读取源文件中的全部历史记录，可能写入数百万/千万行。\n` +
+      `如果只想导入某个交易日，请先填写开始日期和结束日期。\n\n` +
+      `是否确认继续全量历史导入？`
+    );
+  }
+
   async function loadImportBatches(){
     const table = $('importBatchTable');
     if(!table) return;
@@ -289,11 +309,11 @@
           `导入内容：${label}\n` +
           `目录：${p.source_dir}\n` +
           `市场：${p.market}\n` +
-          `开始日期：${p.start || '-'}\n` +
-          `结束日期：${p.end || '-'}\n` +
+          `导入范围：${importRangeText(p)}\n` +
           `并发线程：${p.workers}\n\n` +
           `注意：这里只导入行情数据，不触发 2560 / 2568 计算。`
         )) return;
+        if(!confirmFullHistoryImport(p)) return;
 
         if(out) out.textContent = '正在导入，请稍候...';
         try{

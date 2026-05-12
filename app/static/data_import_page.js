@@ -330,11 +330,16 @@
       runBtn.onclick = async function(){
         const source_dir = $('importSourceDir') ? $('importSourceDir').value : '';
         const market = $('importMarket') ? $('importMarket').value : 'sh';
+        const start = $('importStartDate') && $('importStartDate').value ? $('importStartDate').value : null;
+        const end = $('importEndDate') && $('importEndDate').value ? $('importEndDate').value : null;
+        const import_type = $('importType') ? $('importType').value : 'lday';
+        const rangeText = (start || end) ? `${start || '最早'} 至 ${end || '最新'}` : '全量历史（未填写开始/结束日期）';
 
-        if(!confirm(`确认开始导入？\n\n目录：${source_dir}\n市场：${market}\n\n注意：数据导入只导入文件，不触发计算。`)) return;
+        if(!confirm(`确认开始导入？\n\n目录：${source_dir}\n市场：${market}\n导入内容：${import_type}\n导入范围：${rangeText}\n\n注意：数据导入只导入文件，不触发计算。`)) return;
+        if(!start && !end && !confirm(`你正在执行全量历史导入。\n\n这会读取源文件中的全部历史记录，可能写入数百万/千万行。\n如果只想导入某个交易日，请先填写开始日期和结束日期。\n\n是否确认继续全量历史导入？`)) return;
 
         try{
-          const data = await postJson('/api/import/run', {source_dir, market});
+          const data = await postJson('/api/import/run', {source_dir, market, import_type, start, end});
           $('importActionResult').textContent = JSON.stringify(data, null, 2);
           if(data && data.import_batch_id){
             startImportWatch(data);
