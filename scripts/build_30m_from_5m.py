@@ -11,6 +11,7 @@ from typing import Callable, Optional
 import pandas as pd
 from sqlalchemy import text
 
+from app.core.market_scope import market_sql_where
 from app.db.session import SessionLocal
 from app.services.job_orchestrator import update_data_import_batch_progress
 
@@ -34,14 +35,7 @@ def dt_to_int(v):
 
 
 def code_where(market: str) -> str:
-    mt = (market or "all").lower()
-    if mt == "sh": return "code LIKE 'sh.%'"
-    if mt == "sz": return "code LIKE 'sz.%'"
-    if mt == "sh60": return "code LIKE 'sh.60%'"
-    if mt == "sh68": return "code LIKE 'sh.68%'"
-    if mt == "sz00": return "code LIKE 'sz.00%'"
-    if mt == "sz30": return "code LIKE 'sz.30%'"
-    return "(code LIKE 'sh.%' OR code LIKE 'sz.%')"
+    return market_sql_where("code", market)
 
 
 def bucket_30m(ts):

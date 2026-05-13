@@ -12,7 +12,9 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.orm import Session
+from sqlalchemy.sql import bindparam
 
+from app.core.market_scope import market_sql_where
 from app.db.session import get_db
 from app.services.job_orchestrator import create_job_execution
 from app.services.job_orchestrator import ensure_job_tables as _ensure_tables
@@ -35,6 +37,10 @@ class RunNowRequest(BaseModel):
     shards: int = Field(default=4, ge=1, le=32)
 
 
+class CancelJobRequest(BaseModel):
+    reason: str = Field(default="用户取消/废弃")
+
+
 def _table_exists(db: Session, table_name: str) -> bool:
     return bool(
         db.execute(
@@ -49,21 +55,7 @@ def _table_exists(db: Session, table_name: str) -> bool:
 
 
 def _market_where(alias: str, market: str) -> str:
-    col = f"{alias}.code"
-    m = (market or "all").lower()
-    if m == "sh":
-        return f"{col} LIKE 'sh.%'"
-    if m == "sz":
-        return f"{col} LIKE 'sz.%'"
-    if m == "sh60":
-        return f"{col} LIKE 'sh.60%'"
-    if m == "sh68":
-        return f"{col} LIKE 'sh.68%'"
-    if m == "sz00":
-        return f"{col} LIKE 'sz.00%'"
-    if m == "sz30":
-        return f"{col} LIKE 'sz.30%'"
-    return f"({col} LIKE 'sh.%' OR {col} LIKE 'sz.%')"
+    return market_sql_where(f"{alias}.code", market)
 
 
 def _count_codes(db: Session, market: str) -> int:
@@ -79,21 +71,101 @@ def _count_codes(db: Session, market: str) -> int:
     )
 
 
+def _execution_job_type_filter(job_types: list[str | None] | None) -> tuple[str, dict[str, tuple[str, ...]]]:
+    clean = tuple(str(t).strip() for t in (job_types or []) if t and str(t).strip())
+    if not clean:
+        return "", {}
+    return "WHERE job_type IN :job_types", {"job_types": clean}
+
+
+def _queue_job_type_filter(job_types: list[str | None] | None) -> tuple[str, dict[str, tuple[str, ...]]]:
+    return _execution_job_type_filter(job_types)
+
+
+def _execution_order_sql() -> str:
+    return "CASE status WHEN 'running' THEN 0 WHEN 'cancelling' THEN 1 WHEN 'queued' THEN 2 WHEN 'pending' THEN 3 ELSE 4 END"
+
+
+def _queue_order_sql() -> str:
+    return "CASE status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 WHEN 'pending' THEN 1 ELSE 2 END, created_at DESC, id DESC"
+
+
+def _cancel_job_execution(db: Session, job_id: int, reason: str) -> dict[str, Any]:
+    _ensure_tables(db)
+    row = db.execute(text("""
+        SELECT id, status, pid, updated_at
+        FROM job_execution
+        WHERE id=:id
+    """), {"id": job_id}).mappings().first()
+    if not row:
+        return {"ok": False, "message": f"job not found: {job_id}"}
+
+    status = str(row.get("status") or "").lower()
+    message = (reason or "用户取消/废弃")[:1000]
+    queue_result = db.execute(text("""
+        UPDATE job_queue
+        SET status='cancelled',
+            finished_at=NOW(),
+            updated_at=NOW()
+        WHERE status IN ('pending','queued')
+          AND JSON_UNQUOTE(JSON_EXTRACT(payload, '$.job_execution_id'))=:job_id
+    """), {"job_id": str(job_id)})
+
+    if status in ("queued", "pending"):
+        db.execute(text("""
+            UPDATE job_execution
+            SET status='cancelled',
+                message=:message,
+                cancel_requested_at=NOW(),
+                finished_at=NOW(),
+                updated_at=NOW()
+            WHERE id=:id
+        """), {"id": job_id, "message": message})
+        db.commit()
+        return {"ok": True, "job_id": job_id, "status": "cancelled", "cancelled_queue_rows": int(queue_result.rowcount or 0)}
+
+    if status == "running":
+        stale_cutoff = db.execute(text("SELECT DATE_SUB(NOW(), INTERVAL 5 MINUTE)")).scalar()
+        stale = bool(row.get("updated_at") and row["updated_at"] < stale_cutoff)
+        db.execute(text("""
+            UPDATE job_execution
+            SET status=:status,
+                cancel_requested_at=NOW(),
+                message=:message,
+                finished_at=CASE WHEN :status='cancelled' THEN NOW() ELSE finished_at END,
+                updated_at=NOW()
+            WHERE id=:id
+        """), {"id": job_id, "status": "cancelled" if stale else "running", "message": "cancel requested: " + message})
+        db.commit()
+        return {"ok": True, "job_id": job_id, "status": "cancelled" if stale else "cancelling", "cancelled_queue_rows": int(queue_result.rowcount or 0)}
+
+    db.commit()
+    return {"ok": True, "job_id": job_id, "status": status, "message": "job is already finished"}
+
+
 @router.get("/queue")
-def queue(limit: int = Query(100, ge=1, le=1000), db: Session = Depends(get_db)):
+def queue(
+    limit: int = Query(100, ge=1, le=1000),
+    job_type: list[str] | None = Query(default=None),
+    db: Session = Depends(get_db),
+):
     if not _table_exists(db, "job_queue"):
         return []
-    return (
-        db.execute(
-            text("""
+    where_clause, params = _queue_job_type_filter(job_type)
+    query = text(f"""
         SELECT id, job_type, strategy_code, priority, payload, status,
                created_at, started_at, finished_at, updated_at
         FROM job_queue
-        ORDER BY CASE status WHEN 'running' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END,
-                 priority ASC, created_at DESC
+        {where_clause}
+        ORDER BY {_queue_order_sql()}
         LIMIT :limit
-    """),
-            {"limit": limit},
+    """)
+    if params:
+        query = query.bindparams(bindparam("job_types", expanding=True))
+    return (
+        db.execute(
+            query,
+            {"limit": limit, **params},
         )
         .mappings()
         .all()
@@ -101,21 +173,30 @@ def queue(limit: int = Query(100, ge=1, le=1000), db: Session = Depends(get_db))
 
 
 @router.get("/executions")
-def executions(limit: int = Query(100, ge=1, le=1000), db: Session = Depends(get_db)):
+def executions(
+    limit: int = Query(100, ge=1, le=1000),
+    job_type: list[str] | None = Query(default=None),
+    db: Session = Depends(get_db),
+):
     if not _table_exists(db, "job_execution"):
         return []
-    return (
-        db.execute(
-            text("""
+    where_clause, params = _execution_job_type_filter(job_type)
+    query = text(f"""
         SELECT id, job_type, batch_id, status,
                progress_current, progress_total, success_count, failed_count,
                current_code, market, shards, pid, log_file, message,
                started_at, finished_at, updated_at
         FROM job_execution
-        ORDER BY started_at DESC, id DESC
+        {where_clause}
+        ORDER BY {_execution_order_sql()}, updated_at DESC, started_at DESC, id DESC
         LIMIT :limit
-    """),
-            {"limit": limit},
+    """)
+    if params:
+        query = query.bindparams(bindparam("job_types", expanding=True))
+    return (
+        db.execute(
+            query,
+            {"limit": limit, **params},
         )
         .mappings()
         .all()
@@ -143,6 +224,12 @@ def execution_items(
         .mappings()
         .all()
     )
+
+
+@router.post("/executions/{job_id}/cancel")
+def cancel_execution(job_id: int, payload: CancelJobRequest | None = None, db: Session = Depends(get_db)):
+    reason = payload.reason if payload else "用户取消/废弃"
+    return _cancel_job_execution(db, job_id, reason)
 
 
 @router.get("/executions/{job_id}/progress")

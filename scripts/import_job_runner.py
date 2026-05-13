@@ -18,7 +18,7 @@ def parse_args():
     p = argparse.ArgumentParser(description="Run vipdoc import as background job")
     p.add_argument("--job-id", type=int, default=int(os.getenv("JOB_ID", "0")))
     p.add_argument("--batch-id", type=int, default=int(os.getenv("IMPORT_BATCH_ID", "0")))
-    p.add_argument("--market", default=os.getenv("MARKET", "sh"))
+    p.add_argument("--market", default=os.getenv("MARKET", "sh60"))
     p.add_argument("--import-type", default=os.getenv("IMPORT_TYPE", "lday"))
     p.add_argument("--source-dir", default=os.getenv("SOURCE_DIR", "/data/vipdoc"))
     p.add_argument("--start", default=os.getenv("START"))
@@ -92,7 +92,7 @@ def main():
 
     result = import_vipdoc_files_parallel(
         files,
-        a.market or batch["market"] or "sh",
+        a.market or batch["market"] or "sh60",
         a.import_type,
         a.start,
         a.end,

@@ -1,26 +1,14 @@
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import text
+from app.core.market_scope import market_sql_where
 from app.db.session import get_db
 
 router = APIRouter(prefix="/api/latest", tags=["latest"])
 
 
 def _market_where(market_type: str) -> str:
-    mt = (market_type or "all").lower()
-    if mt == "sh":
-        return "s.code LIKE 'sh.%'"
-    if mt == "sz":
-        return "s.code LIKE 'sz.%'"
-    if mt == "sh60":
-        return "s.code LIKE 'sh.60%'"
-    if mt == "sh68":
-        return "s.code LIKE 'sh.68%'"
-    if mt == "sz00":
-        return "s.code LIKE 'sz.00%'"
-    if mt == "sz30":
-        return "s.code LIKE 'sz.30%'"
-    return "(s.code LIKE 'sh.%' OR s.code LIKE 'sz.%')"
+    return market_sql_where("s.code", market_type)
 
 
 @router.get("/by-stock")

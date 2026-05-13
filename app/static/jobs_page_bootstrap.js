@@ -1,6 +1,9 @@
 
 (function(){
   function $(id){ return document.getElementById(id); }
+  const JOB_EXECUTIONS_LIST_URL = '/api/jobs/executions?job_type=run_2560&job_type=run_2560_now&limit=50';
+  const JOB_EXECUTIONS_LATEST_URL = '/api/jobs/executions?job_type=run_2560&job_type=run_2560_now&limit=1';
+  const APP_LOAD_JOBS = window.loadJobs;
 
   function ensureJobsPage(){
     // 1. 创建左侧/顶部菜单按钮
@@ -9,7 +12,7 @@
       const btn = document.createElement('button');
       btn.className = 'nav-item';
       btn.dataset.view = 'jobs';
-      btn.textContent = '任务队列';
+      btn.textContent = '创建批量任务';
       nav.appendChild(btn);
 
       btn.onclick = function(){
@@ -20,8 +23,8 @@
         const view = $('view-jobs');
         if (view) view.classList.add('active');
 
-        if ($('pageTitle')) $('pageTitle').textContent = '任务队列';
-        if ($('pageSubtitle')) $('pageSubtitle').textContent = '任务队列、执行进度、实时日志与后台运行';
+        if ($('pageTitle')) $('pageTitle').textContent = '创建批量任务';
+        if ($('pageSubtitle')) $('pageSubtitle').textContent = '创建 2560 批量任务、查看执行记录与 Shard 明细';
 
         if (window.loadJobs) window.loadJobs();
       };
@@ -43,8 +46,6 @@
               <label>
                 市场范围
                 <select id="jobMarket">
-                  <option value="sh">sh 上海</option>
-                  <option value="sz">sz 深圳</option>
                   <option value="sh60">sh60 沪主板60</option>
                   <option value="sh68">sh68 科创68</option>
                   <option value="sz00">sz00 深主板00</option>
@@ -73,11 +74,20 @@
 
         <div class="panel">
           <div class="panel-head split">
-            <h3>任务执行记录（job_execution）</h3>
+            <h3>当前/待执行任务（running / queued）</h3>
             <button id="refreshExecutionsBtn">刷新执行记录</button>
           </div>
           <div class="table-wrap">
-            <table id="jobExecutionsTable"></table>
+            <table id="jobActiveExecutionsTable"></table>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head split">
+            <h3>历史执行记录（已结束）</h3>
+          </div>
+          <div class="table-wrap">
+            <table id="jobHistoryExecutionsTable"></table>
           </div>
         </div>
 
@@ -135,6 +145,41 @@
     return v === null || v === undefined || v === '' ? '-' : v;
   }
 
+  function canCancelJobStatus(status){
+    return ['queued', 'pending', 'running', 'cancelling'].includes(String(status || '').toLowerCase());
+  }
+
+  function isActiveExecution(row){
+    return canCancelJobStatus(row && row.status);
+  }
+
+  function staleLabel(row){
+    const status = String(row && row.status || '').toLowerCase();
+    if(!['queued', 'pending', 'running', 'cancelling'].includes(status)) return '';
+    const raw = row.updated_at || row.started_at;
+    if(!raw) return '';
+    const t = new Date(String(raw).replace(' ', 'T')).getTime();
+    if(!Number.isFinite(t)) return '';
+    const minutes = (Date.now() - t) / 60000;
+    if(minutes >= 120) return '历史遗留';
+    if(minutes >= 30) return '高度疑似中断';
+    if(minutes >= 5) return '疑似中断';
+    return '';
+  }
+
+  async function cancelExecution(jobId){
+    if(!jobId) return;
+    const reason = prompt(`确认取消/废弃任务 #${jobId}？\n\nqueued/pending 会直接取消；running 会请求后台停止。`, '用户取消/废弃');
+    if(reason === null) return;
+    const data = await apiJson(`/api/jobs/executions/${jobId}/cancel`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({reason})
+    });
+    if ($('jobActionResult')) $('jobActionResult').textContent = JSON.stringify(data, null, 2);
+    await loadJobs();
+  }
+
   async function enqueueJob(){
     const market = $('jobMarket') ? $('jobMarket').value : 'sh';
     const shards = $('jobShards') ? Number($('jobShards').value || 1) : 1;
@@ -157,31 +202,48 @@
   }
 
   async function loadJobs(){
+    if (typeof APP_LOAD_JOBS === 'function' && $('jobQueueTable')) {
+      await APP_LOAD_JOBS();
+      return;
+    }
     await loadExecutions();
     await loadLatestItems();
   }
 
   async function loadExecutions(){
-    const table = $('jobExecutionsTable');
-    if (!table) return;
+    const activeTable = $('jobActiveExecutionsTable');
+    const historyTable = $('jobHistoryExecutionsTable');
+    if (!activeTable || !historyTable) return;
 
-    const rows = await apiJson('/api/jobs/executions?limit=50');
+    const rows = await apiJson(JOB_EXECUTIONS_LIST_URL);
+    const activeRows = (rows || []).filter(isActiveExecution);
+    const historyRows = (rows || []).filter(r => !isActiveExecution(r));
 
+    renderExecutionTable(activeTable, activeRows, '暂无正在执行或等待执行的 2560 任务');
+    renderExecutionTable(historyTable, historyRows, '暂无历史执行记录');
+  }
+
+  function renderExecutionTable(table, rows, emptyText){
     if (!rows || !rows.length) {
-      table.innerHTML = '<tbody><tr><td>暂无执行记录</td></tr></tbody>';
+      table.innerHTML = `<tbody><tr><td>${emptyText}</td></tr></tbody>`;
       return;
     }
 
-    const cols = ['ID','类型','状态','进度','成功','失败','当前代码','市场','并发','信息','开始时间','结束时间'];
+    const cols = ['ID','类型','状态','进度','成功','失败','当前代码','市场','并发','信息','开始时间','结束时间','操作'];
     table.innerHTML =
       '<thead><tr>' + cols.map(c => `<th>${c}</th>`).join('') + '</tr></thead><tbody>' +
       rows.map(r => {
         const progress = `${cell(r.progress_current)}/${cell(r.progress_total)}`;
+        const stale = staleLabel(r);
+        const statusText = `${cell(r.status)}${stale ? ' / ' + stale : ''}`;
+        const action = canCancelJobStatus(r.status)
+          ? `<button class="danger cancel-job" data-job-id="${r.id}" title="取消 queued/pending；running 请求后台停止">取消/废弃</button>`
+          : '-';
         return `
           <tr data-job-id="${r.id}" style="cursor:pointer">
             <td>${cell(r.id)}</td>
             <td>${cell(r.job_type)}</td>
-            <td>${cell(r.status)}</td>
+            <td>${statusText}</td>
             <td>${progress}</td>
             <td>${cell(r.success_count)}</td>
             <td>${cell(r.failed_count)}</td>
@@ -191,6 +253,7 @@
             <td>${cell(r.message)}</td>
             <td>${cell(r.started_at)}</td>
             <td>${cell(r.finished_at)}</td>
+            <td>${action}</td>
           </tr>
         `;
       }).join('') +
@@ -207,10 +270,17 @@
         loadItems(id);
       };
     });
+    table.querySelectorAll('.cancel-job').forEach(btn => {
+      btn.onclick = function(ev){
+        ev.preventDefault();
+        ev.stopPropagation();
+        cancelExecution(Number(this.dataset.jobId));
+      };
+    });
   }
 
   async function loadLatestItems(){
-    const rows = await apiJson('/api/jobs/executions?limit=1');
+    const rows = await apiJson(JOB_EXECUTIONS_LATEST_URL);
     if (rows && rows.length) {
       await loadItems(rows[0].id);
     }

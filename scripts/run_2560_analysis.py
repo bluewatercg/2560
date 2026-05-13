@@ -1,28 +1,14 @@
 import argparse
 from sqlalchemy import text
 
+from app.core.market_scope import market_sql_where
 from app.db.session import SessionLocal
 from app.services.signal_engine_2560 import SignalEngine2560
 from app.services.statistics_engine import StatisticsEngine
 
 
 def market_where(market_type: str) -> str:
-    mt = (market_type or "all").lower()
-
-    if mt == "sh":
-        return "code LIKE 'sh.%'"
-    if mt == "sz":
-        return "code LIKE 'sz.%'"
-    if mt == "sh60":
-        return "code LIKE 'sh.60%'"
-    if mt == "sh68":
-        return "code LIKE 'sh.68%'"
-    if mt == "sz00":
-        return "code LIKE 'sz.00%'"
-    if mt == "sz30":
-        return "code LIKE 'sz.30%'"
-
-    return "(code LIKE 'sh.%' OR code LIKE 'sz.%')"
+    return market_sql_where("code", market_type)
 
 
 def load_codes(db, market_type: str, limit: int | None = None):

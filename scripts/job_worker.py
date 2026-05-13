@@ -100,6 +100,23 @@ def build_job_command(job_type: str, payload: dict[str, Any]) -> tuple[list[str]
         if payload.get("dry_run"):
             cmd.append("--dry-run")
         return cmd, env
+    if job_type == "rebuild_indicator":
+        cmd.append(str(PROJECT_ROOT / "scripts" / "rebuild_indicator_job_runner.py"))
+        cmd.extend(["--job-id", str(payload.get("job_execution_id", 0))])
+        cmd.extend(["--batch-id", str(payload.get("import_batch_id", 0))])
+        if payload.get("market"):
+            cmd.extend(["--market", str(payload["market"])])
+        if payload.get("start"):
+            cmd.extend(["--start", str(payload["start"])])
+        if payload.get("end"):
+            cmd.extend(["--end", str(payload["end"])])
+        if payload.get("periods"):
+            cmd.extend(["--periods", str(payload["periods"])])
+        if payload.get("limit_codes") is not None:
+            cmd.extend(["--limit-codes", str(payload["limit_codes"])])
+        if payload.get("commit_every") is not None:
+            cmd.extend(["--commit-every", str(payload["commit_every"])])
+        return cmd, env
     if job_type == "run_2560":
         env["MARKET"] = str(payload.get("market", "all"))
         env["SHARDS"] = str(payload.get("shards", 4))
@@ -183,6 +200,60 @@ def mark_execution_failed(en, payload: dict[str, Any], message: str) -> None:
             log(f"[worker] marked data_import_batch #{import_batch_id} failed rows={result.rowcount}")
 
 
+def cancel_requested(en, payload: dict[str, Any]) -> bool:
+    job_execution_id = _payload_int(payload, "job_execution_id")
+    import_batch_id = _payload_int(payload, "import_batch_id")
+    if not job_execution_id and not import_batch_id:
+        return False
+    with en.connect() as conn:
+        if job_execution_id:
+            v = conn.execute(
+                text("SELECT cancel_requested_at IS NOT NULL FROM job_execution WHERE id=:id"),
+                {"id": job_execution_id},
+            ).scalar()
+            if bool(v):
+                return True
+        if import_batch_id:
+            status = conn.execute(
+                text("SELECT status FROM data_import_batch WHERE id=:id"),
+                {"id": import_batch_id},
+            ).scalar()
+            if str(status or "").lower() in ("cancelled", "cancelling"):
+                return True
+    return False
+
+
+def mark_execution_cancelled(en, payload: dict[str, Any], message: str) -> None:
+    job_execution_id = _payload_int(payload, "job_execution_id")
+    import_batch_id = _payload_int(payload, "import_batch_id")
+    with en.begin() as conn:
+        if job_execution_id:
+            conn.execute(
+                text("""
+                    UPDATE job_execution
+                    SET status='cancelled',
+                        message=:message,
+                        finished_at=NOW(),
+                        updated_at=NOW()
+                    WHERE id=:id
+                """),
+                {"id": job_execution_id, "message": message[:1000]},
+            )
+        if import_batch_id:
+            conn.execute(
+                text("""
+                    UPDATE data_import_batch
+                    SET status='cancelled',
+                        message=:message,
+                        finished_at=NOW(),
+                        updated_at=NOW()
+                    WHERE id=:id
+                      AND status NOT IN ('success','failed')
+                """),
+                {"id": import_batch_id, "message": message[:1000]},
+            )
+
+
 def main():
     en = create_engine(get_database_url(), pool_pre_ping=True, future=True)
     poll = int(os.getenv("JOB_WORKER_POLL_INTERVAL", "10"))
@@ -221,14 +292,29 @@ def main():
             with open(log_path, "ab") as out:
                 proc = subprocess.Popen(cmd, cwd=str(PROJECT_ROOT), env=env, stdout=out, stderr=subprocess.STDOUT)
                 mark_execution_started(en, payload, log_path, proc.pid)
-                rc = proc.wait()
+                while True:
+                    rc = proc.poll()
+                    if rc is not None:
+                        break
+                    if cancel_requested(en, payload):
+                        log(f"[worker] cancellation requested for queue #{job['id']}, terminating pid={proc.pid}")
+                        proc.terminate()
+                        try:
+                            rc = proc.wait(timeout=30)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                            rc = proc.wait()
+                        mark_execution_cancelled(en, payload, f"user cancelled queue #{job['id']}")
+                        break
+                    time.sleep(5)
             log(f"[worker] queue #{job['id']} finished rc={rc}")
-            if rc != 0:
+            was_cancelled = cancel_requested(en, payload)
+            if rc != 0 and not was_cancelled:
                 mark_execution_failed(en, payload, f"worker command failed rc={rc}: {' '.join(cmd)}")
             with en.begin() as conn:
                 conn.execute(
                     text("UPDATE job_queue SET status=:s, finished_at=NOW(), updated_at=NOW() WHERE id=:id"),
-                    {"id": job["id"], "s": "success" if rc == 0 else "failed"},
+                    {"id": job["id"], "s": "cancelled" if was_cancelled else "success" if rc == 0 else "failed"},
                 )
             if once:
                 break

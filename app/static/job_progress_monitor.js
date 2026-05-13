@@ -2,6 +2,7 @@
   function $(id){ return document.getElementById(id); }
   async function getJson(url){ const r = await fetch(url); return await r.json(); }
   async function postJson(url, body){ const r = await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); return await r.json(); }
+  const JOB_EXECUTIONS_LATEST_URL = '/api/jobs/executions?job_type=run_2560&job_type=run_2560_now&limit=1';
   let currentJobId = null;
   let timer = null;
 
@@ -142,7 +143,7 @@
 
     if(!currentJobId){
       try{
-        const rows = await getJson('/api/jobs/executions?limit=1');
+        const rows = await getJson(JOB_EXECUTIONS_LATEST_URL);
         if(rows && rows.length) currentJobId = rows[0].id;
       }catch(e){}
     }

@@ -1,6 +1,9 @@
 
 (function(){
   function $(id){ return document.getElementById(id); }
+  function canCancelJobStatus(status){
+    return ['queued', 'pending', 'running', 'cancelling'].includes(String(status || '').toLowerCase());
+  }
 
   async function postJson(url, body){
     const r = await fetch(url, {
@@ -11,6 +14,21 @@
     return await r.json();
   }
 
+  async function cancelExecution(jobId){
+    if(!jobId) return;
+    const reason = prompt(`确认取消/废弃任务 #${jobId}？\n\nqueued/pending 会直接取消；running 会请求后台停止。`, '用户取消/废弃');
+    if(reason === null) return;
+    const out = $('jobActionResult');
+    if(out) out.textContent = `正在取消/废弃任务 #${jobId}...`;
+    try{
+      const data = await postJson(`/api/jobs/executions/${jobId}/cancel`, {reason});
+      if(out) out.textContent = JSON.stringify(data, null, 2);
+      if(typeof loadJobs === 'function') await loadJobs();
+    }catch(e){
+      if(out) out.textContent = '取消/废弃失败：' + (e && e.message ? e.message : String(e));
+    }
+  }
+
   function ensureJobsActionPanel(){
     const view = $('view-jobs');
     if (!view) return;
@@ -19,10 +37,10 @@
     const title = $('pageTitle');
     const sub = $('pageSubtitle');
     if (title && document.querySelector('.nav-item.active')?.dataset?.view === 'jobs') {
-      title.textContent = '任务队列';
+      title.textContent = '创建批量任务';
     }
     if (sub && document.querySelector('.nav-item.active')?.dataset?.view === 'jobs') {
-      sub.textContent = '任务队列、执行记录、Shard 明细与手动触发';
+      sub.textContent = '创建 2560 批量任务、查看执行记录与 Shard 明细';
     }
 
     if ($('jobActionPanel')) return;
@@ -41,8 +59,6 @@
         <label style="display:flex;flex-direction:column;gap:6px;font-size:13px;font-weight:600;color:#334155">
           市场范围
           <select id="jobMarket" title="选择要执行的股票市场范围">
-                  <option value="sh">sh 上海</option>
-                  <option value="sz">sz 深圳</option>
                   <option value="sh60">sh60 沪主板60</option>
                   <option value="sh68">sh68 科创68</option>
                   <option value="sz00">sz00 深主板00</option>
@@ -115,6 +131,12 @@
   document.addEventListener('DOMContentLoaded', ensureJobsActionPanel);
 
   document.addEventListener('click', function(e){
+    if(e.target && e.target.classList && e.target.classList.contains('cancel-job')){
+      e.preventDefault();
+      e.stopPropagation();
+      cancelExecution(Number(e.target.dataset.jobId));
+      return;
+    }
     if (e.target && e.target.dataset && e.target.dataset.view === 'jobs') {
       setTimeout(ensureJobsActionPanel, 80);
       setTimeout(ensureJobsActionPanel, 300);

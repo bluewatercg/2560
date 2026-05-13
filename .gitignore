@@ -11,3 +11,5 @@ logs/
 node_modules/
 dist/
 build/
+.codex
+.superpowers/

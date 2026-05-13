@@ -7,6 +7,8 @@ import pandas as pd
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.core.market_scope import market_sql_where
+
 
 @dataclass
 class AnnotationConfig2568:
@@ -36,21 +38,7 @@ class AnnotationEngine2568:
 
     @staticmethod
     def market_where(alias: str, market_type: str) -> str:
-        mt = (market_type or "all").lower()
-        col = f"{alias}.code"
-        if mt == "sh":
-            return f"{col} LIKE 'sh.%'"
-        if mt == "sz":
-            return f"{col} LIKE 'sz.%'"
-        if mt == "sh60":
-            return f"{col} LIKE 'sh.60%'"
-        if mt == "sh68":
-            return f"{col} LIKE 'sh.68%'"
-        if mt == "sz00":
-            return f"{col} LIKE 'sz.00%'"
-        if mt == "sz30":
-            return f"{col} LIKE 'sz.30%'"
-        return f"({col} LIKE 'sh.%' OR {col} LIKE 'sz.%')"
+        return market_sql_where(f"{alias}.code", market_type)
 
     def list_stocks(self, market_type: str, limit: int, q: str | None) -> list[dict[str, Any]]:
         where = [self.market_where("s", market_type)]
@@ -92,6 +80,43 @@ class AnnotationEngine2568:
         for r in self.db.execute(text(sql), params).mappings().all():
             out.setdefault(r["code"], []).append(dict(r))
         return out
+
+    def latest_daily_indicator_date(self, market_type: str) -> int | None:
+        row = self.db.execute(text(f"""
+            SELECT MAX(t.date) AS latest_date
+            FROM technical_indicator t
+            WHERE t.period='daily'
+              AND {self.market_where("t", market_type)}
+        """)).mappings().first()
+        return int(row["latest_date"]) if row and row.get("latest_date") is not None else None
+
+    def latest_2560_batch(self) -> dict[str, Any] | None:
+        row = self.db.execute(text("""
+            SELECT batch_id, run_time
+            FROM analysis_batch
+            WHERE strategy_code='S2560' AND status='success'
+            ORDER BY run_time DESC
+            LIMIT 1
+        """)).mappings().first()
+        return dict(row) if row else None
+
+    def latest_2560_signals(self, codes: list[str], batch_id: int | None) -> dict[str, dict[str, Any]]:
+        if not codes or not batch_id:
+            return {}
+        params: dict[str, Any] = {"batch_id": batch_id}
+        params.update({f"c{i}": c for i, c in enumerate(codes)})
+        clause = "(" + ",".join(f":c{i}" for i in range(len(codes))) + ")"
+        sql = f"""
+            SELECT code, batch_id, signal_time
+            FROM structure_2560_analysis
+            WHERE batch_id=:batch_id
+              AND code IN {clause}
+              AND selected_signal=1
+        """
+        return {
+            r["code"]: dict(r)
+            for r in self.db.execute(text(sql), params).mappings().all()
+        }
 
     def read_recent_daily(self, codes: list[str], days: int = 8) -> dict[str, pd.DataFrame]:
         if not codes:
@@ -137,8 +162,21 @@ class AnnotationEngine2568:
         codes = [s["code"] for s in stocks]
         ind_map = self.read_latest_indicators(codes)
         recent_map = self.read_recent_daily(codes, days=max(self.cfg.pullback_days + 1, 8))
+        latest_indicator_date = self.latest_daily_indicator_date(market_type)
+        latest_batch = self.latest_2560_batch()
+        latest_signals = self.latest_2560_signals(
+            codes,
+            int(latest_batch["batch_id"]) if latest_batch and latest_batch.get("batch_id") is not None else None,
+        )
         items = [
-            self.annotate_one(s, ind_map.get(s["code"], []), recent_map.get(s["code"], pd.DataFrame()))
+            self.annotate_one(
+                s,
+                ind_map.get(s["code"], []),
+                recent_map.get(s["code"], pd.DataFrame()),
+                latest_indicator_date=latest_indicator_date,
+                latest_signal=latest_signals.get(s["code"]),
+                latest_batch=latest_batch,
+            )
             for s in stocks
         ]
 
@@ -177,11 +215,20 @@ class AnnotationEngine2568:
             "items": items,
         }
 
-    def annotate_one(self, stock: dict[str, Any], indicators: list[dict[str, Any]], recent: pd.DataFrame) -> dict[str, Any]:
+    def annotate_one(
+        self,
+        stock: dict[str, Any],
+        indicators: list[dict[str, Any]],
+        recent: pd.DataFrame,
+        latest_indicator_date: int | None = None,
+        latest_signal: dict[str, Any] | None = None,
+        latest_batch: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         code = stock.get("code")
         name = stock.get("name") or ""
         if not indicators:
             row = self._missing_row(code, name)
+            row.update(self._freshness_fields(None, latest_indicator_date, latest_signal, latest_batch))
             row.update(self._highlight_fields(row))
             row.update(self._abcd_fields(row))
             return row
@@ -249,9 +296,49 @@ class AnnotationEngine2568:
             "risk_tags": " / ".join(risks) if risks else "",
             "summary_label": summary_label,
         }
+        row.update(self._freshness_fields(today, latest_indicator_date, latest_signal, latest_batch))
         row.update(self._highlight_fields(row))
         row.update(self._abcd_fields(row))
         return row
+
+    @staticmethod
+    def _freshness_fields(
+        indicator: dict[str, Any] | None,
+        latest_indicator_date: int | None,
+        latest_signal: dict[str, Any] | None,
+        latest_batch: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        indicator_date = indicator.get("date") if indicator else None
+        indicator_updated_at = indicator.get("updated_at") if indicator else None
+        if indicator_date is None:
+            indicator_status = "缺指标"
+        elif latest_indicator_date is not None and int(indicator_date) >= int(latest_indicator_date):
+            indicator_status = "已重算"
+        else:
+            indicator_status = "未更新到最新"
+
+        latest_batch_id = latest_batch.get("batch_id") if latest_batch else None
+        latest_run_time = latest_batch.get("run_time") if latest_batch else None
+        if latest_signal:
+            latest_2560_status = "命中"
+            signal_time = latest_signal.get("signal_time")
+        elif latest_batch:
+            latest_2560_status = "未命中"
+            signal_time = None
+        else:
+            latest_2560_status = "未计算"
+            signal_time = None
+
+        return {
+            "indicator_freshness_status": indicator_status,
+            "indicator_date": indicator_date,
+            "latest_indicator_date": latest_indicator_date,
+            "indicator_recalculated_at": indicator_updated_at,
+            "latest_2560_status": latest_2560_status,
+            "latest_2560_batch_id": latest_batch_id,
+            "latest_2560_run_time": latest_run_time,
+            "latest_2560_signal_time": signal_time,
+        }
 
     def _highlight_fields(self, row: dict[str, Any]) -> dict[str, str]:
         trend_highlight = self._trend_highlight(row)

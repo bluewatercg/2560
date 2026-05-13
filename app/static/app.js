@@ -5,6 +5,9 @@ const state = {
   selected: new Set(),
   marketType: "all",
   currentStocks: [],
+  selectedJobExecutionId: null,
+  selectedJobQueueId: null,
+  selectedJobAutoRefresh: null,
 };
 const $ = (id) => document.getElementById(id);
 async function api(url, opts) {
@@ -24,6 +27,88 @@ function pct(v) {
 }
 function bool(v) {
   return v === true ? "是" : v === false ? "否" : "-";
+}
+function parseJobPayload(row) {
+  const payload = row && row.payload;
+  if (!payload) return {};
+  if (typeof payload === "object") return payload;
+  try {
+    return JSON.parse(payload);
+  } catch (e) {
+    return {};
+  }
+}
+function jobQueueMarket(row) {
+  const data = parseJobPayload(row);
+  const market = data && data.market ? data.market : row && row.market;
+  return fmt(market);
+}
+function jobQueueExecutionId(row) {
+  const data = parseJobPayload(row);
+  return fmt(data && data.job_execution_id);
+}
+function jobQueueShards(row) {
+  const data = parseJobPayload(row);
+  return fmt(data && data.shards);
+}
+function executionSourceLabel(row, queueId) {
+  if (row && row.job_type === "run_2560_now") return "立即执行，无队列记录";
+  return queueId ? `来自队列 #${queueId}` : "队列执行";
+}
+function isActiveJobStatus(status) {
+  return ["running", "queued", "pending", "cancelling"].includes(
+    String(status || "").toLowerCase(),
+  );
+}
+function stopJobAutoRefresh() {
+  if (state.selectedJobAutoRefresh) {
+    clearInterval(state.selectedJobAutoRefresh);
+    state.selectedJobAutoRefresh = null;
+  }
+}
+function startJobAutoRefresh() {
+  if (state.selectedJobAutoRefresh || !state.selectedJobExecutionId) return;
+  state.selectedJobAutoRefresh = setInterval(refreshSelectedJob, 5000);
+}
+async function refreshSelectedJob() {
+  if (state.view !== "jobs" || !state.selectedJobExecutionId) {
+    stopJobAutoRefresh();
+    return;
+  }
+  const execs = await api(
+    "/api/jobs/executions?job_type=run_2560&job_type=run_2560_now",
+  );
+  const row = (execs || []).find(
+    (r) => String(r.id) === String(state.selectedJobExecutionId),
+  );
+  if (!row) {
+    stopJobAutoRefresh();
+    return;
+  }
+  renderJobExecutions(execs || [], state.selectedJobExecutionId, state.selectedJobQueueId);
+  await loadJobDetails(state.selectedJobExecutionId);
+  if (!isActiveJobStatus(row.status)) stopJobAutoRefresh();
+}
+function renderShardProgress(row) {
+  const done = Number(row && row.done ? row.done : 0);
+  const total = Number(row && row.total ? row.total : 0);
+  const running = Number(row && row.running_count ? row.running_count : 0);
+  const pending = Number(row && row.pending_count ? row.pending_count : 0);
+  const percent = total ? Math.min(100, Math.max(0, (done * 100) / total)) : 0;
+  return `<div style="min-width:220px"><div style="height:8px;background:#e5e7eb;border-radius:999px;overflow:hidden"><div style="height:100%;width:${percent.toFixed(1)}%;background:#2563eb"></div></div><div style="margin-top:4px;font-size:12px;color:#0f172a">已完成 ${done} / 该组总数 ${total}</div><div style="margin-top:2px;font-size:12px;color:#64748b">运行中 ${running}，待执行 ${pending}</div></div>`;
+}
+function ensureJobShardPanel() {
+  if ($("jobShardTable")) return;
+  const itemTable = $("jobItemTable");
+  if (!itemTable) return;
+  const itemPanel = itemTable.closest(".panel");
+  if (!itemPanel || !itemPanel.parentNode) return;
+  itemPanel.style.display = "none";
+  const panel = document.createElement("div");
+  panel.className = "panel";
+  panel.innerHTML =
+    '<h3>Shard 汇总（每行是一组并发线程）</h3><div class="table-wrap"><table id="jobShardTable"></table></div>';
+  itemPanel.parentNode.insertBefore(panel, itemPanel);
 }
 function badgeStatus(s) {
   const cls =
@@ -193,7 +278,14 @@ async function runSelected() {
 async function runProbe(mt) {
   const limitText = $("probeLimit").value.trim();
   const limit = limitText ? Number(limitText) : null;
-  const label = mt === "sh" ? "sh 全部" : mt === "sz" ? "sz 全部" : "全部四类";
+  const labels = {
+    sh60: "sh60 沪主板60",
+    sh68: "sh68 科创68",
+    sz00: "sz00 深主板00",
+    sz30: "sz30 创业板30",
+    all: "全部四类",
+  };
+  const label = labels[mt] || "全部四类";
   if (
     !confirm(
       `确认开始摸底计算：${label}${limit ? `，limit=${limit}` : "，全量"}？`,
@@ -466,12 +558,19 @@ async function loadLatest() {
 }
 
 async function loadJobs() {
-  const queue = await api("/api/jobs/queue");
+  ensureJobShardPanel();
+  const queue = await api("/api/jobs/queue?job_type=run_2560");
+  const execs = await api(
+    "/api/jobs/executions?job_type=run_2560&job_type=run_2560_now",
+  );
   renderTable(
     $("jobQueueTable"),
     [
       { label: "ID", key: "id" },
       { label: "任务类型", key: "job_type" },
+      { label: "市场范围", render: jobQueueMarket },
+      { label: "执行ID", render: jobQueueExecutionId },
+      { label: "并发数", render: jobQueueShards },
       { label: "策略", key: "strategy_code" },
       { label: "优先级", key: "priority" },
       { label: "状态", key: "status" },
@@ -480,13 +579,34 @@ async function loadJobs() {
       { label: "结束时间", key: "finished_at" },
     ],
     queue || [],
+    async (queueId) => {
+      const row = (queue || []).find((r) => String(r.id) === String(queueId));
+      const execId = jobQueueExecutionId(row);
+      renderJobExecutions(execs || [], execId, queueId);
+      if (execId && execId !== "-") {
+        state.selectedJobExecutionId = execId;
+        state.selectedJobQueueId = queueId;
+        await loadJobDetails(execId);
+        const execRow = (execs || []).find((r) => String(r.id) === String(execId));
+        if (execRow && isActiveJobStatus(execRow.status)) startJobAutoRefresh();
+        else stopJobAutoRefresh();
+      }
+    },
   );
-  const execs = await api("/api/jobs/executions");
+  renderJobExecutions(execs || [], null, null);
+}
+
+function renderJobExecutions(rows, execId, queueId) {
+  let filtered = rows || [];
+  if (execId && execId !== "-") {
+    filtered = filtered.filter((r) => String(r.id) === String(execId));
+  }
   renderTable(
     $("jobExecTable"),
     [
       { label: "ID", key: "id" },
       { label: "类型", key: "job_type" },
+      { label: "来源", render: (r) => executionSourceLabel(r, queueId) },
       { label: "批次", key: "batch_id" },
       { label: "状态", key: "status" },
       {
@@ -497,25 +617,60 @@ async function loadJobs() {
       { label: "开始时间", key: "started_at" },
       { label: "结束时间", key: "finished_at" },
     ],
-    execs || [],
+    filtered,
     async (id) => {
       if (!id) return;
-      const items = await api("/api/jobs/executions/" + id + "/items");
-      renderTable(
-        $("jobItemTable"),
-        [
-          { label: "ID", key: "id" },
-          { label: "Job", key: "job_id" },
-          { label: "Shard", key: "shard_id" },
-          { label: "代码", key: "code" },
-          { label: "状态", key: "status" },
-          { label: "重试", key: "retry_count" },
-          { label: "错误", key: "last_error" },
-          { label: "更新时间", key: "updated_at" },
-        ],
-        items || [],
-      );
+      state.selectedJobExecutionId = id;
+      state.selectedJobQueueId = queueId;
+      await loadJobDetails(id);
+      const execRow = filtered.find((r) => String(r.id) === String(id));
+      if (execRow && isActiveJobStatus(execRow.status)) startJobAutoRefresh();
+      else stopJobAutoRefresh();
     },
+  );
+}
+
+async function loadJobDetails(id) {
+  await loadJobShards(id);
+}
+
+async function loadJobShards(id) {
+  ensureJobShardPanel();
+  const table = $("jobShardTable");
+  if (!table) return;
+  const data = await api("/api/jobs/executions/" + id + "/shards");
+  renderTable(
+    table,
+    [
+      { label: "Shard", key: "shard_id" },
+      { label: "完成进度", render: renderShardProgress },
+      { label: "成功", key: "success_count" },
+      { label: "失败", key: "failed_count" },
+      { label: "运行中", key: "running_count" },
+      { label: "待执行", key: "pending_count" },
+      { label: "当前代码", key: "current_code" },
+      { label: "平均耗时ms", key: "avg_elapsed_ms" },
+      { label: "更新时间", key: "updated_at" },
+    ],
+    (data && data.items) || [],
+  );
+}
+
+async function loadJobItems(id) {
+  const items = await api("/api/jobs/executions/" + id + "/items");
+  renderTable(
+    $("jobItemTable"),
+    [
+      { label: "ID", key: "id" },
+      { label: "Job", key: "job_id" },
+      { label: "Shard", key: "shard_id" },
+      { label: "代码", key: "code" },
+      { label: "状态", key: "status" },
+      { label: "重试", key: "retry_count" },
+      { label: "错误", key: "last_error" },
+      { label: "更新时间", key: "updated_at" },
+    ],
+    items || [],
   );
 }
 
@@ -535,14 +690,14 @@ async function refresh() {
 const titles = {
   overview: ["总览", "查看最新批次、结构完整率、标签分布与系统状态"],
   workflow: ["工作流指导", "说明系统每天怎么用、各页面分别负责什么"],
-  run: ["入库计算", "支持选择股票、全选、sh/sz 全部摸底计算"],
+  run: ["入库计算", "支持选择股票、全选、四类股票范围摸底计算"],
   diagnostics: [
     "摸底指标",
     "查看2560各项指标、未命中原因统计，以及接近满足条件的股票",
   ],
   signals: ["信号列表", "逐条查看2560结构条件、标签与解释"],
   latest: ["最新分析结果", "每只股票在最近一次分析中的最终状态"],
-  jobs: ["任务队列", "后台调度与执行情况"],
+  jobs: ["创建批量任务", "后台调度与执行情况"],
   complete: ["完整结构", "查看最近结构完整案例及后续表现"],
   statistics: ["结构统计", "按结构状态、标签、行业、板块、概念统计"],
   batches: ["批次管理", "查看分析批次、版本、运行状态"],
@@ -577,8 +732,10 @@ $("clearSelectedBtn").onclick = () => {
   loadStocks();
   $("runResult").textContent = "等待执行...";
 };
-$("probeShBtn").onclick = () => runProbe("sh");
-$("probeSzBtn").onclick = () => runProbe("sz");
+$("probeSh60Btn").onclick = () => runProbe("sh60");
+$("probeSh68Btn").onclick = () => runProbe("sh68");
+$("probeSz00Btn").onclick = () => runProbe("sz00");
+$("probeSz30Btn").onclick = () => runProbe("sz30");
 $("probeAllBtn").onclick = () => runProbe("all");
 $("diagLoadBtn").onclick = loadDiagnostics;
 $("applySignalFilter").onclick = () => {

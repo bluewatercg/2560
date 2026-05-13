@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Strategy2560 系统连接架构图</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap');
+  :root{--bg:#020617;--panel:#0f172a;--text:#e2e8f0;--muted:#94a3b8;--grid:#1e293b;--cyan:#22d3ee;--emerald:#34d399;--violet:#a78bfa;--amber:#fbbf24;--rose:#fb7185;--orange:#fb923c;--slate:#94a3b8;}
+  *{box-sizing:border-box} body{margin:0;background:radial-gradient(circle at top,#0f172a 0,#020617 48%);color:var(--text);font-family:'JetBrains Mono',monospace;padding:28px;}
+  .wrap{max-width:1320px;margin:0 auto}.header{display:flex;align-items:center;gap:14px;margin-bottom:18px}.dot{width:12px;height:12px;border-radius:50%;background:var(--emerald);box-shadow:0 0 20px var(--emerald);animation:pulse 1.6s infinite}.title{font-size:24px;font-weight:700}.sub{color:var(--muted);font-size:12px;margin-top:6px;line-height:1.6}.card{background:rgba(15,23,42,.76);border:1px solid #334155;border-radius:16px;padding:18px;box-shadow:0 20px 70px rgba(0,0,0,.35)}
+  svg{width:100%;height:auto;display:block}.label{font-size:12px;font-weight:700;fill:#e2e8f0}.sublabel{font-size:9px;fill:#cbd5e1}.tiny{font-size:8px;fill:#94a3b8}.section{font-size:11px;font-weight:700;fill:#f8fafc}.legend{font-size:9px;fill:#cbd5e1}.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:16px}.info{background:rgba(15,23,42,.72);border:1px solid #334155;border-radius:14px;padding:14px}.info h3{font-size:13px;margin:0 0 10px}.info ul{margin:0;padding-left:0;list-style:none;color:#cbd5e1;font-size:11px;line-height:1.8}.footer{color:#64748b;font-size:10px;margin-top:14px;text-align:center}@keyframes pulse{0%,100%{opacity:.55;transform:scale(.9)}50%{opacity:1;transform:scale(1.15)}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="header"><div class="dot"></div><div><div class="title">Strategy2560 Project v2 Engine — 系统连接架构图</div><div class="sub">路径：/mnt/d/Project/Miller/strategy2560_project_v2_engine ｜ 目标：A股行情导入、指标计算、2560/2568结构扫描、WebUI复盘、候选股硬核验</div></div></div>
+  <div class="card">
+<svg viewBox="0 0 1280 920" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e293b" stroke-width="0.5"/></pattern>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#64748b"/></marker>
+    <marker id="arrowCyan" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#22d3ee"/></marker>
+    <marker id="arrowEmerald" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#34d399"/></marker>
+    <marker id="arrowViolet" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#a78bfa"/></marker>
+    <marker id="arrowOrange" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#fb923c"/></marker>
+    <style>
+      .boxbg{fill:#0f172a}.front{fill:rgba(8,51,68,.4);stroke:#22d3ee;stroke-width:1.5}.back{fill:rgba(6,78,59,.4);stroke:#34d399;stroke-width:1.5}.db{fill:rgba(76,29,149,.4);stroke:#a78bfa;stroke-width:1.5}.cloud{fill:rgba(120,53,15,.3);stroke:#fbbf24;stroke-width:1.5}.sec{fill:rgba(136,19,55,.4);stroke:#fb7185;stroke-width:1.5}.bus{fill:rgba(251,146,60,.3);stroke:#fb923c;stroke-width:1.5}.ext{fill:rgba(30,41,59,.5);stroke:#94a3b8;stroke-width:1.5}.line{fill:none;stroke:#64748b;stroke-width:1.4;marker-end:url(#arrow)}.cyanLine{fill:none;stroke:#22d3ee;stroke-width:1.5;marker-end:url(#arrowCyan)}.emeraldLine{fill:none;stroke:#34d399;stroke-width:1.5;marker-end:url(#arrowEmerald)}.violetLine{fill:none;stroke:#a78bfa;stroke-width:1.5;marker-end:url(#arrowViolet)}.orangeLine{fill:none;stroke:#fb923c;stroke-width:1.5;marker-end:url(#arrowOrange)}.dash{stroke-dasharray:6 4}.boundary{fill:none;stroke:#fbbf24;stroke-width:1.2;stroke-dasharray:8 5;rx:12}.boundary2{fill:none;stroke:#fb7185;stroke-width:1.1;stroke-dasharray:5 5;rx:12}
+    </style>
+  </defs>
+  <rect width="1280" height="920" fill="#020617"/><rect width="1280" height="920" fill="url(#grid)" opacity=".8"/>
+
+  <!-- boundaries -->
+  <rect x="30" y="80" width="1220" height="720" class="boundary"/>
+  <text x="48" y="105" class="section">本地/容器运行域：strategy2560_project_v2_engine</text>
+  <rect x="405" y="125" width="500" height="625" class="boundary2"/>
+  <text x="425" y="150" class="section">FastAPI + Services 业务域</text>
+
+  <!-- external / user -->
+  <rect x="60" y="150" width="190" height="68" rx="6" class="boxbg"/><rect x="60" y="150" width="190" height="68" rx="6" class="front"/>
+  <text x="82" y="178" class="label">用户 / Hermes</text><text x="82" y="197" class="sublabel">网页筛股、PDF分析、CLI核对</text>
+
+  <rect x="60" y="260" width="190" height="68" rx="6" class="boxbg"/><rect x="60" y="260" width="190" height="68" rx="6" class="ext"/>
+  <text x="82" y="288" class="label">妙想 / 妙梦接口</text><text x="82" y="307" class="sublabel">行情、行业、PE、热点、个股诊断</text>
+
+  <rect x="60" y="375" width="190" height="68" rx="6" class="boxbg"/><rect x="60" y="375" width="190" height="68" rx="6" class="cloud"/>
+  <text x="82" y="403" class="label">通达信 VIPDOC</text><text x="82" y="422" class="sublabel">./zd_ciccwm/vipdoc → /data/vipdoc:ro</text>
+
+  <rect x="60" y="490" width="190" height="68" rx="6" class="boxbg"/><rect x="60" y="490" width="190" height="68" rx="6" class="ext"/>
+  <text x="82" y="518" class="label">本地PDF/网页结果</text><text x="82" y="537" class="sublabel">grok.pdf / Deepseek.pdf / 股票列表</text>
+
+  <!-- web frontend -->
+  <rect x="300" y="145" width="190" height="80" rx="6" class="boxbg"/><rect x="300" y="145" width="190" height="80" rx="6" class="front"/>
+  <text x="326" y="174" class="label">WebUI</text><text x="326" y="193" class="sublabel">app/static/index.html</text><text x="326" y="209" class="tiny">浏览批次、任务、信号、质量</text>
+
+  <rect x="300" y="255" width="190" height="80" rx="6" class="boxbg"/><rect x="300" y="255" width="190" height="80" rx="6" class="front"/>
+  <text x="326" y="284" class="label">CLI / Scripts</text><text x="326" y="303" class="sublabel">run_2560_analysis.py</text><text x="326" y="319" class="tiny">指定股票/批量扫描/统计重建</text>
+
+  <!-- api -->
+  <rect x="545" y="135" width="220" height="85" rx="6" class="boxbg"/><rect x="545" y="135" width="220" height="85" rx="6" class="back"/>
+  <text x="572" y="165" class="label">FastAPI App</text><text x="572" y="184" class="sublabel">app/main.py :8000</text><text x="572" y="201" class="tiny">/health /docs /static</text>
+
+  <rect x="545" y="250" width="220" height="108" rx="6" class="boxbg"/><rect x="545" y="250" width="220" height="108" rx="6" class="back"/>
+  <text x="572" y="279" class="label">API Routers</text><text x="572" y="298" class="sublabel">strategy2560 / strategy2568</text><text x="572" y="315" class="tiny">latest / jobs / import_data</text><text x="572" y="332" class="tiny">data_quality / reports</text>
+
+  <!-- services -->
+  <rect x="445" y="405" width="180" height="86" rx="6" class="boxbg"/><rect x="445" y="405" width="180" height="86" rx="6" class="back"/>
+  <text x="468" y="434" class="label">SignalEngine2560</text><text x="468" y="453" class="sublabel">30m扫描 + 5m确认</text><text x="468" y="470" class="tiny">price_near / slope / volume</text>
+
+  <rect x="685" y="405" width="180" height="86" rx="6" class="boxbg"/><rect x="685" y="405" width="180" height="86" rx="6" class="back"/>
+  <text x="710" y="434" class="label">IndicatorEngine</text><text x="710" y="453" class="sublabel">MA / VOL / ATR / High20</text><text x="710" y="470" class="tiny">ma25, vol_ma5/60, deviation</text>
+
+  <rect x="445" y="530" width="180" height="86" rx="6" class="boxbg"/><rect x="445" y="530" width="180" height="86" rx="6" class="back"/>
+  <text x="468" y="559" class="label">Tag / Explain</text><text x="468" y="578" class="sublabel">tag_service.py</text><text x="468" y="595" class="tiny">结构状态、缺失项、解释文本</text>
+
+  <rect x="685" y="530" width="180" height="86" rx="6" class="boxbg"/><rect x="685" y="530" width="180" height="86" rx="6" class="back"/>
+  <text x="710" y="559" class="label">Statistics / Returns</text><text x="710" y="578" class="sublabel">statistics_engine</text><text x="710" y="595" class="tiny">批次统计、未来收益回填</text>
+
+  <rect x="545" y="660" width="220" height="70" rx="6" class="boxbg"/><rect x="545" y="660" width="220" height="70" rx="6" class="bus"/>
+  <text x="572" y="690" class="label">Job Orchestration</text><text x="572" y="709" class="sublabel">job_worker / import_job_runner / 30m_runner</text>
+
+  <!-- database -->
+  <rect x="965" y="145" width="230" height="88" rx="6" class="boxbg"/><rect x="965" y="145" width="230" height="88" rx="6" class="db"/>
+  <text x="994" y="174" class="label">MySQL</text><text x="994" y="193" class="sublabel">watchlist_decision_support</text><text x="994" y="210" class="tiny">默认 192.168.1.254:3306</text>
+
+  <rect x="965" y="270" width="230" height="118" rx="6" class="boxbg"/><rect x="965" y="270" width="230" height="118" rx="6" class="db"/>
+  <text x="994" y="299" class="label">行情基础表</text><text x="994" y="318" class="sublabel">stock_info</text><text x="994" y="336" class="sublabel">daily_kline</text><text x="994" y="354" class="sublabel">minute_kline / minute_kline_period</text>
+
+  <rect x="965" y="425" width="230" height="138" rx="6" class="boxbg"/><rect x="965" y="425" width="230" height="138" rx="6" class="db"/>
+  <text x="994" y="454" class="label">计算与分析表</text><text x="994" y="473" class="sublabel">technical_indicator</text><text x="994" y="491" class="sublabel">analysis_batch</text><text x="994" y="509" class="sublabel">structure_2560_analysis</text><text x="994" y="527" class="sublabel">structure_2560_tag_detail</text><text x="994" y="545" class="sublabel">statistics / future_returns</text>
+
+  <rect x="965" y="615" width="230" height="88" rx="6" class="boxbg"/><rect x="965" y="615" width="230" height="88" rx="6" class="sec"/>
+  <text x="994" y="644" class="label">配置 / 环境</text><text x="994" y="663" class="sublabel">.env / app/core/config.py</text><text x="994" y="680" class="tiny">DB_HOST, APP_PORT, VIPDOC_ROOT</text>
+
+  <!-- connections -->
+  <path d="M250 184 C270 184 278 184 300 184" class="cyanLine"/><text x="256" y="174" class="tiny">浏览</text>
+  <path d="M490 184 C515 184 522 178 545 178" class="cyanLine"/><text x="502" y="168" class="tiny">HTTP</text>
+  <path d="M490 295 C515 295 522 295 545 295" class="emeraldLine"/><text x="502" y="286" class="tiny">CLI 调用</text>
+  <path d="M655 220 L655 250" class="emeraldLine"/>
+  <path d="M655 358 C655 382 580 382 535 405" class="emeraldLine"/>
+  <path d="M655 358 C655 382 735 382 775 405" class="emeraldLine"/>
+  <path d="M625 448 L685 448" class="emeraldLine"/><text x="637" y="438" class="tiny">指标输入</text>
+  <path d="M535 491 L535 530" class="emeraldLine"/>
+  <path d="M775 491 L775 530" class="emeraldLine"/>
+  <path d="M625 573 L685 573" class="emeraldLine"/>
+  <path d="M655 616 L655 660" class="orangeLine"/>
+  <path d="M250 409 C290 409 305 350 300 310" class="orangeLine"/><text x="262" y="384" class="tiny">导入脚本</text>
+  <path d="M250 294 C270 294 278 294 300 294" class="line dash"/><text x="260" y="282" class="tiny">外部事实核对</text>
+  <path d="M250 524 C300 524 340 360 545 304" class="line dash"/><text x="276" y="506" class="tiny">候选输入</text>
+
+  <!-- db flows -->
+  <path d="M765 178 C835 178 890 188 965 188" class="violetLine"/><text x="820" y="168" class="tiny">SessionLocal / SQLAlchemy</text>
+  <path d="M865 448 C910 448 930 329 965 329" class="violetLine"/><text x="872" y="422" class="tiny">读取K线</text>
+  <path d="M865 448 C922 448 935 491 965 491" class="violetLine"/><text x="872" y="468" class="tiny">写入信号</text>
+  <path d="M865 573 C922 573 935 520 965 520" class="violetLine"/><text x="872" y="558" class="tiny">统计/标签</text>
+  <path d="M765 694 C855 694 905 659 965 659" class="violetLine"/><text x="814" y="679" class="tiny">任务状态/批次</text>
+  <path d="M250 409 C680 755 865 345 965 329" class="orangeLine dash"/><text x="330" y="654" class="tiny">VIPDOC → daily/minute_kline</text>
+
+  <!-- deployment note -->
+  <rect x="300" y="675" width="190" height="70" rx="6" class="boxbg"/><rect x="300" y="675" width="190" height="70" rx="6" class="cloud"/>
+  <text x="326" y="704" class="label">Docker Compose</text><text x="326" y="723" class="sublabel">web + worker</text><text x="326" y="739" class="tiny">logs/sql/vipdoc volumes</text>
+  <path d="M490 710 L545 695" class="orangeLine"/>
+
+  <!-- final output -->
+  <rect x="60" y="640" width="190" height="86" rx="6" class="boxbg"/><rect x="60" y="640" width="190" height="86" rx="6" class="front"/>
+  <text x="82" y="669" class="label">输出给用户</text><text x="82" y="688" class="sublabel">可执行 / 观察 / 淘汰</text><text x="82" y="705" class="tiny">结合妙想事实 + 本地2560硬核验</text>
+  <path d="M545 710 C420 760 300 710 250 690" class="cyanLine"/>
+
+  <!-- legend -->
+  <g transform="translate(60 835)">
+    <text x="0" y="0" class="section">图例</text>
+    <rect x="0" y="18" width="14" height="10" class="front"/><text x="22" y="27" class="legend">Frontend / 用户入口</text>
+    <rect x="165" y="18" width="14" height="10" class="back"/><text x="187" y="27" class="legend">Backend / 服务</text>
+    <rect x="315" y="18" width="14" height="10" class="db"/><text x="337" y="27" class="legend">Database / 表</text>
+    <rect x="455" y="18" width="14" height="10" class="cloud"/><text x="477" y="27" class="legend">数据源/部署</text>
+    <rect x="610" y="18" width="14" height="10" class="bus"/><text x="632" y="27" class="legend">任务队列/Runner</text>
+    <rect x="775" y="18" width="14" height="10" class="sec"/><text x="797" y="27" class="legend">配置/安全边界</text>
+    <line x1="950" y1="23" x2="990" y2="23" class="emeraldLine"/><text x="1000" y="27" class="legend">调用/处理流</text>
+  </g>
+</svg>
+  </div>
+  <div class="cards">
+    <div class="info"><h3>核心链路</h3><ul><li>• 用户输入股票 → WebUI/CLI/API</li><li>• 读取 MySQL K线与股票信息</li><li>• IndicatorEngine 计算 MA/VOL/ATR</li><li>• SignalEngine2560 扫描 30m + 5m确认</li></ul></div>
+    <div class="info"><h3>数据链路</h3><ul><li>• VIPDOC 导入 daily_kline / minute_kline</li><li>• 妙想/妙梦补充行情、热点、行业、PE</li><li>• technical_indicator 保存计算指标</li><li>• structure_2560_analysis 保存信号</li></ul></div>
+    <div class="info"><h3>部署链路</h3><ul><li>• docker-compose: web + worker</li><li>• Web 服务默认端口 8000</li><li>• Worker 执行 job_worker.py</li><li>• .env 管理数据库与运行参数</li></ul></div>
+  </div>
+  <div class="footer">Generated for Strategy2560 Project v2 Engine · 本图仅描述系统连接，不构成交易建议</div>
+</div>
+</body>
+</html>

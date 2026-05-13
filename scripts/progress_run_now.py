@@ -30,6 +30,8 @@ from typing import Iterable
 import requests
 from sqlalchemy import create_engine, text
 
+from app.core.market_scope import market_sql_where
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 # 独立脚本必须主动读取项目根目录 .env，否则 subprocess 子进程拿不到 DB_HOST/DB_USER/DB_NAME。
@@ -73,15 +75,7 @@ def engine():
 
 
 def market_where(alias: str, market: str) -> str:
-    col = f"{alias}.code"
-    m = (market or "all").lower()
-    if m == "sh": return f"{col} LIKE 'sh.%'"
-    if m == "sz": return f"{col} LIKE 'sz.%'"
-    if m == "sh60": return f"{col} LIKE 'sh.60%'"
-    if m == "sh68": return f"{col} LIKE 'sh.68%'"
-    if m == "sz00": return f"{col} LIKE 'sz.00%'"
-    if m == "sz30": return f"{col} LIKE 'sz.30%'"
-    return f"({col} LIKE 'sh.%' OR {col} LIKE 'sz.%')"
+    return market_sql_where(f"{alias}.code", market)
 
 
 def load_codes(en) -> list[str]:

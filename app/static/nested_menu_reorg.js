@@ -1,17 +1,28 @@
-
 (function(){
+  const DATA_PREP_VIEWS = new Set([
+    'data-update',
+    'data-import-run',
+    'data-import-batches',
+    'data-import-logs'
+  ]);
+
+  const VIRTUAL_VIEWS = new Set([
+    'data-update',
+    'data-import-run',
+    'data-import-batches'
+  ]);
+
   const MENU_GROUPS = [
     {
-      title: '自选股计算',
+      title: '数据准备',
       items: [
-        ['run', '自选股计算'],
-        ['watchlist-calc', '自选股计算'],
-        ['manual-calc', '手动输入计算'],
-        ['calc-result', '本次计算结果']
+        ['data-update', '导入前检查'],
+        ['data-import-run', '发起导入'],
+        ['data-import-batches', '批次/日志']
       ]
     },
     {
-      title: '市场批量任务',
+      title: '计算任务',
       items: [
         ['jobs', '创建批量任务'],
         ['job-progress', '当前执行进度'],
@@ -21,24 +32,12 @@
       ]
     },
     {
-      title: '数据导入',
-      items: [
-        ['data-update', '数据导入'],
-        ['import-scan', '导入目录扫描'],
-        ['import-run', '行情文件导入'],
-        ['import-batches', '导入批次'],
-        ['import-logs', '导入日志'],
-        ['import-errors', '失败文件']
-      ]
-    },
-    {
-      title: '查询分析',
+      title: '分析结果',
       items: [
         ['latest', '最新结果'],
         ['signals', '信号中心'],
         ['complete', '结构详情'],
         ['statistics', '市场统计'],
-        ['quality', '数据健康'],
         ['diagnostic-indicators', '摸底指标'],
         ['annotation2568', '2568 标注'],
         ['annotation-2568', '2568 标注'],
@@ -48,6 +47,7 @@
     {
       title: '系统诊断',
       items: [
+        ['quality', '数据健康'],
         ['diagnostics', '系统诊断'],
         ['db-check', '数据库连接'],
         ['path-check', '行情目录检查'],
@@ -59,7 +59,8 @@
 
   const TOP_LEVEL = [
     ['overview', '首页总览'],
-    ['workflow', '工作流说明']
+    ['workflow', '工作流说明'],
+    ['run', '自选股计算']
   ];
 
   function $(sel, root=document){
@@ -73,9 +74,10 @@
   function renameCommonText(){
     const replacements = [
       ['入库计算', '自选股计算'],
-      ['任务队列', '市场批量任务'],
-      ['数据更新', '数据导入'],
-      ['数据查询', '查询分析'],
+      ['数据更新', '数据准备'],
+      ['数据导入', '数据准备'],
+      ['数据查询', '分析结果'],
+      ['查询分析', '分析结果'],
       ['最新分析结果', '最新结果'],
       ['信号列表', '信号中心'],
       ['完整结构', '结构详情'],
@@ -84,7 +86,8 @@
       ['并行分片数（shards）', '同时跑几组（并发数）'],
       ['任务优先级（priority）', '优先级（数字越小越先跑）'],
       ['立即执行并行脚本', '立即执行并看进度'],
-      ['入队执行', '加入队列后台跑']
+      ['入队执行', '加入队列后台跑'],
+      ['工作流指导', '工作流说明']
     ];
 
     const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null);
@@ -94,45 +97,49 @@
 
     nodes.forEach(node => {
       let text = node.nodeValue;
-      replacements.forEach(([a,b]) => {
+      replacements.forEach(([a, b]) => {
         text = text.split(a).join(b);
       });
       node.nodeValue = text;
     });
   }
 
-  function makeGroup(title){
-    const wrap = document.createElement('div');
-    wrap.className = 'nav-group';
-
+  function makeNavButton(view, label){
     const btn = document.createElement('button');
     btn.type = 'button';
-    btn.className = 'nav-group-title';
-    btn.innerHTML = `<span>${title}</span><span class="nav-group-arrow">▾</span>`;
+    btn.dataset.view = view;
+    btn.textContent = label;
+    btn.className = 'nav-item';
+    return btn;
+  }
+
+  function normalizeButton(btn, label, subItem){
+    btn.textContent = label;
+    btn.classList.add('nav-item');
+    btn.classList.toggle('nav-sub-item', Boolean(subItem));
+    return btn;
+  }
+
+  function makeStaticGroup(title){
+    const wrap = document.createElement('div');
+    wrap.className = 'nav-static-group';
+    wrap.dataset.groupTitle = title;
+
+    const heading = document.createElement('div');
+    heading.className = 'nav-group-title';
+    heading.textContent = title;
 
     const sub = document.createElement('div');
     sub.className = 'nav-sub';
 
-    btn.addEventListener('click', () => {
-      wrap.classList.toggle('collapsed');
-    });
-
-    wrap.appendChild(btn);
+    wrap.appendChild(heading);
     wrap.appendChild(sub);
-
     return {wrap, sub};
-  }
-
-  function normalizeButton(btn, label){
-    btn.textContent = label;
-    btn.classList.add('nav-item');
-    btn.classList.add('nav-sub-item');
-    return btn;
   }
 
   function rebuildMenu(){
     const nav = document.querySelector('.nav');
-    if(!nav || nav.dataset.nestedMenuApplied === '1') return;
+    if(!nav || nav.dataset.staticMenuApplied === '1') return;
 
     const oldButtons = all('.nav-item[data-view]', nav);
     if(!oldButtons.length) return;
@@ -144,95 +151,90 @@
     });
 
     const used = new Set();
-
     nav.innerHTML = '';
-    nav.dataset.nestedMenuApplied = '1';
+    nav.dataset.staticMenuApplied = '1';
 
-    // 顶部一级独立入口
     TOP_LEVEL.forEach(([view, label]) => {
-      const btn = byView.get(view);
-      if(btn){
-        btn.textContent = label;
-        btn.classList.remove('nav-sub-item');
-        btn.classList.add('nav-item');
-        nav.appendChild(btn);
-        used.add(view);
-      }
+      const btn = byView.get(view) || makeNavButton(view, label);
+      normalizeButton(btn, label, false);
+      nav.appendChild(btn);
+      used.add(view);
     });
 
-    // 分组入口
     MENU_GROUPS.forEach(group => {
-      const {wrap, sub} = makeGroup(group.title);
+      const {wrap, sub} = makeStaticGroup(group.title);
       let count = 0;
-
       group.items.forEach(([view, label]) => {
-        const btn = byView.get(view);
-        if(btn){
-          normalizeButton(btn, label);
-          sub.appendChild(btn);
-          used.add(view);
-          count += 1;
-        }
+        const btn = byView.get(view) || (VIRTUAL_VIEWS.has(view) ? makeNavButton(view, label) : null);
+        if(!btn) return;
+        normalizeButton(btn, label, true);
+        sub.appendChild(btn);
+        used.add(view);
+        count += 1;
       });
-
-      if(count > 0){
-        nav.appendChild(wrap);
-      }
+      if(count > 0) nav.appendChild(wrap);
     });
 
-    // 未归类的旧菜单放到“其他”
     const rest = oldButtons.filter(btn => {
       const view = btn.dataset.view;
       return view && !used.has(view);
     });
-
     if(rest.length){
-      const {wrap, sub} = makeGroup('其他');
+      const {wrap, sub} = makeStaticGroup('其他');
       rest.forEach(btn => {
-        normalizeButton(btn, btn.textContent.trim() || btn.dataset.view);
+        normalizeButton(btn, btn.textContent.trim() || btn.dataset.view, true);
         sub.appendChild(btn);
       });
       nav.appendChild(wrap);
     }
 
-    bindActiveGroup();
+    bindNav(nav);
   }
 
-  function bindActiveGroup(){
-    const nav = document.querySelector('.nav');
-    if(!nav) return;
+  function showDataPrepView(view){
+    if(window.showDataImportView){
+      window.showDataImportView(view);
+      return;
+    }
 
+    all('.view').forEach(v => v.classList.remove('active'));
+    const section = $('#view-data-update');
+    if(section) section.classList.add('active');
+
+    const titleMap = {
+      'data-update': ['导入前检查', '扫描 /data/vipdoc 源文件范围，不写数据库。'],
+      'data-import-run': ['发起导入', '选择市场、日线/5m/all、日期范围和并发线程，提交后台导入任务。'],
+      'data-import-batches': ['批次/日志', '查看导入批次，点选后追踪 job_execution 与 Shard 汇总。']
+    };
+    const [title, subtitle] = titleMap[view] || titleMap['data-update'];
+    if($('#pageTitle')) $('#pageTitle').textContent = title;
+    if($('#pageSubtitle')) $('#pageSubtitle').textContent = subtitle;
+  }
+
+  function bindNav(nav){
+    if(nav.dataset.staticMenuBound === '1') return;
+    nav.dataset.staticMenuBound = '1';
     nav.addEventListener('click', function(e){
       const item = e.target.closest('.nav-item[data-view]');
       if(!item) return;
+      const view = item.dataset.view || '';
+
+      if(DATA_PREP_VIEWS.has(view)){
+        e.preventDefault();
+        e.stopPropagation();
+        showDataPrepView(view);
+      }
 
       all('.nav-item[data-view]', nav).forEach(x => x.classList.remove('active'));
       item.classList.add('active');
-
-      const group = item.closest('.nav-group');
-      if(group){
-        group.classList.remove('collapsed');
-      }
     });
-  }
-
-  function expandGroupForActive(){
-    const active = document.querySelector('.nav .nav-item.active[data-view]');
-    if(!active) return;
-
-    const group = active.closest('.nav-group');
-    if(group){
-      group.classList.remove('collapsed');
-    }
   }
 
   function boot(){
     renameCommonText();
     rebuildMenu();
-    expandGroupForActive();
   }
 
   document.addEventListener('DOMContentLoaded', boot);
   setTimeout(boot, 200);
-  setInterval(boot, 1500);
 })();

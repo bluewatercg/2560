@@ -46,6 +46,7 @@ def ensure_job_tables(db: Session) -> None:
             job_type VARCHAR(50) NOT NULL,
             batch_id VARCHAR(100) NULL,
             status VARCHAR(20) NOT NULL DEFAULT 'running',
+            cancel_requested_at DATETIME NULL,
             progress_current INT NOT NULL DEFAULT 0,
             progress_total INT NOT NULL DEFAULT 0,
             success_count INT NOT NULL DEFAULT 0,
@@ -65,6 +66,8 @@ def ensure_job_tables(db: Session) -> None:
     """))
     if not _column_exists(db, "job_execution", "pid"):
         db.execute(text("ALTER TABLE job_execution ADD COLUMN pid BIGINT NULL AFTER shards"))
+    if not _column_exists(db, "job_execution", "cancel_requested_at"):
+        db.execute(text("ALTER TABLE job_execution ADD COLUMN cancel_requested_at DATETIME NULL AFTER status"))
     db.execute(text("""
         CREATE TABLE IF NOT EXISTS job_task_item (
             id BIGINT PRIMARY KEY AUTO_INCREMENT,

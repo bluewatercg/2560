@@ -20,6 +20,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 from sqlalchemy import text
+
+from app.core.market_scope import market_sql_where
 from app.db.session import SessionLocal
 
 
@@ -35,20 +37,7 @@ def parse_args():
 
 
 def market_where(mt: str) -> str:
-    mt = (mt or 'all').lower()
-    if mt == 'sh':
-        return "code LIKE 'sh.%'"
-    if mt == 'sz':
-        return "code LIKE 'sz.%'"
-    if mt == 'sh60':
-        return "code LIKE 'sh.60%'"
-    if mt == 'sh68':
-        return "code LIKE 'sh.68%'"
-    if mt == 'sz00':
-        return "code LIKE 'sz.00%'"
-    if mt == 'sz30':
-        return "code LIKE 'sz.30%'"
-    return "(code LIKE 'sh.%' OR code LIKE 'sz.%')"
+    return market_sql_where("code", mt)
 
 
 def daily_start_int(s: str) -> int:
@@ -134,26 +123,49 @@ def source_table(period: str) -> str:
     return 'daily_kline' if period == 'daily' else 'minute_kline_period'
 
 
+def input_source(period: str) -> str:
+    if period == 'daily':
+        return 'vipdoc'
+    if period == '5m':
+        return 'vipdoc'
+    if period == '30m':
+        return 'build_from_5m'
+    raise ValueError(f"unsupported period={period}")
+
+
+def select_source_rows(df: pd.DataFrame, source: str) -> pd.DataFrame:
+    if df.empty:
+        return df
+    if 'source' in df.columns:
+        preferred = df[df['source'] == source].copy()
+        if not preferred.empty:
+            df = preferred
+    return df.sort_values(['date']).drop_duplicates(subset=['date'], keep='last').reset_index(drop=True)
+
+
 def get_codes(db, period: str, start_i: int, end_i: int, market_type: str, limit_codes: int | None):
+    src = input_source(period)
     if period == 'daily':
         sql = f"""
             SELECT DISTINCT code
             FROM daily_kline
             WHERE date BETWEEN :s AND :e
+              AND source=:source
               AND {market_where(market_type)}
             ORDER BY code
         """
-        params = {'s': start_i, 'e': end_i}
+        params = {'s': start_i, 'e': end_i, 'source': src}
     else:
         sql = f"""
             SELECT DISTINCT code
             FROM minute_kline_period
             WHERE period=:period
+              AND source=:source
               AND date BETWEEN :s AND :e
               AND {market_where(market_type)}
             ORDER BY code
         """
-        params = {'period': period, 's': start_i, 'e': end_i}
+        params = {'period': period, 's': start_i, 'e': end_i, 'source': src}
     codes = [r[0] for r in db.execute(text(sql), params).fetchall()]
     if limit_codes:
         codes = codes[:limit_codes]
@@ -161,24 +173,26 @@ def get_codes(db, period: str, start_i: int, end_i: int, market_type: str, limit
 
 
 def load_one_code(db, period: str, code: str, start_i: int, end_i: int) -> pd.DataFrame:
+    src = input_source(period)
     if period == 'daily':
         sql = """
-            SELECT code,date,open,high,low,close,volume
+            SELECT code,date,source,open,high,low,close,volume
             FROM daily_kline
-            WHERE code=:code AND date BETWEEN :s AND :e
+            WHERE code=:code AND source=:source AND date BETWEEN :s AND :e
             ORDER BY date
         """
-        params = {'code': code, 's': start_i, 'e': end_i}
+        params = {'code': code, 'source': src, 's': start_i, 'e': end_i}
     else:
         sql = """
-            SELECT code,date,open,high,low,close,volume
+            SELECT code,date,source,open,high,low,close,volume
             FROM minute_kline_period
-            WHERE code=:code AND period=:period AND date BETWEEN :s AND :e
+            WHERE code=:code AND period=:period AND source=:source AND date BETWEEN :s AND :e
             ORDER BY date
         """
-        params = {'code': code, 'period': period, 's': start_i, 'e': end_i}
+        params = {'code': code, 'period': period, 'source': src, 's': start_i, 'e': end_i}
     rows = db.execute(text(sql), params).mappings().all()
-    return pd.DataFrame([dict(r) for r in rows]) if rows else pd.DataFrame()
+    df = pd.DataFrame([dict(r) for r in rows]) if rows else pd.DataFrame()
+    return select_source_rows(df, src)
 
 
 def make_records(code: str, period: str, ind: pd.DataFrame) -> list[dict]:

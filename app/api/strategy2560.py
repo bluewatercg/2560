@@ -65,6 +65,7 @@ def supported_sql_where() -> str:
 
 def type_sql_where(type_key: str) -> str:
     n = NORMALIZED_CODE_SQL
+    type_key = (type_key or 'all').lower().strip()
     if type_key in SUPPORTED_TYPES:
         return f"{n} LIKE '{SUPPORTED_TYPES[type_key][1]}%'"
     if type_key == 'sz':
@@ -75,7 +76,7 @@ def type_sql_where(type_key: str) -> str:
 
 def market_type_matches(code: str, market_type: str) -> bool:
     t = type_key_for_code(code)
-    mt = (market_type or 'all').lower()
+    mt = (market_type or 'all').lower().strip()
     return mt in ('', 'all') or mt == t or (mt == 'sz' and t in ('sz00', 'sz30')) or (mt == 'sh' and t in ('sh60', 'sh68'))
 
 def resolve_db_code(db: Session, raw_code: str, market_type: str = 'all') -> str | None:
@@ -86,7 +87,7 @@ def resolve_db_code(db: Session, raw_code: str, market_type: str = 'all') -> str
     candidates = [raw, norm, 'sz' + norm, 'sh' + norm, 'sz.' + norm, 'sh.' + norm]
     sql = (
         f"SELECT code FROM stock_info WHERE ({NORMALIZED_CODE_SQL}=:norm OR code IN :candidates) "
-        f"AND {type_sql_where((market_type or 'all').lower())} ORDER BY code LIMIT 1"
+        f"AND {type_sql_where(market_type)} ORDER BY code LIMIT 1"
     )
     rows = db.execute(text(sql), {'norm': norm, 'candidates': tuple(candidates)}).fetchall()
     return rows[0][0] if rows else None
@@ -109,7 +110,7 @@ def overview(db: Session = Depends(get_db)):
 
 @router.get('/stocks', response_model=ApiResponse)
 def stocks(q: Optional[str] = None, market_type: Optional[str] = Query(default='all'), limit: int = Query(100, ge=1, le=1000), db: Session = Depends(get_db)):
-    mt = (market_type or 'all').lower()
+    mt = (market_type or 'all').lower().strip()
     where = [supported_sql_where()]
     if mt != 'all':
         where.append(type_sql_where(mt))
@@ -132,7 +133,7 @@ def stocks(q: Optional[str] = None, market_type: Optional[str] = Query(default='
     return ApiResponse(data=data)
 
 def build_probe(db: Session, market_type: str = 'all', limit: int = 500, q: Optional[str] = None, near_only: bool = False) -> dict:
-    mt = (market_type or 'all').lower()
+    mt = (market_type or 'all').lower().strip()
     where = [type_sql_where(mt)]
     params = {'limit': limit}
     q_norm = (q or '').strip().lower()
@@ -255,7 +256,7 @@ def probe_reason_stats(market_type: str = Query('all'), limit: int = Query(1000,
 
 @router.post('/run', response_model=ApiResponse)
 def run_analysis(payload: RunAnalysisRequest, db: Session = Depends(get_db)):
-    mt = (payload.market_type or 'all').lower()
+    mt = (payload.market_type or 'all').lower().strip()
     requested_codes = [c.strip() for c in payload.codes if c and c.strip()]
     accepted_codes, rejected_codes, seen = [], [], set()
     for raw in requested_codes:

@@ -31,13 +31,14 @@ except Exception:  # pragma: no cover
     TdxDailyBarReader = None
     TdxLCMinBarReader = None
 
+from app.core.market_scope import market_file_prefixes, normalize_market_scope
 from app.db.session import SessionLocal
 
 SOURCE = "vipdoc"
 
 
 def _norm_market(market: str) -> str:
-    return (market or "sh").lower().strip()
+    return normalize_market_scope(market)
 
 
 def _side_from_market(market: str) -> str:
@@ -45,31 +46,27 @@ def _side_from_market(market: str) -> str:
     return "sh" if m.startswith("sh") else "sz" if m.startswith("sz") else m
 
 
+def _side_from_filename(path: Path, market: str) -> str:
+    name = path.name.lower()
+    if name.startswith("sh"):
+        return "sh"
+    if name.startswith("sz"):
+        return "sz"
+    return _side_from_market(market)
+
+
 def code_from_filename(path: Path, market: str) -> str:
     name = path.stem.lower()
     digits = "".join(c for c in name if c.isdigit())
     if len(digits) < 6:
         raise ValueError(f"Cannot parse stock code from file name: {path.name}")
-    side = _side_from_market(market)
+    side = _side_from_filename(path, market)
     return f"{side}.{digits[-6:]}"
 
 
 def _file_match(path: Path, market: str) -> bool:
     name = path.name.lower()
-    m = _norm_market(market)
-    if m == "sh":
-        return name.startswith("sh")
-    if m == "sz":
-        return name.startswith("sz")
-    if m == "sh60":
-        return name.startswith("sh60")
-    if m == "sh68":
-        return name.startswith("sh68")
-    if m == "sz00":
-        return name.startswith("sz00")
-    if m == "sz30":
-        return name.startswith("sz30")
-    return name.startswith("sh") or name.startswith("sz")
+    return any(name.startswith(prefix) for prefix in market_file_prefixes(market))
 
 
 def _date_int(v) -> int:
@@ -111,14 +108,21 @@ def _amount(row) -> float:
 
 
 def _scan_dirs(root: Path, market: str, import_type: str) -> list[Path]:
-    side = _side_from_market(market)
-    base = root / side
+    m = _norm_market(market)
+    if m in ("sh60", "sh68", "sh"):
+        sides = ("sh",)
+    elif m in ("sz00", "sz30", "sz"):
+        sides = ("sz",)
+    else:
+        sides = ("sh", "sz")
     t = (import_type or "all").lower()
     dirs: list[Path] = []
-    if t in ("all", "lday", "daily"):
-        dirs.append(base / "lday")
-    if t in ("all", "5m", "lc5", "fzline"):
-        dirs.append(base / "fzline")
+    for side in sides:
+        base = root / side
+        if t in ("all", "lday", "daily"):
+            dirs.append(base / "lday")
+        if t in ("all", "5m", "lc5", "fzline"):
+            dirs.append(base / "fzline")
     return [d for d in dirs if d.exists() and d.is_dir()]
 
 
