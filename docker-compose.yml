@@ -15,9 +15,11 @@ services:
       - ./logs:/app/logs
       - ./sql:/app/sql
       - ./zd_ciccwm/vipdoc:/data/vipdoc:ro
-  worker:
+
+  # ── 数据准备 worker（导入 / 30m / 指标） ──
+  worker-data:
     image: strategy2560:latest
-    container_name: strategy2560-worker
+    container_name: strategy2560-worker-data
     env_file:
       - .env
     environment:
@@ -31,8 +33,91 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     command: ["python", "scripts/job_worker.py"]
-    healthcheck:
-      disable: true
+    restart: unless-stopped
+    depends_on:
+      - web
+
+  # ── 2560 市场 lane worker ──
+  worker-sh60:
+    image: strategy2560:latest
+    container_name: strategy2560-worker-sh60
+    env_file:
+      - .env
+    environment:
+      - PYTHONPATH=/app
+      - VIPDOC_ROOT=/data/vipdoc
+      - WEB_BASE_URL=http://web:8000
+      - WORKER_MARKET=sh60
+    volumes:
+      - ./logs:/app/logs
+      - ./sql:/app/sql
+      - ./zd_ciccwm/vipdoc:/data/vipdoc:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: ["python", "scripts/job_worker.py"]
+    restart: unless-stopped
+    depends_on:
+      - web
+
+  worker-sh68:
+    image: strategy2560:latest
+    container_name: strategy2560-worker-sh68
+    env_file:
+      - .env
+    environment:
+      - PYTHONPATH=/app
+      - VIPDOC_ROOT=/data/vipdoc
+      - WEB_BASE_URL=http://web:8000
+      - WORKER_MARKET=sh68
+    volumes:
+      - ./logs:/app/logs
+      - ./sql:/app/sql
+      - ./zd_ciccwm/vipdoc:/data/vipdoc:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: ["python", "scripts/job_worker.py"]
+    restart: unless-stopped
+    depends_on:
+      - web
+
+  worker-sz00:
+    image: strategy2560:latest
+    container_name: strategy2560-worker-sz00
+    env_file:
+      - .env
+    environment:
+      - PYTHONPATH=/app
+      - VIPDOC_ROOT=/data/vipdoc
+      - WEB_BASE_URL=http://web:8000
+      - WORKER_MARKET=sz00
+    volumes:
+      - ./logs:/app/logs
+      - ./sql:/app/sql
+      - ./zd_ciccwm/vipdoc:/data/vipdoc:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: ["python", "scripts/job_worker.py"]
+    restart: unless-stopped
+    depends_on:
+      - web
+
+  worker-sz30:
+    image: strategy2560:latest
+    container_name: strategy2560-worker-sz30
+    env_file:
+      - .env
+    environment:
+      - PYTHONPATH=/app
+      - VIPDOC_ROOT=/data/vipdoc
+      - WEB_BASE_URL=http://web:8000
+      - WORKER_MARKET=sz30
+    volumes:
+      - ./logs:/app/logs
+      - ./sql:/app/sql
+      - ./zd_ciccwm/vipdoc:/data/vipdoc:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: ["python", "scripts/job_worker.py"]
     restart: unless-stopped
     depends_on:
       - web

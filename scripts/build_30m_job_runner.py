@@ -124,6 +124,20 @@ def main():
         )
         db.commit()
 
+    # 更新 workspace_status：构建30m后刷新对应market的30m数据记录
+    if status == "success":
+        from app.services.workspace_service import refresh_market_from_db
+        from app.core.market_scope import VALID_MARKETS
+        from app.db.session import SessionLocal as _DB
+        actual_market = a.market or "all"
+        if actual_market == "all":
+            for m in VALID_MARKETS:
+                with _DB() as db:
+                    refresh_market_from_db(db, m, periods=["30m"])
+        else:
+            with _DB() as db:
+                refresh_market_from_db(db, actual_market, periods=["30m"])
+
 
 if __name__ == "__main__":
     main()

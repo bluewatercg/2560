@@ -33,7 +33,7 @@ class EnqueueJobRequest(BaseModel):
 
 
 class RunNowRequest(BaseModel):
-    market: str = Field(default="all")
+    market: str = Field(default="sh60")
     shards: int = Field(default=4, ge=1, le=32)
 
 
@@ -362,9 +362,31 @@ def execution_logs(
         return {"ok": False, "job_id": job_id, "log_file": str(log_file), "lines": []}
 
 
+VALID_2560_MARKETS = ["sh60", "sh68", "sz00", "sz30"]
+
+
+class RunAllMarketsRequest(BaseModel):
+    shards: int = Field(default=4, ge=1, le=32)
+
+
 @router.post("/enqueue")
 def enqueue_job(payload: EnqueueJobRequest, db: Session = Depends(get_db)):
     _ensure_tables(db)
+
+    if payload.job_type == "run_2560" and payload.market == "all":
+        return {"ok": False, "message": "market=all 不再被支持，请使用“一键运行四类”或选择具体市场（sh60/sh68/sz00/sz30）"}
+
+    # 同 market + 同 job_type 只允许一个 active（running/queued/pending）
+    if payload.job_type == "run_2560" and payload.market in VALID_2560_MARKETS:
+        existing = db.execute(text("""
+            SELECT COUNT(*) FROM job_execution
+            WHERE job_type = 'run_2560'
+              AND status IN ('running', 'queued', 'pending')
+              AND market = :market
+        """), {"market": payload.market}).scalar()
+        if int(existing or 0) > 0:
+            return {"ok": False, "message": f"{payload.market} 已有活跃 2560 任务（running/queued/pending），请勿重复提交"}
+
     job_payload: dict[str, Any] = {"market": payload.market, "shards": payload.shards}
     if payload.limit_codes is not None:
         job_payload["limit_codes"] = payload.limit_codes
@@ -395,8 +417,51 @@ def enqueue_job(payload: EnqueueJobRequest, db: Session = Depends(get_db)):
     return {"ok": True, "job_id": res.lastrowid, "payload": job_payload}
 
 
+@router.post("/run-all-markets")
+def run_all_markets(payload: RunAllMarketsRequest, db: Session = Depends(get_db)):
+    """一次创建 4 个 market 任务（sh60/sh68/sz00/sz30）。"""
+    _ensure_tables(db)
+    created = []
+    skipped = []
+    for market in VALID_2560_MARKETS:
+        existing = db.execute(text("""
+            SELECT COUNT(*) FROM job_execution
+            WHERE job_type = 'run_2560'
+              AND status IN ('running', 'queued', 'pending')
+              AND market = :market
+        """), {"market": market}).scalar()
+        if int(existing or 0) > 0:
+            skipped.append({"market": market, "reason": "已有活跃任务（running/queued/pending）"})
+            continue
+
+        job_payload: dict[str, Any] = {"market": market, "shards": payload.shards}
+        job_execution_id = create_job_execution(
+            db,
+            "run_2560",
+            market=market,
+            shards=payload.shards,
+            total=0,
+            message="queued",
+            status="queued",
+        )
+        job_payload["job_execution_id"] = job_execution_id
+        res = db.execute(
+            text("""
+            INSERT INTO job_queue (job_type, strategy_code, priority, payload, status, created_at)
+            VALUES ('run_2560', 'S2560', 3, CAST(:payload AS JSON), 'pending', NOW())
+        """),
+            {"payload": json.dumps(job_payload, ensure_ascii=False)},
+        )
+        db.commit()
+        created.append({"ok": True, "job_id": res.lastrowid, "market": market, "execution_id": job_execution_id})
+
+    return {"ok": True, "created": created, "skipped": skipped}
+
+
 @router.post("/run-now")
 def run_now(payload: RunNowRequest, db: Session = Depends(get_db)):
+    if payload.market == "all":
+        return {"ok": False, "message": "market=all 不再被支持，请使用“一键运行四类”或选择具体市场（sh60/sh68/sz00/sz30）"}
     _ensure_tables(db)
     total = _count_codes(db, payload.market)
     log_dir = PROJECT_ROOT / "logs"

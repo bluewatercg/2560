@@ -1,3 +1,6 @@
+from datetime import date, timedelta
+import json
+import time
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -5,6 +8,8 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.schemas.common import ApiResponse
+from app.core.market_scope import market_sql_where
+from app.services.data_freshness_service import can_run_2560, classify_gap
 from app.services.signal_engine_2560 import SignalEngine2560
 from app.services.statistics_engine import StatisticsEngine
 from app.services.strategy2560_service import Strategy2560Service
@@ -104,7 +109,388 @@ class RunAnalysisRequest(BaseModel):
     rebuild_statistics: bool = True
     market_type: Optional[str] = Field(default='all')
 
-@router.get('/overview', response_model=ApiResponse)
+MARKETS = ["sh60", "sh68", "sz00", "sz30"]
+
+
+def _table_exists(db: Session, table_name: str) -> bool:
+    return bool(
+        db.execute(
+            text("""
+                SELECT COUNT(*) FROM information_schema.tables
+                WHERE table_schema = DATABASE() AND table_name=:t
+            """),
+            {"t": table_name},
+        ).scalar()
+        or 0
+    )
+
+
+def _market_latest_indicator(db: Session, market: str, period: str) -> int | None:
+    """Return latest date for technical_indicator of a market+period, or None."""
+    if not _table_exists(db, "technical_indicator"):
+        return None
+    where = market_sql_where("code", market)
+    row = db.execute(
+        text(f"SELECT MAX(date) AS d FROM technical_indicator WHERE {where} AND period='{period}'"),
+    ).mappings().first()
+    val = row.get("d") if row else None
+    return int(val) if val is not None else None
+
+
+def _market_latest_kline(db: Session, market: str, period: str) -> int | None:
+    """Return the latest date integer (YYYYMMDD) for a market+period, or None."""
+    table = "minute_kline_period" if period != "daily" else "daily_kline"
+    where = market_sql_where("code", market)
+    extra = f" AND period='{period}'" if period != "daily" else ""
+    row = db.execute(
+        text(f"SELECT MAX(date) AS d FROM {table} WHERE {where}{extra}"),
+    ).mappings().first()
+    val = row.get("d") if row else None
+    return int(val) if val is not None else None
+
+
+def _market_source_latest(db: Session, market: str) -> int | None:
+    """Read latest date from data_import_batch for a market's import."""
+    if not _table_exists(db, "data_import_batch"):
+        return None
+    row = db.execute(
+        text("""
+            SELECT MAX(b.finished_at) AS finished
+            FROM data_import_batch b
+            WHERE b.market=:m AND b.status='success'
+        """),
+        {"m": market},
+    ).mappings().first()
+    if not row or not row.get("finished"):
+        return None
+    # Use latest successful batch's end date via data_import_file
+    batch_id = db.execute(
+        text("""
+            SELECT id FROM data_import_batch
+            WHERE market=:m AND status='success'
+            ORDER BY id DESC LIMIT 1
+        """),
+        {"m": market},
+    ).scalar()
+    if not batch_id:
+        return None
+    # Get max date from the imported files
+    table = "daily_kline"
+    files = db.execute(
+        text("""
+            SELECT file_path FROM data_import_file
+            WHERE import_batch_id=:bid AND status='success'
+            LIMIT 200
+        """),
+        {"bid": batch_id},
+    ).mappings().all()
+    codes = []
+    import os
+    for f in files:
+        stem = os.path.basename(str(f["file_path"])).split(".")[0].lower()
+        digits = "".join(ch for ch in stem if ch.isdigit())
+        if len(digits) >= 6:
+            codes.append(f"{digits[-6:]}")
+    if not codes:
+        return None
+    r = db.execute(
+        text(f"SELECT MAX(date) AS d FROM {table} WHERE code IN :codes"),
+        {"codes": tuple(codes)},
+    ).mappings().first()
+    val = r.get("d") if r else None
+    return int(val) if val is not None else None
+
+
+def _zero_hit_explain(db: Session, today_int: int, funnel_summary: dict) -> dict:
+    """0 命中分三档解释：单日 0 / 连续 3-5 日 / 连续 10 日。"""
+    MARKETS_LIST = ["sh60", "sh68", "sz00", "sz30"]
+
+    # 先看当前漏斗：A 层是否已有命中
+    current_a = sum(
+        int((funnel_summary.get(m, {}).get("tiers", {}).get("A", {}) or {}).get("count") or 0)
+        for m in MARKETS_LIST
+    )
+    if current_a > 0:
+        return {
+            "level": "normal",
+            "title": f"当前严格结构 A 层 {current_a} 只",
+            "detail": "当前漏斗已有 A 层严格结构，0 命中解释不触发。",
+            "severity": "ok",
+        }
+
+    # A 层当前为 0，查历史批次看连续天数
+    rows = db.execute(text("""
+        SELECT batch_id, run_time, status, message
+        FROM analysis_batch
+        WHERE strategy_code = 'S2560'
+          AND status = 'success'
+        ORDER BY run_time DESC
+        LIMIT 80
+    """)).mappings().all()
+
+    # 按天分组
+    daily_signals = {}
+    for r in rows:
+        msg = str(r.get("message") or "")
+        sig_count = 0
+        for part in msg.split(", "):
+            if part.strip().startswith("signals="):
+                try:
+                    sig_count = int(part.strip().split("=")[1])
+                except (ValueError, IndexError):
+                    pass
+        run_time = r.get("run_time")
+        if run_time:
+            day_int = int(run_time.strftime("%Y%m%d"))
+        else:
+            day_int = 0
+        if day_int not in daily_signals:
+            daily_signals[day_int] = 0
+        daily_signals[day_int] += sig_count
+
+    sorted_days = sorted(daily_signals.keys(), reverse=True)
+    if not sorted_days:
+        return {
+            "level": "unknown",
+            "title": "无历史运行记录",
+            "detail": "尚未运行过 2560，请先完成数据准备并运行一次。",
+            "severity": "info",
+        }
+
+    # 检查最近运行日是否有信号产出
+    most_recent_day = max(sorted_days)
+    most_recent_signals = daily_signals[most_recent_day]
+
+    # 从最近运行日开始往前数 0 信号天数
+    zero_streak = 0
+    if most_recent_signals == 0:
+        for day in sorted_days:
+            if daily_signals.get(day, 0) == 0:
+                zero_streak += 1
+            else:
+                break
+
+    if zero_streak >= 10:
+        return {
+            "level": "critical",
+            "title": f"连续 {zero_streak} 日严格结构为 0 — 口径异常",
+            "detail": "已连续 10 个交易日以上四市场 A 层为 0，必须检查：数据范围是否完整、指标是否重算、信号落库是否正常、漏斗卡点是否异常。",
+            "severity": "error",
+            "streak": zero_streak,
+        }
+    elif zero_streak >= 3:
+        # 找出漏斗最大卡点
+        bottlenecks = {}
+        for mkt in MARKETS_LIST:
+            if mkt in funnel_summary:
+                b = funnel_summary[mkt].get("bottleneck")
+                if b:
+                    bottlenecks[mkt] = b
+        bn_text = "、".join(f"{m}: {b}" for m, b in bottlenecks.items()) if bottlenecks else ""
+        return {
+            "level": "warning",
+            "title": f"连续 {zero_streak} 日严格结构为 0 — 算法诊断",
+            "detail": f"连续 3-5 个交易日四市场 A 层为 0。重点看漏斗卡点：{bn_text}。可能原因：市场趋势弱、量能结构不支持、或算法口径偏严。",
+            "severity": "warn",
+            "streak": zero_streak,
+            "bottlenecks": bottlenecks,
+        }
+    elif zero_streak >= 1:
+        return {
+            "level": "normal",
+            "title": "单日严格结构为 0 — 正常",
+            "detail": "市场高位冲刺、快速轮动、个股离 MA25 太远，或 30m 未给右侧确认。A 层本来就允许经常为 0。",
+            "severity": "ok",
+            "streak": zero_streak,
+        }
+    else:
+        return {
+            "level": "normal",
+            "title": "当前严格结构 A 层为 0，历史未形成连续 0",
+            "detail": "当前漏斗 A 层为 0，但最近成功运行日有信号产出，暂不判定为连续 0 命中异常。请以当前漏斗卡点和 B/C 观察池为主。",
+            "severity": "ok",
+            "streak": 0,
+        }
+
+
+
+_workspace_cache = {"data": None, "ts": 0, "ttl": 10}
+
+
+@router.get("/workspace", response_model=ApiResponse)
+def workspace(db: Session = Depends(get_db)):
+    """今日工作台：从 workspace_status 预计算表读取，不做实时 MAX() 聚合。"""
+    now = time.time()
+    if _workspace_cache["data"] and (now - _workspace_cache["ts"]) < _workspace_cache["ttl"]:
+        return _workspace_cache["data"]
+
+    today = date.today()
+    today_int = int(today.strftime("%Y%m%d"))
+
+    # 1. 四市场就绪状态 — 直接从 workspace_status 小表读取
+    from app.services.workspace_service import ensure_workspace_table, refresh_market_from_db
+    created = ensure_workspace_table(db)
+    if created:
+        # 首次建表，做一次真实 MAX() 扫描初始化
+        for m in MARKETS:
+            refresh_market_from_db(db, m, periods=None)
+
+    rows = db.execute(text("""
+        SELECT market, daily_latest, k5m_latest, k30m_latest,
+               ind_daily, ind_5m, ind_30m,
+               indicators_fresh, ready, missing_json,
+               status_text, daily_gap_label, daily_gap
+        FROM workspace_status ORDER BY market
+    """)).mappings().all()
+
+    market_readiness = []
+    for r in rows:
+        d = dict(r)
+        # missing JSON → 中文列表
+        missing_raw = d.pop("missing_json", None)
+        if isinstance(missing_raw, str):
+            try:
+                missing_raw = json.loads(missing_raw)
+            except json.JSONDecodeError:
+                missing_raw = []
+        if not isinstance(missing_raw, list):
+            missing_raw = []
+        label_map = {"daily": "日线", "5m": "5m", "30m": "30m"}
+        d["missing"] = [label_map.get(x, x) for x in missing_raw]
+        d["status"] = d.pop("status_text", "")
+        d["indicators_fresh"] = bool(d.get("indicators_fresh", 0))
+        d["ready"] = bool(d.get("ready", 0))
+        market_readiness.append(d)
+
+    # 补齐可能缺失的市场（空行）
+    existing = {mr["market"] for mr in market_readiness}
+    for mkt in MARKETS:
+        if mkt not in existing:
+            market_readiness.append({
+                "market": mkt, "daily_latest": None, "k5m_latest": None,
+                "k30m_latest": None, "ready": False, "status": "数据不足",
+                "missing": ["日线", "5m", "30m"], "daily_gap_label": "",
+                "daily_gap": None, "indicators_fresh": False,
+            })
+
+    # 2. 下一步建议（纯内存计算）
+    suggestions = []
+    for mr in market_readiness:
+        if not mr["ready"]:
+            if mr["missing"]:
+                missing_str = "、".join(mr["missing"])
+                suggestions.append(
+                    {
+                        "market": mr["market"],
+                        "action": "导入数据",
+                        "reason": f"缺{missing_str}数据",
+                        "view": "data-update",
+                        "priority": 1,
+                    }
+                )
+            elif not mr.get("indicators_fresh", True):
+                suggestions.append(
+                    {
+                        "market": mr["market"],
+                        "action": "重算指标",
+                        "reason": "数据已导入但指标未更新",
+                        "view": "data-import-batches",
+                        "priority": 2,
+                    }
+                )
+    ready_markets = [mr["market"] for mr in market_readiness if mr["ready"]]
+    if ready_markets:
+        suggestions.append(
+            {
+                "market": "、".join(ready_markets),
+                "action": "运行2560",
+                "reason": f"{len(ready_markets)}个市场可跑",
+                "view": "jobs",
+                "priority": 3,
+            }
+        )
+    suggestions.sort(key=lambda x: x["priority"])
+
+    # 3. 正在运行的 2560 任务
+    running_jobs = []
+    if _table_exists(db, "job_execution"):
+        rows = db.execute(
+            text("""
+                SELECT id, job_type, market, status, progress_current, progress_total,
+                       success_count, failed_count, message, started_at
+                FROM job_execution
+                WHERE job_type IN ('run_2560', 'run_2560_now')
+                  AND status IN ('running', 'queued', 'pending')
+                ORDER BY id
+            """),
+        ).mappings().all()
+        for r in rows:
+            d = dict(r)
+            d["progress_percent"] = (
+                round(int(d.get("progress_current") or 0) * 100 / int(d.get("progress_total") or 1), 1)
+                if d.get("progress_total")
+                else 0
+            )
+            running_jobs.append(d)
+
+    # 4. 观察池摘要（top 10 A/B 级）
+    observation_pool = []
+    try:
+        from app.services.annotation_engine_2568 import AnnotationEngine2568
+
+        ann = AnnotationEngine2568(db).annotations(
+            market_type="all", limit=10, min_a=0, min_b=2
+        )
+        items = ann.get("items", [])[:10]
+        for it in items:
+            observation_pool.append(
+                {
+                    "code": it.get("code"),
+                    "name": it.get("name"),
+                    "highlight_level": it.get("highlight_level"),
+                    "manual_action_label": it.get("manual_action_label"),
+                    "highlight_summary": it.get("highlight_summary"),
+                    "a_count": it.get("a_count"),
+                    "b_count": it.get("b_count"),
+                    "d_count": it.get("d_count"),
+                    "ma25_status": it.get("ma25_status"),
+                    "trend_status": it.get("trend_status"),
+                    "latest_2560_status": it.get("latest_2560_status"),
+                }
+            )
+    except Exception:
+        pass
+
+    # 5. 漏斗摘要（有数据的市场计算）
+    funnel_summary = {}
+    for mr in market_readiness:
+        if mr.get("daily_latest") and mr.get("k30m_latest"):
+            try:
+                funnel_summary[mr["market"]] = _compute_funnel(db, mr["market"])
+            except Exception:
+                pass
+
+    # 6. 0 命中解释口径
+    zero_hit_explain = _zero_hit_explain(db, today_int, funnel_summary)
+
+    result = ApiResponse(
+        data={
+            "target_date": today.strftime("%Y-%m-%d"),
+            "target_date_int": today_int,
+            "market_readiness": market_readiness,
+            "suggestions": suggestions,
+            "running_jobs": running_jobs,
+            "observation_pool": observation_pool,
+            "funnel_summary": funnel_summary,
+            "zero_hit_explain": zero_hit_explain,
+        }
+    )
+    _workspace_cache["data"] = result
+    _workspace_cache["ts"] = time.time()
+    return result
+
+
+@router.get("/overview", response_model=ApiResponse)
 def overview(db: Session = Depends(get_db)):
     return ApiResponse(data=Strategy2560Service(db).overview())
 
@@ -150,7 +536,18 @@ def build_probe(db: Session, market_type: str = 'all', limit: int = 500, q: Opti
     """
     stocks = [dict(r) for r in db.execute(text(stock_sql), params).mappings().all()]
     if not stocks:
-        return {'summary': {'total': 0, 'missing_30m': 0, 'missing_daily': 0, 'base_ok': 0, 'near_count': 0}, 'reason_stats': [], 'items': []}
+        return {
+            'summary': {
+                'total': 0,
+                'raw_total': 0,
+                'missing_30m': 0,
+                'missing_daily': 0,
+                'base_ok': 0,
+                'near_count': 0,
+            },
+            'reason_stats': [],
+            'items': [],
+        }
 
     codes = [s['code'] for s in stocks]
     clause, in_params = in_clause(codes)
@@ -244,6 +641,137 @@ def build_probe(db: Session, market_type: str = 'all', limit: int = 500, q: Opti
     }
     reason_stats = [{'reason': k, 'count': v} for k, v in sorted(reason_counter.items(), key=lambda x: x[1], reverse=True)]
     return {'summary': summary, 'reason_stats': reason_stats, 'items': items}
+
+def _compute_funnel(db: Session, market: str) -> dict:
+    """Lightweight funnel per market using build_probe logic."""
+    probe = build_probe(db, market_type=market, limit=5000, near_only=False)
+    s = probe["summary"]
+    items = probe.get("items", [])
+
+    total = int(s.get("raw_total") or s.get("total") or 0)
+
+    has_data = [
+        i for i in items
+        if int(i.get("daily_count") or 0) > 0 and int(i.get("k30_count") or 0) > 0
+    ]
+
+    has_ind = [
+        i for i in has_data
+        if i.get("ma25_30m") is not None
+    ]
+
+    price_items = [
+        i for i in has_ind
+        if bool(i.get("price_near_ma25"))
+    ]
+
+    slope_items = [
+        i for i in price_items
+        if bool(i.get("ma25_slope_ok"))
+    ]
+
+    vol_items = [
+        i for i in slope_items
+        if bool(i.get("volume_structure_ok"))
+    ]
+
+    core_items = [
+        i for i in vol_items
+        if int(i.get("core_fail_count", 999)) == 0
+    ]
+
+    near_items = [
+        i for i in has_ind
+        if bool(i.get("near_match"))
+    ]
+
+    base_items = [
+        i for i in near_items
+        if i.get("status") == "基础条件满足"
+    ]
+
+    # A/B/C/D 分层（仅基于 build_probe 可用字段）
+    # A: 基础条件满足（核心4全通过），尚不等同于 A 层可执行买点（缺 30m 确认/热点等判断）
+    # B: 接近可执行（core_fail_count ≤ 1）但未基础通过
+    # C: 有30m指标但未进入接近可执行
+    # D: 有数据但无30m指标
+    a_items = base_items
+    b_items = [
+        i for i in near_items
+        if i not in a_items
+    ]
+    c_items = [
+        i for i in has_ind
+        if i not in near_items
+    ]
+    d_items = [
+        i for i in has_data
+        if i not in has_ind
+    ]
+
+    # 漏斗阶段（严格递进，数量只会递减）
+    stages = [
+        {"stage": "总数", "count": total},
+        {"stage": "有数据", "count": len(has_data)},
+        {"stage": "有30m指标", "count": len(has_ind)},
+        {"stage": "价格贴MA25", "count": len(price_items)},
+        {"stage": "MA25向上", "count": len(slope_items)},
+        {"stage": "量能OK", "count": len(vol_items)},
+        {"stage": "核心4通过", "count": len(core_items)},
+        {"stage": "基础通过", "count": len(base_items)},
+    ]
+
+    # 计算百分比和过率
+    for i, st in enumerate(stages):
+        st["pct"] = round(st["count"] / total * 100, 1) if total else 0
+        if i == 0:
+            st["pass_rate"] = 100.0
+            st["drop"] = 0
+        else:
+            prev = stages[i - 1]["count"]
+            st["drop"] = max(0, prev - st["count"])
+            st["pass_rate"] = round(st["count"] / prev * 100, 1) if prev > 0 else 0
+
+    # 找出最大卡点
+    bottleneck = None
+    max_drop = 0
+    for st in stages[1:]:
+        if st["drop"] > max_drop:
+            max_drop = st["drop"]
+            bottleneck = st["stage"]
+
+    return {
+        "market": market,
+        "total": total,
+        "stages": stages,
+        "reason_stats": probe["reason_stats"][:8],
+        "bottleneck": bottleneck,
+        "bottleneck_drop": max_drop,
+        "tiers": {
+            "A": {"name": "严格结构", "count": len(a_items), "pct": round(len(a_items) / total * 100, 1) if total else 0},
+            "B": {"name": "重点观察", "count": len(b_items), "pct": round(len(b_items) / total * 100, 1) if total else 0},
+            "C": {"name": "条件触发", "count": len(c_items), "pct": round(len(c_items) / total * 100, 1) if total else 0},
+            "D": {"name": "剔除", "count": len(d_items), "pct": round(len(d_items) / total * 100, 1) if total else 0},
+        },
+    }
+
+
+@router.get("/funnel/{market}", response_model=ApiResponse)
+def funnel(market: str, db: Session = Depends(get_db)):
+    """Per-market funnel diagnostics for 2560."""
+    if market not in MARKETS:
+        raise HTTPException(status_code=400, detail=f"market must be one of {MARKETS}")
+    return ApiResponse(data=_compute_funnel(db, market))
+
+
+@router.get("/funnel-all", response_model=ApiResponse)
+def funnel_all(db: Session = Depends(get_db)):
+    """All-market funnel diagnostics."""
+    result = {}
+    for mkt in MARKETS:
+        result[mkt] = _compute_funnel(db, mkt)
+    return ApiResponse(data=result)
+
 
 @router.get('/probe-indicators', response_model=ApiResponse)
 def probe_indicators(market_type: str = Query('all'), limit: int = Query(500, ge=1, le=5000), q: Optional[str] = None, near_only: int = Query(0, ge=0, le=1), db: Session = Depends(get_db)):

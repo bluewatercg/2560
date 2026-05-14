@@ -126,6 +126,15 @@ def main():
         )
         db.commit()
 
+    # 更新 workspace_status：导入成功后查实际最新日期
+    if status == "success":
+        from app.services.workspace_service import refresh_market_from_db
+        periods = ["daily"] if a.import_type == "lday" else ["5m"]
+        markets = ["sh60", "sh68", "sz00", "sz30"] if (a.market or "all") == "all" else [a.market]
+        with SessionLocal() as db:
+            for m in markets:
+                refresh_market_from_db(db, m, periods=periods)
+
 
 if __name__ == "__main__":
     main()

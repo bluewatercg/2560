@@ -139,7 +139,7 @@
     if(!$('importTypeHelp')){
       const help = document.createElement('div');
       help.id = 'importTypeHelp';
-      help.style.cssText = 'margin-top:10px;color:#64748b;font-size:13px;line-height:1.7';
+      help.style.cssText = 'margin-top:10px;color:#94A3B8;font-size:13px;line-height:1.7';
       help.innerHTML = `
         <div><b>盘后前置</b>：先用 Windows 中金客户端“盘后数据下载”到 <code>E:\\zd_ciccwm\\vipdoc</code>，再执行“中金数据上传服务器”，把 VIPDOC 上传到 18 服务器。</div>
         <div class="muted">本页面只处理服务器上的 <code>/data/vipdoc</code>，不负责下载行情。</div>
@@ -233,7 +233,7 @@
     const d = Number(done || 0);
     const t = Number(total || 0);
     const percent = t ? Math.min(100, Math.max(0, d * 100 / t)) : 0;
-    return `<div style="min-width:220px"><div style="height:8px;background:#e5e7eb;border-radius:999px;overflow:hidden"><div style="height:100%;width:${percent.toFixed(1)}%;background:#2563eb"></div></div><div style="margin-top:4px;font-size:12px;color:#0f172a">已完成 ${d} / 总数 ${t || '-'}</div><div style="margin-top:2px;font-size:12px;color:#64748b">${t ? percent.toFixed(1) + '%' : '等待后台统计总数'}</div></div>`;
+    return `<div style="min-width:220px"><div style="height:8px;background:#334155;border-radius:999px;overflow:hidden"><div style="height:100%;width:${percent.toFixed(1)}%;background:#3B82F6"></div></div><div style="margin-top:4px;font-size:12px;color:#F8FAFC">已完成 ${d} / 总数 ${t || '-'}</div><div style="margin-top:2px;font-size:12px;color:#94A3B8">${t ? percent.toFixed(1) + '%' : '等待后台统计总数'}</div></div>`;
   }
 
   function renderImportExecution(d, job){
@@ -416,7 +416,7 @@
             ? `<button class="danger cancel-import-batch" data-import-batch-id="${r.id ?? ''}" title="取消 queued/pending；running 请求后台停止">取消/废弃</button>`
             : '-';
           return `
-          <tr data-import-batch-id="${r.id ?? ''}" data-progress-url="${r.progress_url || ''}" style="cursor:pointer;${selected ? 'background:#eff6ff' : ''}" title="点击追踪这个导入批次">
+          <tr data-import-batch-id="${r.id ?? ''}" data-progress-url="${r.progress_url || ''}" style="cursor:pointer;${selected ? 'background:rgba(59,130,246,.15)' : ''}" title="点击追踪这个导入批次">
             <td>${r.id ?? '-'}</td>
             <td>${batchTypeLabel(r.import_type)}</td>
             <td>${r.market ?? '-'}</td>

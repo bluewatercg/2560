@@ -14,7 +14,7 @@
 
   const MENU_GROUPS = [
     {
-      title: '数据准备',
+      title: '数据导入',
       items: [
         ['data-update', '导入前检查'],
         ['data-import-run', '发起导入'],
@@ -34,6 +34,7 @@
     {
       title: '分析结果',
       items: [
+        ['observation-pool', '今日观察池'],
         ['latest', '最新结果'],
         ['signals', '信号中心'],
         ['complete', '结构详情'],
@@ -58,7 +59,7 @@
   ];
 
   const TOP_LEVEL = [
-    ['overview', '首页总览'],
+    ['workspace', '今日工作台'],
     ['workflow', '工作流说明'],
     ['run', '自选股计算']
   ];
@@ -74,8 +75,8 @@
   function renameCommonText(){
     const replacements = [
       ['入库计算', '自选股计算'],
-      ['数据更新', '数据准备'],
-      ['数据导入', '数据准备'],
+      ['数据更新', '数据导入'],
+      ['数据导入', '数据导入'],
       ['数据查询', '分析结果'],
       ['查询分析', '分析结果'],
       ['最新分析结果', '最新结果'],
@@ -120,21 +121,22 @@
     return btn;
   }
 
-  function makeStaticGroup(title){
+  function makeCollapsibleGroup(title){
     const wrap = document.createElement('div');
     wrap.className = 'nav-static-group';
     wrap.dataset.groupTitle = title;
 
     const heading = document.createElement('div');
     heading.className = 'nav-group-title';
-    heading.textContent = title;
+    heading.tabIndex = 0;
+    heading.innerHTML = `<span>${title}</span><svg class="chevron" width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 
     const sub = document.createElement('div');
     sub.className = 'nav-sub';
 
     wrap.appendChild(heading);
     wrap.appendChild(sub);
-    return {wrap, sub};
+    return {wrap, heading, sub};
   }
 
   function rebuildMenu(){
@@ -143,6 +145,14 @@
 
     const oldButtons = all('.nav-item[data-view]', nav);
     if(!oldButtons.length) return;
+
+    // Capture which view was active before rebuild
+    const activeView = (() => {
+      for(const btn of oldButtons){
+        if(btn.classList.contains('active')) return btn.dataset.view;
+      }
+      return null;
+    })();
 
     const byView = new Map();
     oldButtons.forEach(btn => {
@@ -154,33 +164,94 @@
     nav.innerHTML = '';
     nav.dataset.staticMenuApplied = '1';
 
+    // Top-level items
     TOP_LEVEL.forEach(([view, label]) => {
       const btn = byView.get(view) || makeNavButton(view, label);
       normalizeButton(btn, label, false);
+      if(view === activeView) btn.classList.add('active');
       nav.appendChild(btn);
       used.add(view);
     });
 
+    let groupSubs = [];
+
+    // Grouped items
     MENU_GROUPS.forEach(group => {
-      const {wrap, sub} = makeStaticGroup(group.title);
+      const {wrap, heading, sub} = makeCollapsibleGroup(group.title);
+      groupSubs.push({heading, sub});
+
+      // Accordion toggle: expand this, collapse all others
+      function toggleGroup(){
+        const isAlreadyOpen = !sub.classList.contains('collapsed');
+        groupSubs.forEach(({heading: h, sub: s}) => {
+          s.classList.add('collapsed');
+          h.classList.add('collapsed');
+        });
+        if(!isAlreadyOpen){
+          sub.classList.remove('collapsed');
+          heading.classList.remove('collapsed');
+        }
+      }
+
+      heading.addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleGroup();
+      });
+      heading.addEventListener('keydown', (e) => {
+        if(e.key === 'Enter' || e.key === ' '){
+          e.preventDefault();
+          toggleGroup();
+        }
+      });
+
       let count = 0;
       group.items.forEach(([view, label]) => {
         const btn = byView.get(view) || (VIRTUAL_VIEWS.has(view) ? makeNavButton(view, label) : null);
         if(!btn) return;
         normalizeButton(btn, label, true);
+        if(view === activeView) btn.classList.add('active');
         sub.appendChild(btn);
         used.add(view);
         count += 1;
       });
+
+      // Start collapsed by default in accordion mode
+      sub.classList.add('collapsed');
+      heading.classList.add('collapsed');
+
       if(count > 0) nav.appendChild(wrap);
     });
 
+    // Remaining uncategorized items
     const rest = oldButtons.filter(btn => {
       const view = btn.dataset.view;
       return view && !used.has(view);
     });
     if(rest.length){
-      const {wrap, sub} = makeStaticGroup('其他');
+      const {wrap, heading, sub} = makeCollapsibleGroup('其他');
+      groupSubs.push({heading, sub});
+
+      heading.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const isAlreadyOpen = !sub.classList.contains('collapsed');
+        groupSubs.forEach(({heading: h, sub: s}) => {
+          s.classList.add('collapsed');
+          h.classList.add('collapsed');
+        });
+        if(!isAlreadyOpen){
+          sub.classList.remove('collapsed');
+          heading.classList.remove('collapsed');
+        }
+      });
+      heading.addEventListener('keydown', (e) => {
+        if(e.key === 'Enter' || e.key === ' '){
+          e.preventDefault();
+          heading.click();
+        }
+      });
+      // Start collapsed
+      sub.classList.add('collapsed');
+      heading.classList.add('collapsed');
       rest.forEach(btn => {
         normalizeButton(btn, btn.textContent.trim() || btn.dataset.view, true);
         sub.appendChild(btn);
@@ -188,7 +259,7 @@
       nav.appendChild(wrap);
     }
 
-    bindNav(nav);
+    bindNav(nav, groupSubs);
   }
 
   function showDataPrepView(view){
@@ -211,22 +282,43 @@
     if($('#pageSubtitle')) $('#pageSubtitle').textContent = subtitle;
   }
 
-  function bindNav(nav){
+  function bindNav(nav, groupSubs){
     if(nav.dataset.staticMenuBound === '1') return;
     nav.dataset.staticMenuBound = '1';
+
     nav.addEventListener('click', function(e){
       const item = e.target.closest('.nav-item[data-view]');
       if(!item) return;
       const view = item.dataset.view || '';
 
+      // If the clicked item is inside a collapsed group, expand it and collapse others
+      if(groupSubs){
+        for(const {heading, sub} of groupSubs){
+          if(sub.contains(item) && sub.classList.contains('collapsed')){
+            groupSubs.forEach(({heading: h, sub: s}) => {
+              s.classList.add('collapsed');
+              h.classList.add('collapsed');
+            });
+            sub.classList.remove('collapsed');
+            heading.classList.remove('collapsed');
+            break;
+          }
+        }
+      }
+
       if(DATA_PREP_VIEWS.has(view)){
         e.preventDefault();
         e.stopPropagation();
         showDataPrepView(view);
+        return;
       }
 
-      all('.nav-item[data-view]', nav).forEach(x => x.classList.remove('active'));
-      item.classList.add('active');
+      // Delegate all standard navigation to app.js's navigateTo
+      if(window.navigateTo){
+        e.preventDefault();
+        e.stopPropagation();
+        window.navigateTo(view);
+      }
     });
   }
 

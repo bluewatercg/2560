@@ -1,3 +1,4 @@
 
-/* market probe patch */
-.probe-panel{border:1px solid #bfdbfe;background:#eff6ff}.probe-actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.probe-btn{border:0;border-radius:10px;padding:10px 14px;cursor:pointer;font-weight:700;background:#2563eb;color:#fff}.probe-btn:hover{background:#1d4ed8}.probe-btn.danger{background:#0f172a}.probe-btn.danger:hover{background:#1e293b}.probe-note{color:#475569;font-size:13px}#probeLimit{min-width:210px}
+/* market filter patch */
+#marketTypeFilter { min-width: 150px; border: 1px solid var(--line); border-radius: 10px; padding: 10px; background: #0F172A; color: #F8FAFC; font-family: inherit }
+.stock-row.selected td { background: rgba(59,130,246,.15) !important }

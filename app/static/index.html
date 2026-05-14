@@ -4,6 +4,9 @@
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>2560结构分析系统</title>
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+        <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&family=Fira+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
         <link rel="stylesheet" href="/static/styles.css" />
         <link rel="stylesheet" href="/static/nested_menu_reorg.css?v=1" />
     </head>
@@ -56,12 +59,16 @@
             <main class="main">
                 <header class="topbar">
                     <div>
-                        <h2 id="pageTitle">总览</h2>
+                        <div style="display:flex;align-items:baseline;gap:12px">
+                            <h2 id="pageTitle">总览</h2>
+                            <span id="pagePhase" class="phase-badge"></span>
+                        </div>
                         <p id="pageSubtitle">
                             查看最新批次、结构完整率、标签分布与系统状态
                         </p>
                     </div>
                     <div class="actions">
+                        <span id="topbarDate" class="topbar-date"></span>
                         <button class="ghost" id="refreshBtn">刷新</button
                         ><a class="primary" href="/docs" target="_blank"
                             >API文档</a
@@ -76,178 +83,94 @@
                     <div class="workflow-page">
                         <div class="workflow-hero">
                             <div>
-                                <div class="workflow-kicker">2560 WORKFLOW</div>
-                                <h2>每天应该怎么用这套系统？</h2>
+                                <div class="workflow-kicker">DISC WORKFLOW</div>
+                                <h2>一键盘后流程</h2>
                                 <p>
-                                    这页只做一件事：告诉你什么时候更新数据、什么时候算指标、什么时候用任务队列、
-                                    结果应该看哪个页面。
+                                    按 readiness 自动串联：检查 &rarr; 导入 &rarr; 30m &rarr; 指标 &rarr; 2560 &rarr; 观察池。
+                                    每步可跳过、重试、查看原因。
                                 </p>
                             </div>
-                            <div class="workflow-hero-badge">
-                                <strong>推荐入口</strong>
-                                <span>正式全市场任务 → 任务队列</span>
-                            </div>
+                            <button id="workflowStartBtn" class="primary" style="font-size:16px;padding:12px 32px">一键盘后流程</button>
                         </div>
 
-                        <div class="workflow-line">
-                            <div class="wf-node active">
-                                <span>1</span>
-                                <b>数据准备</b>
-                                <small>下载 / 导入 / 聚合</small>
-                            </div>
-                            <div class="wf-arrow">→</div>
-                            <div class="wf-node active">
-                                <span>2</span>
-                                <b>指标计算</b>
-                                <small>technical_indicator</small>
-                            </div>
-                            <div class="wf-arrow">→</div>
-                            <div class="wf-node active">
-                                <span>3</span>
-                                <b>任务执行</b>
-                                <small>手动 / 队列</small>
-                            </div>
-                            <div class="wf-arrow">→</div>
-                            <div class="wf-node active">
-                                <span>4</span>
-                                <b>结果查看</b>
-                                <small>最新状态 / 信号</small>
-                            </div>
-                        </div>
+                        <!-- 步骤列表 -->
+                        <div id="workflowSteps" class="workflow-steps"></div>
 
-                        <div class="workflow-grid">
-                            <div class="workflow-card blue">
-                                <div class="wf-card-head">
-                                    <span class="wf-icon">①</span>
-                                    <h3>数据准备</h3>
+                        <!-- 当前步骤详情 -->
+                        <div id="workflowStepDetail" class="workflow-detail"></div>
+
+                        <!-- 原 workflow 说明（折叠） -->
+                        <details style="margin-top:32px;padding:16px;background:var(--panel);border-radius:var(--radius);border:1px solid var(--line)">
+                            <summary class="muted" style="cursor:pointer">工作流说明（展开）</summary>
+                            <div style="margin-top:16px" class="workflow-line">
+                                <div class="wf-node active"><span>1</span><b>数据准备</b><small>下载 / 导入 / 聚合</small></div>
+                                <div class="wf-arrow">&rarr;</div>
+                                <div class="wf-node active"><span>2</span><b>指标计算</b><small>technical_indicator</small></div>
+                                <div class="wf-arrow">&rarr;</div>
+                                <div class="wf-node active"><span>3</span><b>任务执行</b><small>手动 / 队列</small></div>
+                                <div class="wf-arrow">&rarr;</div>
+                                <div class="wf-node active"><span>4</span><b>结果查看</b><small>最新状态 / 信号</small></div>
+                            </div>
+                            <div class="workflow-grid" style="margin-top:16px">
+                                <div class="workflow-card blue">
+                                    <div class="wf-card-head"><span class="wf-icon">&#9312;</span><h3>数据准备</h3></div>
+                                    <p>先保证行情数据是新的，然后再做后续计算。</p>
+                                    <ul><li><b>先做：</b>中金客户端完成日线和 5 分钟数据下载。</li><li><b>导入：</b>数据导入页面入队，后台 worker 执行。</li><li><b>聚合：</b>30m 构建入队，按 job 进度刷新。</li></ul>
+                                    <div class="wf-tag">Job Queue / 盘后数据更新</div>
                                 </div>
-                                <p>先保证行情数据是新的，然后再做后续计算。</p>
-                                <ul>
-                                    <li>
-                                        <b>先做：</b>中金客户端完成日线和 5
-                                        分钟数据下载。
-                                    </li>
-                                    <li><b>导入：</b>数据导入页面入队，后台 worker 执行。</li>
-                                    <li><b>聚合：</b>30m 构建入队，按 job 进度刷新。</li>
-                                </ul>
-                                <div class="wf-tag">Job Queue / 盘后数据更新</div>
-                            </div>
-
-                            <div class="workflow-card green">
-                                <div class="wf-card-head">
-                                    <span class="wf-icon">②</span>
-                                    <h3>指标计算</h3>
+                                <div class="workflow-card green">
+                                    <div class="wf-card-head"><span class="wf-icon">&#9313;</span><h3>指标计算</h3></div>
+                                    <p>统一生成 MA、ATR、VOL、偏离度等技术指标。</p>
+                                    <ul><li><b>脚本：</b><code>rebuild_technical_indicator.py</code></li><li>2560 扫描阶段只读取指标，不重复计算。</li><li>这是后续信号质量的基础。</li></ul>
+                                    <div class="wf-tag">technical_indicator</div>
                                 </div>
-                                <p>统一生成 MA、ATR、VOL、偏离度等技术指标。</p>
-                                <ul>
-                                    <li>
-                                        <b>脚本：</b
-                                        ><code
-                                            >rebuild_technical_indicator.py</code
-                                        >
-                                    </li>
-                                    <li>
-                                        2560 扫描阶段只读取指标，不重复计算。
-                                    </li>
-                                    <li>这是后续信号质量的基础。</li>
-                                </ul>
-                                <div class="wf-tag">technical_indicator</div>
-                            </div>
-
-                            <div class="workflow-card orange">
-                                <div class="wf-card-head">
-                                    <span class="wf-icon">③</span>
-                                    <h3>任务执行</h3>
+                                <div class="workflow-card orange">
+                                    <div class="wf-card-head"><span class="wf-icon">&#9314;</span><h3>任务执行</h3></div>
+                                    <p>这里最容易混淆，记住一句话：小任务用手动，大任务用队列。</p>
+                                    <ul><li><b>手动计算：</b>只用于单只或少量股票测试。</li><li><b>任务队列：</b>用于 all / sh / sz 正式批量任务。</li><li><b>shards：</b>并行分片数，例如 4 表示拆成 4 份。</li></ul>
+                                    <div class="wf-tag">正式任务入口：任务队列</div>
                                 </div>
-                                <p>
-                                    这里最容易混淆，记住一句话：小任务用手动，大任务用队列。
-                                </p>
-                                <ul>
-                                    <li>
-                                        <b>手动计算：</b
-                                        >只用于单只或少量股票测试。
-                                    </li>
-                                    <li>
-                                        <b>任务队列：</b>用于 all / sh / sz
-                                        正式批量任务。
-                                    </li>
-                                    <li>
-                                        <b>shards：</b>并行分片数，例如 4
-                                        表示拆成 4 份。
-                                    </li>
-                                    <li>
-                                        <b>priority：</b
-                                        >任务优先级，数字越小越优先。
-                                    </li>
-                                </ul>
-                                <div class="wf-tag">正式任务入口：任务队列</div>
-                            </div>
-
-                            <div class="workflow-card purple">
-                                <div class="wf-card-head">
-                                    <span class="wf-icon">④</span>
-                                    <h3>结果查看</h3>
+                                <div class="workflow-card purple">
+                                    <div class="wf-card-head"><span class="wf-icon">&#9315;</span><h3>结果查看</h3></div>
+                                    <p>不同页面看不同结果，不要把"信号列表"和"最新状态"混在一起。</p>
+                                    <ul><li><b>最新分析结果：</b>每只股票一行，看最近一次状态。</li><li><b>信号列表：</b>历史信号事件。</li><li><b>任务队列：</b>看执行进度、队列、分片明细。</li></ul>
+                                    <div class="wf-tag">WebUI 查看结果</div>
                                 </div>
-                                <p>
-                                    不同页面看不同结果，不要把“信号列表”和“最新状态”混在一起。
-                                </p>
-                                <ul>
-                                    <li>
-                                        <b>最新分析结果：</b
-                                        >每只股票一行，看最近一次状态。
-                                    </li>
-                                    <li><b>信号列表：</b>历史信号事件。</li>
-                                    <li>
-                                        <b>任务队列：</b
-                                        >看执行进度、队列、分片明细。
-                                    </li>
-                                    <li>
-                                        <b>批次管理：</b>看每次 run 的 batch。
-                                    </li>
-                                </ul>
-                                <div class="wf-tag">WebUI 查看结果</div>
                             </div>
-                        </div>
+                        </details>
+                    </div>
+                </section>
 
-                        <div class="workflow-decision">
-                            <div class="decision-title">我现在应该点哪里？</div>
-
-                            <div class="decision-row">
-                                <div>
-                                    <b>我要测试几只股票</b>
-                                    <span>例如只跑 sh.600000、sz.300750</span>
-                                </div>
-                                <strong>去「手动计算」</strong>
+                <section id="view-workspace" class="view active">
+                    <div id="workspaceContent">
+                        <div class="panel">
+                            <div class="panel-head split">
+                                <h3 id="workspaceDate">加载中...</h3>
+                                <span class="muted">今日盘后工作台</span>
                             </div>
 
-                            <div class="decision-row">
-                                <div>
-                                    <b>我要跑全市场 / 上海 / 深圳</b>
-                                    <span>正式任务、并行、后台执行</span>
-                                </div>
-                                <strong>去「任务队列」</strong>
-                            </div>
+                            <!-- 四市场就绪状态 -->
+                            <div id="workspaceMarketCards" class="cards" style="margin-top:16px"></div>
 
-                            <div class="decision-row">
-                                <div>
-                                    <b>我要看每只股票最近状态</b>
-                                    <span>有没有信号、结构状态、缺什么</span>
-                                </div>
-                                <strong>去「最新分析结果」</strong>
-                            </div>
+                            <!-- 下一步建议 -->
+                            <div id="workspaceSuggestions" style="margin-top:24px"></div>
 
-                            <div class="decision-row">
-                                <div>
-                                    <b>我要看历史出现过的信号</b>
-                                    <span>事件视图，不是每只股票一行</span>
-                                </div>
-                                <strong>去「信号列表」</strong>
-                            </div>
+                            <!-- 0 命中解释 -->
+                            <div id="workspaceZeroHit" style="margin-top:24px"></div>
+
+                            <!-- 正在执行的任务 -->
+                            <div id="workspaceRunningJobs" style="margin-top:24px"></div>
+
+                            <!-- 今日观察池摘要 -->
+                            <div id="workspaceObservation" style="margin-top:24px"></div>
+
+                            <!-- 2560 漏斗诊断 -->
+                            <div id="workspaceFunnel" style="margin-top:24px"></div>
                         </div>
                     </div>
                 </section>
 
-                <section id="view-overview" class="view active">
+                <section id="view-overview" class="view">
                     <div class="cards" id="overviewCards"></div>
                     <div class="grid two">
                         <div class="panel">
@@ -592,6 +515,8 @@
         <script src="/static/module_reorg.js?v=final-reorg-1"></script>
         <script src="/static/nested_menu_reorg.js?v=2"></script>
         <script src="/static/data_import_page.js?v=2"></script>
+        <script src="/static/post_workflow.js?v=1"></script>
       <script src="/static/data_import_type_addon.js?v=3"></script>
+        <script src="/static/observation_pool.js?v=1"></script>
 </body>
 </html>

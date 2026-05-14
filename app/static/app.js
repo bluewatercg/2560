@@ -1,13 +1,15 @@
 const state = {
   page: 1,
   pageSize: 50,
-  view: "overview",
+  view: "workspace",
   selected: new Set(),
   marketType: "all",
   currentStocks: [],
   selectedJobExecutionId: null,
   selectedJobQueueId: null,
   selectedJobAutoRefresh: null,
+  workspaceMarketReadiness: {},
+  workspaceTargetDate: null,
 };
 const $ = (id) => document.getElementById(id);
 async function api(url, opts) {
@@ -95,7 +97,7 @@ function renderShardProgress(row) {
   const running = Number(row && row.running_count ? row.running_count : 0);
   const pending = Number(row && row.pending_count ? row.pending_count : 0);
   const percent = total ? Math.min(100, Math.max(0, (done * 100) / total)) : 0;
-  return `<div style="min-width:220px"><div style="height:8px;background:#e5e7eb;border-radius:999px;overflow:hidden"><div style="height:100%;width:${percent.toFixed(1)}%;background:#2563eb"></div></div><div style="margin-top:4px;font-size:12px;color:#0f172a">已完成 ${done} / 该组总数 ${total}</div><div style="margin-top:2px;font-size:12px;color:#64748b">运行中 ${running}，待执行 ${pending}</div></div>`;
+  return `<div style="min-width:220px"><div style="height:8px;background:#334155;border-radius:999px;overflow:hidden"><div style="height:100%;width:${percent.toFixed(1)}%;background:#3B82F6"></div></div><div style="margin-top:4px;font-size:12px;color:#F8FAFC">已完成 ${done} / 该组总数 ${total}</div><div style="margin-top:2px;font-size:12px;color:#94A3B8">运行中 ${running}，待执行 ${pending}</div></div>`;
 }
 function ensureJobShardPanel() {
   if ($("jobShardTable")) return;
@@ -189,6 +191,259 @@ async function loadOverview() {
         .join("")
     : "暂无标签数据";
 }
+
+async function loadWorkspace() {
+  try {
+    const d = await api("/api/strategy/2560/workspace");
+    renderWorkspace(d);
+  } catch (e) {
+    $("workspaceContent").innerHTML = `<div class="panel"><p class="muted">工作台加载失败：${e.message}</p></div>`;
+  }
+}
+
+function renderWorkspace(data) {
+  // 缓存 readiness 原始数据，供操作按钮取日期
+  state.workspaceMarketReadiness = Object.fromEntries(
+    (data.market_readiness || []).map((m) => [m.market, m])
+  );
+  state.workspaceTargetDate = data.target_date || null;
+
+  // 目标交易日
+  $("workspaceDate").textContent = `目标交易日：${data.target_date || "-"}`;
+
+  // 四市场卡片
+  const mr = data.market_readiness || [];
+  $("workspaceMarketCards").innerHTML = mr
+    .map(
+      (m) => `
+    <div class="card" style="${m.ready ? "border-left:3px solid var(--green)" : "border-left:3px solid #F59E0B"}">
+      <div class="label">${m.market}</div>
+      <div class="value" style="font-size:14px">${m.status}</div>
+      ${m.missing.length ? `<div class="muted" style="font-size:12px;margin-top:4px">缺：${m.missing.join("、")}</div>` : ""}
+      ${m.daily_latest ? `<div class="muted" style="font-size:11px">日线至 ${m.daily_latest}</div>` : ""}
+      ${m.k5m_latest ? `<div class="muted" style="font-size:11px">5m至 ${m.k5m_latest}</div>` : ""}
+      ${m.k30m_latest ? `<div class="muted" style="font-size:11px">30m至 ${m.k30m_latest}</div>` : ""}
+      ${m.missing.includes('30m') || m.missing.includes('5m') ? `<div style="margin-top:8px"><button class="action-btn sm" data-market-action="${m.market}" onclick="window.build30m('${m.market}')">构建30m</button></div>` : ""}
+      ${!m.indicators_fresh ? `<div style="margin-top:8px"><button class="action-btn sm" data-market-action="${m.market}" onclick="window.rebuildIndicators('${m.market}')">重算指标</button></div>` : ""}
+      ${m.ready ? `<div style="margin-top:8px"><button class="action-btn sm primary" data-market-action="${m.market}" onclick="window.run2560('${m.market}')">运行2560</button></div>` : ""}
+    </div>`,
+    )
+    .join("");
+
+  // 下一步建议
+  const sg = data.suggestions || [];
+  const sugEl = $("workspaceSuggestions");
+  if (sg.length) {
+    const viewLabels = {
+      "data-update": "数据导入",
+      "data-import-batches": "批次/日志",
+      jobs: "计算任务",
+    };
+    sugEl.innerHTML = `
+      <div class="panel">
+        <h3>下一步建议</h3>
+        <ol style="margin:8px 0 0 20px;line-height:2">
+          ${sg
+            .map(
+              (s) =>
+                `<li>${s.market} → ${s.action}（${s.reason}） <button class="ghost" onclick="navigateTo('${s.view}')" style="font-size:12px;padding:2px 8px">去${viewLabels[s.view] || s.view}</button></li>`,
+            )
+            .join("")}
+        </ol>
+      </div>`;
+  } else {
+    sugEl.innerHTML = "";
+  }
+
+  // 0 命中解释
+  const zhe = $("workspaceZeroHit");
+  const ze = data.zero_hit_explain;
+  if (ze) {
+    const severityColors = {
+      ok: { border: "var(--green)", bg: "rgba(34,197,94,0.06)", text: "var(--green)" },
+      warn: { border: "#F59E0B", bg: "rgba(245,158,11,0.08)", text: "#F59E0B" },
+      error: { border: "#EF4444", bg: "rgba(239,68,68,0.08)", text: "#EF4444" },
+      info: { border: "#60A5FA", bg: "rgba(96,165,250,0.08)", text: "#60A5FA" },
+    };
+    const c = severityColors[ze.severity] || severityColors.info;
+    zhe.innerHTML = `
+      <div class="panel" style="border-left:3px solid ${c.border};background:${c.bg}">
+        <div style="display:flex;align-items:center;gap:8px">
+          <span style="font-size:16px">${ze.severity === "ok" ? "✓" : ze.severity === "warn" ? "⚠" : ze.severity === "error" ? "✗" : "ℹ"}</span>
+          <b style="color:${c.text}">${ze.title}</b>
+        </div>
+        <p style="margin:8px 0 0;font-size:13px;line-height:1.6;color:var(--text)">${ze.detail}</p>
+      </div>`;
+  } else {
+    zhe.innerHTML = "";
+  }
+
+  // 正在执行的任务
+  const rj = data.running_jobs || [];
+  const runEl = $("workspaceRunningJobs");
+  if (rj.length) {
+    runEl.innerHTML = `
+      <div class="panel">
+        <h3>正在执行的任务</h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th>ID</th><th>任务类型</th><th>市场</th><th>状态</th><th>进度</th><th>成功/失败</th><th>信息</th></tr></thead>
+          <tbody>
+            ${rj
+              .map(
+                (j) => {
+                  const typeLabel = j.job_type === 'run_2560_now' ? '即时重算' : '2560摸底';
+                  return `<tr><td>${j.id}</td><td>${typeLabel}</td><td>${j.market || "-"}</td><td>${j.status}</td><td>${j.progress_percent}%</td><td>${j.success_count || 0} / ${j.failed_count || 0}</td><td class="muted">${j.message || "-"}</td></tr>`;
+                },
+              )
+              .join("")}
+          </tbody>
+        </table></div>
+      </div>`;
+  } else {
+    runEl.innerHTML = `<div class="panel"><h3>正在执行的任务</h3><p class="muted">暂无正在执行的任务</p></div>`;
+  }
+
+  // 今日观察池摘要
+  const op = data.observation_pool || [];
+  const obsEl = $("workspaceObservation");
+  if (op.length) {
+    obsEl.innerHTML = `
+      <div class="panel">
+        <div class="panel-head split">
+          <h3>今日观察池（top ${op.length}）</h3>
+          <button class="ghost" onclick="navigateTo('observation-pool')">查看全部 →</button>
+        </div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>代码</th><th>名称</th><th>等级</th><th>人工建议</th><th>亮点</th><th>2560状态</th></tr></thead>
+          <tbody>
+            ${op
+              .map(
+                (s) =>
+                  `<tr><td>${s.code || "-"}</td><td>${s.name || "-"}</td><td>${s.highlight_level || "-"}</td><td><b>${s.manual_action_label || "-"}</b></td><td class="muted">${s.highlight_summary || "-"}</td><td>${s.latest_2560_status || "-"}</td></tr>`,
+              )
+              .join("")}
+          </tbody>
+        </table></div>
+      </div>`;
+  } else {
+    obsEl.innerHTML = `<div class="panel"><h3>今日观察池</h3><p class="muted">暂无观察池数据，请先完成 2568 标注</p></div>`;
+  }
+
+  // 2560 漏斗诊断
+  const funnelSection = $("workspaceFunnel");
+  const fs = data.funnel_summary || {};
+  const funnelKeys = Object.keys(fs);
+  if (funnelKeys.length === 0) {
+    funnelSection.innerHTML = `<div class="panel"><h3>2560 漏斗诊断</h3><p class="muted">暂无漏斗数据，请先运行 2560 或确保市场数据已就绪</p></div>`;
+    return;
+  }
+  funnelSection.innerHTML = `
+    <div class="panel">
+      <h3>2560 漏斗诊断 — 基础通过为 0 时，定位卡点</h3>
+      <p class="muted" style="margin-top:4px;font-size:12px">每次 2560 跑完后，按 market 输出过滤漏斗。0 命中不是失败，而是需要看卡在哪个阶段。</p>
+      ${funnelKeys.map((mkt) => renderFunnelForMarket(mkt, fs[mkt])).join("")}
+    </div>`;
+}
+
+function renderFunnelForMarket(mkt, funnel) {
+  const stages = funnel.stages || [];
+  const reasons = funnel.reason_stats || [];
+  const total = funnel.total || 0;
+  const baseOk = stages.length ? stages[stages.length - 1].count : 0;
+  const tiers = funnel.tiers || {};
+
+  // 判断是否零命中
+  const zeroHit = baseOk === 0;
+
+  // 找出最大卡点（drop 最大的阶段）
+  let bottleneck = null;
+  let maxDrop = 0;
+  for (const s of stages) {
+    if (s.drop > maxDrop) {
+      maxDrop = s.drop;
+      bottleneck = s;
+    }
+  }
+
+  return `
+    <div style="margin-top:16px;padding:12px;border:1px solid var(--line);border-radius:8px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <div>
+          <b style="font-size:14px">${mkt}</b>
+          <span class="muted" style="margin-left:8px;font-size:12px">共 ${total} 只</span>
+          ${zeroHit ? `<span style="margin-left:8px;font-size:12px;color:#F59E0B">⚠ 基础通过为 0</span>` : `<span style="margin-left:8px;font-size:12px;color:var(--green)">✓ 基础通过 ${baseOk} 只</span>`}
+        </div>
+        ${bottleneck && maxDrop > 0 ? `<span class="muted" style="font-size:12px">最大卡点：${bottleneck.stage}（-${bottleneck.drop}）</span>` : ""}
+      </div>
+      ${renderTierBadges(tiers)}
+      ${renderFunnelBars(stages)}
+      ${zeroHit && reasons.length ? renderBottleneckReasons(reasons) : ""}
+    </div>`;
+}
+
+function renderTierBadges(tiers) {
+  const colors = {
+    A: { bg: "rgba(34,197,94,0.15)", border: "rgba(34,197,94,0.3)", text: "#22C55E" },
+    B: { bg: "rgba(34,211,238,0.12)", border: "rgba(34,211,238,0.25)", text: "#22D3EE" },
+    C: { bg: "rgba(245,158,11,0.12)", border: "rgba(245,158,11,0.25)", text: "#F59E0B" },
+    D: { bg: "rgba(239,68,68,0.1)", border: "rgba(239,68,68,0.2)", text: "#94A3B8" },
+  };
+  return `
+    <div style="display:flex;gap:8px;margin-bottom:10px">
+      ${["A", "B", "C", "D"]
+        .map(
+          (t) => `
+        <span style="padding:3px 10px;border-radius:4px;font-size:12px;background:${colors[t].bg};border:1px solid ${colors[t].border};color:${colors[t].text};font-weight:500">
+          ${t} ${tiers[t]?.name || ""} ${tiers[t]?.count ?? "-"}
+        </span>`,
+        )
+        .join("")}
+    </div>`;
+}
+
+function renderFunnelBars(stages) {
+  const maxCount = Math.max(...stages.map((s) => s.count), 1);
+  return `
+    <div style="display:flex;flex-direction:column;gap:3px;margin-top:8px">
+      ${stages
+        .map(
+          (s) => `
+        <div style="display:flex;align-items:center;gap:8px;font-size:12px">
+          <span style="width:80px;text-align:right;flex-shrink:0;color:var(--muted)">${s.stage}</span>
+          <div style="flex:1;height:18px;background:var(--surface);border-radius:3px;overflow:hidden;position:relative">
+            <div style="width:${Math.max((s.count / maxCount) * 100, s.count > 0 ? 3 : 0)}%;height:100%;background:${getFunnelColor(s.pct)};border-radius:3px;transition:width 0.3s"></div>
+            <span style="position:absolute;left:8px;top:0;line-height:18px;color:var(--text)">${s.count}</span>
+          </div>
+          <span style="width:44px;text-align:right;flex-shrink:0;color:var(--muted)">${s.pct}%</span>
+          ${s.pass_rate > 0 && s.pass_rate < 100 ? `<span style="width:56px;text-align:left;flex-shrink:0;font-size:11px;color:#F59E0B">↓${s.pass_rate}%</span>` : s.pass_rate >= 100 ? `<span style="width:56px"></span>` : `<span style="width:56px"></span>`}
+        </div>`,
+        )
+        .join("")}
+    </div>`;
+}
+
+function renderBottleneckReasons(reasons) {
+  const top = reasons.slice(0, 5);
+  return `
+    <div style="margin-top:8px;padding:8px 12px;background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.2);border-radius:6px;font-size:12px">
+      <b style="color:#F59E0B">主要卡点：</b>
+      ${top
+        .map(
+          (r) =>
+            `<span style="margin-right:12px">${r.reason} <span class="muted">${r.count} 只</span></span>`,
+        )
+        .join("")}
+    </div>`;
+}
+
+function getFunnelColor(pct) {
+  if (pct >= 80) return "var(--green)";
+  if (pct >= 50) return "#22D3EE";
+  if (pct >= 20) return "#F59E0B";
+  if (pct > 0) return "#EF4444";
+  return "var(--surface)";
+}
+
 async function loadStocks() {
   const q = $("stockSearch").value.trim();
   const mt = $("marketTypeFilter").value;
@@ -315,14 +570,14 @@ async function runProbe(mt) {
 }
 function color(i) {
   return [
-    "#2563eb",
-    "#dc2626",
-    "#d97706",
-    "#16a34a",
-    "#7c3aed",
-    "#0891b2",
-    "#be123c",
-    "#4b5563",
+    "#3B82F6",
+    "#EF4444",
+    "#F59E0B",
+    "#22C55E",
+    "#8B5CF6",
+    "#06B6D4",
+    "#F43F5E",
+    "#64748B",
   ][i % 8];
 }
 async function loadDiagnostics() {
@@ -383,7 +638,7 @@ function renderDiagCharts(stats) {
   });
   $("diagPie").style.background = total
     ? `conic-gradient(${gs.join(",")})`
-    : "#e5e7eb";
+    : "#334155";
   $("diagLegend").innerHTML = stats
     .slice(0, 8)
     .map(
@@ -676,6 +931,7 @@ async function loadJobItems(id) {
 
 async function refresh() {
   await loadHealth();
+  if (state.view === "workspace") await loadWorkspace();
   if (state.view === "overview") await loadOverview();
   if (state.view === "run") await loadStocks();
   if (state.view === "diagnostics") await loadDiagnostics();
@@ -687,7 +943,89 @@ async function refresh() {
   if (state.view === "batches") await loadBatches();
   if (state.view === "quality") await loadQuality();
 }
+
+// 加载 topbar 目标交易日
+async function loadTopbarDate() {
+  try {
+    const d = await api("/api/strategy/2560/workspace");
+    const el = $("topbarDate");
+    if (el && d.target_date) el.textContent = d.target_date;
+  } catch { /* ignore */ }
+}
+
+// 统一 POST 检查：HTTP 状态 + 业务 ok/success
+async function postJsonChecked(url, body) {
+  const r = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body || {}),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok || d.ok === false || d.success === false) {
+    throw new Error(d.message || d.detail || r.statusText);
+  }
+  return d.data ?? d;
+}
+
+// 市场卡片操作函数
+async function _marketAction(market, label, fn) {
+  const btns = document.querySelectorAll(`[data-market-action="${market}"]`);
+  btns.forEach(b => { b.disabled = true; b.textContent = `${label}...`; });
+  try {
+    await fn();
+    btns.forEach(b => { b.disabled = false; b.textContent = label; });
+    await loadWorkspace();
+  } catch (e) {
+    btns.forEach(b => { b.disabled = false; b.textContent = label; });
+    alert(`${market} ${label} 失败: ${e.message}`);
+  }
+}
+
+// 日期工具：int(20260512/20260512150000) → "2026-05-12"
+function ymdFromInt(v) {
+  if (!v) return null;
+  const s = String(v).slice(0, 8);
+  if (s.length !== 8) return null;
+  return `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`;
+}
+
+function dateMinusDays(ymd, days) {
+  const d = new Date(`${ymd}T00:00:00`);
+  d.setDate(d.getDate() - days);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+window.build30m = function(market) {
+  _marketAction(market, "构建30m", async () => {
+    const mr = state.workspaceMarketReadiness[market] || {};
+    const end = ymdFromInt(mr.k5m_latest || mr.daily_latest || mr.k30m_latest) || state.workspaceTargetDate;
+    if (!end) throw new Error("无法确定构建30m的结束日期");
+    const start = dateMinusDays(end, 5);
+    await postJsonChecked("/api/import/build-30m", { market, start, end, workers: 2 });
+  });
+};
+
+window.rebuildIndicators = function(market) {
+  _marketAction(market, "重算指标", async () => {
+    const mr = state.workspaceMarketReadiness[market] || {};
+    const end = ymdFromInt(mr.k30m_latest || mr.k5m_latest || mr.daily_latest) || state.workspaceTargetDate;
+    if (!end) throw new Error("无法确定重算指标的结束日期");
+    const start = dateMinusDays(end, 5);
+    await postJsonChecked("/api/import/rebuild-indicators", {
+      market, start, end,
+      periods: "daily,5m,30m",
+      commit_every: 100,
+    });
+  });
+};
+
+window.run2560 = function(market) {
+  _marketAction(market, "运行2560", async () => {
+    await postJsonChecked("/api/jobs/enqueue", { job_type: "run_2560", strategy_code: "S2560", market, shards: 1, priority: 3 });
+  });
+};
 const titles = {
+  workspace: ["今日工作台", "今天数据齐了吗、缺什么、点哪里、2560跑完了吗、最后看哪几只"],
   overview: ["总览", "查看最新批次、结构完整率、标签分布与系统状态"],
   workflow: ["工作流指导", "说明系统每天怎么用、各页面分别负责什么"],
   run: ["入库计算", "支持选择股票、全选、四类股票范围摸底计算"],
@@ -702,22 +1040,79 @@ const titles = {
   statistics: ["结构统计", "按结构状态、标签、行业、板块、概念统计"],
   batches: ["批次管理", "查看分析批次、版本、运行状态"],
   quality: ["数据质量", "查看日线/分钟线完整性与异常情况"],
+  "observation-pool": ["今日观察池", "看什么、为什么看、持有怎么办、没持有怎么买、什么情况跑"],
 };
+
+// 唯一导航入口：app.js 管理所有 view 切换、标题更新、active 高亮
+function navigateTo(view) {
+  if (!view || !titles[view]) return;
+  state.view = view;
+  state.page = 1;
+
+  // 切换视图
+  document
+    .querySelectorAll(".view")
+    .forEach((v) => v.classList.remove("active"));
+  const target = $("view-" + view);
+  if (target) target.classList.add("active");
+
+  // 更新标题
+  if ($("pageTitle")) $("pageTitle").textContent = titles[view][0];
+  if ($("pageSubtitle")) $("pageSubtitle").textContent = titles[view][1];
+
+  // 更新阶段标签
+  const phaseMap = {
+    "data-update": "数据准备",
+    jobs: "任务管理",
+    "observation-pool": "观察池",
+    latest: "分析结果",
+  };
+  const phaseEl = $("pagePhase");
+  if (phaseEl) {
+    if (phaseMap[view]) {
+      phaseEl.textContent = phaseMap[view];
+      phaseEl.style.display = "";
+    } else {
+      phaseEl.textContent = "";
+      phaseEl.style.display = "none";
+    }
+  }
+
+  // 更新侧栏 active 状态（兼容原始按钮和重建后的按钮）
+  document
+    .querySelectorAll(".nav-item[data-view]")
+    .forEach((x) => x.classList.remove("active"));
+  document
+    .querySelectorAll(`.nav-item[data-view="${view}"]`)
+    .forEach((x) => x.classList.add("active"));
+
+  // 自动展开包含该 view 的折叠分组
+  const activeBtn = document.querySelector(`.nav-item[data-view="${view}"]`);
+  if (activeBtn) {
+    const collapsedSub = activeBtn.closest(".nav-sub.collapsed");
+    if (collapsedSub) {
+      // 先折叠其他分组
+      document
+        .querySelectorAll(".nav-sub.collapsed, .nav-sub:not(.collapsed)")
+        .forEach((s) => {
+          s.classList.add("collapsed");
+          const heading = s.closest(".nav-static-group")?.querySelector(".nav-group-title");
+          if (heading) heading.classList.add("collapsed");
+        });
+      // 再展开目标分组
+      collapsedSub.classList.remove("collapsed");
+      const heading = collapsedSub.closest(".nav-static-group")?.querySelector(".nav-group-title");
+      if (heading) heading.classList.remove("collapsed");
+    }
+  }
+
+  refresh();
+}
+
+// 原始 HTML 按钮的 click 绑定（nested_menu_reorg.js 重建菜单前生效）
 document.querySelectorAll(".nav-item").forEach((b) =>
-  b.addEventListener("click", async () => {
-    document
-      .querySelectorAll(".nav-item")
-      .forEach((x) => x.classList.remove("active"));
-    b.classList.add("active");
-    document
-      .querySelectorAll(".view")
-      .forEach((v) => v.classList.remove("active"));
-    state.view = b.dataset.view;
-    state.page = 1;
-    $("view-" + state.view).classList.add("active");
-    $("pageTitle").textContent = titles[state.view][0];
-    $("pageSubtitle").textContent = titles[state.view][1];
-    await refresh();
+  b.addEventListener("click", () => {
+    navigateTo(b.dataset.view);
   }),
 );
 $("refreshBtn").onclick = refresh;
@@ -756,4 +1151,10 @@ $("statType").onchange = loadStatistics;
 $("closeDrawer").onclick = () => $("detailDrawer").classList.add("hidden");
 if ($("latestLoadBtn")) $("latestLoadBtn").onclick = loadLatest;
 if ($("jobsLoadBtn")) $("jobsLoadBtn").onclick = loadJobs;
-refresh();
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", () => { refresh(); loadTopbarDate(); });
+} else {
+  refresh();
+  loadTopbarDate();
+}

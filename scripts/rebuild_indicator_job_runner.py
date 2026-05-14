@@ -88,6 +88,20 @@ def main():
             finished=True,
         )
 
+    # 更新 workspace_status：指标重建后刷新对应market的指标记录
+    if status == "success":
+        from app.services.workspace_service import refresh_market_from_db
+        from app.db.session import SessionLocal as _DB
+        periods = [p.strip() for p in a.periods.split(",") if p.strip()]
+        actual_market = a.market or "all"
+        if actual_market == "all":
+            for m in ["sh60", "sh68", "sz00", "sz30"]:
+                with _DB() as db:
+                    refresh_market_from_db(db, m, periods=periods)
+        else:
+            with _DB() as db:
+                refresh_market_from_db(db, actual_market, periods=periods)
+
     raise SystemExit(proc.returncode)
 
 

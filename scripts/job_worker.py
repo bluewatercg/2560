@@ -258,16 +258,39 @@ def main():
     en = create_engine(get_database_url(), pool_pre_ping=True, future=True)
     poll = int(os.getenv("JOB_WORKER_POLL_INTERVAL", "10"))
     once = os.getenv("JOB_WORKER_ONCE", "").lower() in ("1", "true", "yes")
-    log("[worker] started")
+    worker_market = os.getenv("WORKER_MARKET", "").strip().lower()
+    if worker_market:
+        log(f"[worker] started for market={worker_market}")
+    else:
+        log("[worker] started (no WORKER_MARKET set, consumes all markets)")
     while not STOP:
         try:
             with en.begin() as conn:
+                # 按 market 隔离：worker 只消费自己市场的任务
+                market_filter = ""
+                if worker_market:
+                    market_filter = (
+                        f" AND job_queue.job_type = 'run_2560'"
+                        f" AND JSON_UNQUOTE(JSON_EXTRACT(payload, '$.market')) = '{worker_market}'"
+                    )
+                else:
+                    # data worker（无 WORKER_MARKET）不消费 run_2560 任务，留给 market lane worker
+                    market_filter = " AND job_queue.job_type != 'run_2560'"
+
                 row = conn.execute(
-                    text("""
+                    text(f"""
                         SELECT * FROM job_queue
                         WHERE status='pending'
+                        {market_filter}
+                          AND NOT EXISTS (
+                              SELECT 1 FROM job_execution je
+                              WHERE je.job_type = job_queue.job_type
+                                AND JSON_UNQUOTE(JSON_EXTRACT(job_queue.payload, '$.job_execution_id')) = CAST(je.id AS CHAR)
+                                AND je.status = 'running'
+                                AND JSON_UNQUOTE(JSON_EXTRACT(je.payload, '$.market')) = JSON_UNQUOTE(JSON_EXTRACT(job_queue.payload, '$.market'))
+                          )
                         ORDER BY priority ASC, created_at ASC
-                        LIMIT 1 FOR UPDATE
+                        LIMIT 1 FOR UPDATE SKIP LOCKED
                     """)
                 ).mappings().first()
                 if not row:

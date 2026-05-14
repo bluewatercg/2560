@@ -30,7 +30,7 @@
     const panel = document.createElement('div');
     panel.className = 'panel';
     panel.id = 'jobProgressPanel';
-    panel.innerHTML = `<div class="panel-head split"><h3>当前执行进度</h3><button id="jobProgressRefreshBtn">刷新进度</button></div><div id="jobProgressCards" class="cards"></div><div style="margin:12px 0;height:12px;background:#e5e7eb;border-radius:999px;overflow:hidden"><div id="jobProgressBar" style="height:12px;width:0%;background:#2563eb"></div></div><pre id="jobProgressText" class="json-box">暂无执行任务</pre><h3 style="margin-top:12px">每组执行进度</h3><div class="table-wrap"><table id="jobShardProgressTable"></table></div><h3 style="margin-top:12px">实时后台日志</h3><pre id="jobLiveLog" class="json-box" style="max-height:320px;overflow:auto">暂无日志</pre>`;
+    panel.innerHTML = `<div class="panel-head split"><h3>当前执行进度</h3><button id="jobProgressRefreshBtn">刷新进度</button></div><div id="jobProgressCards" class="cards"></div><div style="margin:12px 0;height:12px;background:#334155;border-radius:999px;overflow:hidden"><div id="jobProgressBar" style="height:12px;width:0%;background:#3B82F6"></div></div><pre id="jobProgressText" class="json-box">暂无执行任务</pre><h3 style="margin-top:12px">每组执行进度</h3><div class="table-wrap"><table id="jobShardProgressTable"></table></div><h3 style="margin-top:12px">实时后台日志</h3><pre id="jobLiveLog" class="json-box" style="max-height:320px;overflow:auto">暂无日志</pre>`;
     const action = $('jobActionPanel');
     if(action && action.parentNode) action.parentNode.insertBefore(panel, action.nextSibling); else view.insertBefore(panel, view.firstChild);
     $('jobProgressRefreshBtn').onclick = refreshProgress;
@@ -120,8 +120,8 @@
             <td>第 ${Number(r.shard_id) + 1} 组</td>
             <td>${r.done}/${r.total}</td>
             <td style="min-width:140px">
-              <div style="height:8px;background:#e5e7eb;border-radius:99px;overflow:hidden">
-                <div style="height:8px;width:${pct}%;background:#16a34a"></div>
+              <div style="height:8px;background:#334155;border-radius:99px;overflow:hidden">
+                <div style="height:8px;width:${pct}%;background:#22C55E"></div>
               </div>
               <small>${pct}%</small>
             </td>

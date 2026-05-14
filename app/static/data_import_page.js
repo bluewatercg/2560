@@ -22,13 +22,14 @@
   }
 
   function switchView(viewName){
-    const modeByView = {
-      'data-update': 'check',
-      'data-import-run': 'run',
-      'data-import-batches': 'batches',
-      'data-import-logs': 'batches'
+    const stepByView = {
+      'data-update': 1,
+      'data-import-run': 2,
+      'data-import-batches': 4,
+      'data-import-logs': 4
     };
-    activeImportMode = modeByView[viewName] || 'check';
+    const step = stepByView[viewName] || 1;
+    setActiveImportStep(step);
 
     all('.nav-item[data-view]').forEach(x => x.classList.remove('active'));
     all('.view').forEach(v => v.classList.remove('active'));
@@ -36,11 +37,8 @@
     const navBtn = document.querySelector(`.nav-item[data-view="${viewName}"]`);
     if(navBtn) navBtn.classList.add('active');
 
-    const targetViewName = modeByView[viewName] ? 'data-update' : viewName;
-    const view = document.getElementById(`view-${targetViewName}`);
+    const view = document.getElementById('view-data-update');
     if(view) view.classList.add('active');
-
-    updateImportMode();
   }
 
   function ensureDataImportPage(){
@@ -52,6 +50,30 @@
     section.className = 'view';
 
     section.innerHTML = `
+      <!-- 四步流程导航 -->
+      <div class="import-steps" style="display:flex;gap:4px;margin-bottom:16px;flex-wrap:wrap">
+        <button class="import-step-btn" data-step="1" style="flex:1;min-width:160px;padding:12px 16px;border:1px solid #334155;border-radius:8px;background:#0F172A;color:#F8FAFC;cursor:pointer;text-align:left">
+          <div style="font-size:12px;color:#94A3B8">步骤 1</div>
+          <div style="font-weight:600;margin-top:2px">扫描检查</div>
+          <div style="font-size:11px;color:#64748B;margin-top:2px">确认源文件数据范围</div>
+        </button>
+        <button class="import-step-btn" data-step="2" style="flex:1;min-width:160px;padding:12px 16px;border:1px solid #334155;border-radius:8px;background:#0F172A;color:#F8FAFC;cursor:pointer;text-align:left">
+          <div style="font-size:12px;color:#94A3B8">步骤 2</div>
+          <div style="font-weight:600;margin-top:2px">发起导入</div>
+          <div style="font-size:11px;color:#64748B;margin-top:2px">日线/5m 写入数据库</div>
+        </button>
+        <button class="import-step-btn" data-step="3" style="flex:1;min-width:160px;padding:12px 16px;border:1px solid #334155;border-radius:8px;background:#0F172A;color:#F8FAFC;cursor:pointer;text-align:left">
+          <div style="font-size:12px;color:#94A3B8">步骤 3</div>
+          <div style="font-weight:600;margin-top:2px">构建30m</div>
+          <div style="font-size:11px;color:#64748B;margin-top:2px">从5m聚合生成30m</div>
+        </button>
+        <button class="import-step-btn" data-step="4" style="flex:1;min-width:160px;padding:12px 16px;border:1px solid #334155;border-radius:8px;background:#0F172A;color:#F8FAFC;cursor:pointer;text-align:left">
+          <div style="font-size:12px;color:#94A3B8">步骤 4</div>
+          <div style="font-weight:600;margin-top:2px">重算指标</div>
+          <div style="font-size:11px;color:#64748B;margin-top:2px">计算 technical_indicator</div>
+        </button>
+      </div>
+
       <div class="panel import-panel import-panel-main">
         <div class="panel-head split">
           <div>
@@ -78,6 +100,8 @@
 
           <button id="scanImportDirBtn">扫描导入目录</button>
           <button id="runImportBtn" class="primary">开始导入</button>
+          <button id="build30mBtn">从5m生成30m</button>
+          <button id="rebuildIndicatorsBtn">重算指标</button>
           <button id="refreshImportBtn">刷新导入记录</button>
         </div>
 
@@ -92,7 +116,11 @@
         <pre id="importActionResult" class="json-box">等待操作</pre>
       </div>
 
-      <div class="panel import-panel import-panel-batches">
+      <div class="advanced-toggle" style="text-align:center;margin:16px 0">
+        <button id="advancedToggleBtn" class="ghost" style="opacity:0.6;font-size:12px">▸ 显示高级（批次/日志/详情）</button>
+      </div>
+
+      <div class="panel import-panel import-panel-batches advanced-panel" style="display:none">
         <div class="panel-head split">
           <h3>导入批次</h3>
           <div class="filters" style="gap:8px;flex-wrap:wrap">
@@ -113,7 +141,7 @@
         </div>
       </div>
 
-      <div class="panel import-panel import-panel-execution">
+      <div class="panel import-panel import-panel-execution advanced-panel" style="display:none">
         <div class="panel-head split">
           <div>
             <h3>任务执行记录（job_execution）</h3>
@@ -125,7 +153,7 @@
         </div>
       </div>
 
-      <div class="panel import-panel import-panel-shards">
+      <div class="panel import-panel import-panel-shards advanced-panel" style="display:none">
         <div class="panel-head split">
           <div>
             <h3>Shard 汇总（每行是一组并发线程）</h3>
@@ -160,6 +188,83 @@
     }else{
       main.appendChild(section);
     }
+
+    // 绑定步骤按钮
+    all('.import-step-btn').forEach(btn => {
+      btn.onclick = function(){
+        setActiveImportStep(Number(btn.dataset.step));
+      };
+    });
+
+    // 高级面板折叠
+    const toggleBtn = $('advancedToggleBtn');
+    if(toggleBtn){
+      toggleBtn.onclick = function(){
+        const panels = all('.advanced-panel');
+        const isHidden = panels[0] && panels[0].style.display === 'none';
+        panels.forEach(p => { p.style.display = isHidden ? '' : 'none'; });
+        toggleBtn.textContent = isHidden ? '▾ 隐藏高级（批次/日志/详情）' : '▸ 显示高级（批次/日志/详情）';
+      };
+    }
+  }
+
+  let activeImportStep = 1;
+
+  function setActiveImportStep(step){
+    activeImportStep = step;
+    all('.import-step-btn').forEach(b => {
+      const s = Number(b.dataset.step);
+      if(s === step){
+        b.style.borderColor = 'var(--blue)';
+        b.style.background = 'rgba(59,130,246,.15)';
+      } else if(s < step){
+        b.style.borderColor = 'var(--green)';
+        b.style.background = 'rgba(34,197,94,.08)';
+      } else {
+        b.style.borderColor = '#334155';
+        b.style.background = '#0F172A';
+      }
+    });
+
+    // 更新面板标题
+    const titles = {
+      1: ['步骤 1：扫描检查', '扫描 /data/vipdoc 源文件范围，确认数据范围，不写数据库。'],
+      2: ['步骤 2：发起导入', '选择市场、日线/5m、日期范围和并发线程，提交后台导入任务。'],
+      3: ['步骤 3：构建30m', '从 5m 聚合生成 30m K线数据。'],
+      4: ['步骤 4：重算指标', '重算 technical_indicator（daily/5m/30m）。']
+    };
+    const [title, subtitle] = titles[step] || titles[1];
+    if($('importPanelTitle')) $('importPanelTitle').textContent = title;
+    if($('importPanelSubtitle')) $('importPanelSubtitle').textContent = subtitle;
+    if($('pageTitle')) $('pageTitle').textContent = title;
+    if($('pageSubtitle')) $('pageSubtitle').textContent = subtitle;
+
+    // 根据步骤显示/隐藏按钮
+    const scanBtn = $('scanImportDirBtn');
+    const runBtn = $('runImportBtn');
+    const buildBtn = $('build30mBtn');
+    const rebuildBtn = $('rebuildIndicatorsBtn');
+    const refreshBtn = $('refreshImportBtn');
+    const fullGuard = $('fullHistoryGuard');
+
+    if(scanBtn) scanBtn.style.display = step === 1 ? '' : 'none';
+    if(runBtn) runBtn.style.display = step === 2 ? '' : 'none';
+    if(buildBtn) buildBtn.style.display = step === 3 ? '' : 'none';
+    if(rebuildBtn) rebuildBtn.style.display = step === 4 ? '' : 'none';
+    if(refreshBtn) refreshBtn.style.display = step === 4 ? '' : 'none';
+    if(fullGuard) fullGuard.style.display = step === 2 ? '' : 'none';
+
+    // 步骤4不再自动显示批次面板（批次/执行/shard 已降级为高级，由折叠按钮控制）
+    const importFilePanel = $('importFilePanel');
+    if(importFilePanel) importFilePanel.style.display = 'none';
+
+    // 日期/线程等控件：步骤2/3/4显示
+    all('#importType,#importStartDate,#importEndDate,#importWorkers').forEach(el => {
+      const label = el.closest('label');
+      if(label) label.style.display = step >= 2 ? '' : 'none';
+    });
+
+    activeImportMode = step === 1 ? 'check' : step === 4 ? 'batches' : 'run';
   }
 
   function cell(v){
@@ -174,51 +279,8 @@
   }
 
   function updateImportMode(updateChrome){
-    const shouldUpdateChrome = updateChrome !== false && isDataImportActive();
-    const titleMap = {
-      check: ['导入前检查', '扫描 /data/vipdoc 源文件范围，不写数据库。'],
-      run: ['发起导入', '选择市场、日线/5m/all、日期范围和并发线程，提交后台导入任务。'],
-      batches: ['批次/日志', '查看导入批次，点选后追踪 job_execution 与 Shard 汇总；文件明细按需展开。']
-    };
-    const [title, subtitle] = titleMap[activeImportMode] || titleMap.check;
-    if(shouldUpdateChrome && $('pageTitle')) $('pageTitle').textContent = title;
-    if(shouldUpdateChrome && $('pageSubtitle')) $('pageSubtitle').textContent = subtitle;
-    if($('importPanelTitle')) $('importPanelTitle').textContent = title;
-    if($('importPanelSubtitle')) $('importPanelSubtitle').textContent = subtitle;
-
-    const scanBtn = $('scanImportDirBtn');
-    const runBtn = $('runImportBtn');
-    const refreshBtn = $('refreshImportBtn');
-    const buildBtn = $('build30mBtn');
-    const rebuildBtn = $('rebuildIndicatorsBtn');
-    const liveStatus = $('importLiveStatus');
-    const actionResult = $('importActionResult');
-    const fullGuard = $('fullHistoryGuard');
-
-    const showRun = activeImportMode === 'run';
-    const showBatches = activeImportMode === 'batches';
-
-    if(scanBtn) scanBtn.style.display = activeImportMode === 'check' ? '' : 'none';
-    if(runBtn) runBtn.style.display = showRun ? '' : 'none';
-    if(refreshBtn) refreshBtn.style.display = showBatches ? '' : 'none';
-    if(buildBtn) buildBtn.style.display = showBatches ? '' : 'none';
-    if(rebuildBtn) rebuildBtn.style.display = showBatches ? '' : 'none';
-    if(liveStatus) liveStatus.style.display = showBatches ? '' : 'none';
-    if(actionResult) actionResult.style.display = showBatches || activeImportMode === 'check' || showRun ? '' : 'none';
-    if(fullGuard) fullGuard.style.display = showRun ? '' : 'none';
-    const toggleImportFilesBtn = $('toggleImportFilesBtn');
-    if(toggleImportFilesBtn) toggleImportFilesBtn.textContent = '查看文件明细';
-
-    all('.import-panel-batches,.import-panel-execution,.import-panel-shards').forEach(el => {
-      el.style.display = showBatches ? '' : 'none';
-    });
-    const importFilePanel = $('importFilePanel');
-    if(importFilePanel && !showBatches) importFilePanel.style.display = 'none';
-
-    all('#importType,#importStartDate,#importEndDate,#importWorkers').forEach(el => {
-      const label = el.closest('label');
-      if(label) label.style.display = showRun || showBatches ? '' : 'none';
-    });
+    // 不再按 mode 切换，统一用步骤导航
+    if(!activeImportStep) setActiveImportStep(1);
   }
 
   async function loadImportBatches(){
@@ -244,7 +306,7 @@
           const progress = total ? `${done}/${total} (${((done * 100) / total).toFixed(1)}%)` : '-';
           const selected = String(activeImportBatchId || '') === String(r.id || '');
           return `
-          <tr data-import-batch-id="${cell(r.id)}" data-progress-url="${r.progress_url || ''}" style="cursor:pointer;${selected ? 'background:#eff6ff' : ''}" title="点击追踪这个导入批次">
+          <tr data-import-batch-id="${cell(r.id)}" data-progress-url="${r.progress_url || ''}" style="cursor:pointer;${selected ? 'background:rgba(59,130,246,.15)' : ''}" title="点击追踪这个导入批次">
             <td>${cell(r.id)}</td>
             <td>${cell(r.import_type)}</td>
             <td>${cell(r.source_dir)}</td>
@@ -450,12 +512,8 @@
   function boot(){
     ensureDataImportPage();
     bindButtons();
-    const active = document.querySelector('.nav-item.active[data-view]');
-    if(active && ['data-update','data-import-run','data-import-batches','data-import-logs'].includes(active.dataset.view || '')){
-      switchView(active.dataset.view);
-    }else{
-      updateImportMode(false);
-    }
+    setActiveImportStep(1);
+    updateImportMode(false);
   }
 
   document.addEventListener('DOMContentLoaded', boot);

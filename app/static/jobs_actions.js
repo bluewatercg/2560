@@ -56,7 +56,7 @@
 
       <div class="filters" style="margin-top:12px;gap:14px;flex-wrap:wrap;align-items:flex-end">
 
-        <label style="display:flex;flex-direction:column;gap:6px;font-size:13px;font-weight:600;color:#334155">
+        <label style="display:flex;flex-direction:column;gap:6px;font-size:13px;font-weight:600;color:#94A3B8">
           市场范围
           <select id="jobMarket" title="选择要执行的股票市场范围">
                   <option value="sh60">sh60 沪主板60</option>
@@ -66,14 +66,14 @@
                 </select>
         </label>
 
-        <label style="display:flex;flex-direction:column;gap:6px;font-size:13px;font-weight:600;color:#334155">
+        <label style="display:flex;flex-direction:column;gap:6px;font-size:13px;font-weight:600;color:#94A3B8">
           并行分片数（shards）
           <input id="jobShards" type="number" min="1" max="32" value="4"
                  title="把股票池拆成多少份并行执行，建议 2 / 4 / 6"
                  placeholder="例如 4" />
         </label>
 
-        <label style="display:flex;flex-direction:column;gap:6px;font-size:13px;font-weight:600;color:#334155">
+        <label style="display:flex;flex-direction:column;gap:6px;font-size:13px;font-weight:600;color:#94A3B8">
           任务优先级（priority）
           <input id="jobPriority" type="number" min="1" max="9" value="3"
                  title="数字越小优先级越高：1最高，3日常，5普通，9最低"

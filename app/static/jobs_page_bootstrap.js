@@ -65,6 +65,7 @@
 
               <button id="enqueueJobBtn" class="ghost">加入队列后台跑</button>
               <button id="runNowJobBtn" class="primary">立即执行并看进度</button>
+              <button id="runAllMarketsBtn" style="border-color:var(--green);color:var(--green)">一键运行四类</button>
               <button id="refreshJobsBtn">刷新任务</button>
             </div>
           </div>
@@ -134,6 +135,12 @@
       enqueueBtn.dataset.bound = '1';
       enqueueBtn.onclick = enqueueJob;
     }
+
+    const runAllBtn = $('runAllMarketsBtn');
+    if (runAllBtn && !runAllBtn.dataset.bound) {
+      runAllBtn.dataset.bound = '1';
+      runAllBtn.onclick = runAllMarkets;
+    }
   }
 
   async function apiJson(url, opts){
@@ -197,6 +204,17 @@
       })
     });
 
+    if ($('jobActionResult')) $('jobActionResult').textContent = JSON.stringify(data, null, 2);
+    await loadJobs();
+  }
+
+  async function runAllMarkets(){
+    const shards = $('jobShards') ? Number($('jobShards').value || 1) : 1;
+    const data = await apiJson('/api/jobs/run-all-markets', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ shards })
+    });
     if ($('jobActionResult')) $('jobActionResult').textContent = JSON.stringify(data, null, 2);
     await loadJobs();
   }
