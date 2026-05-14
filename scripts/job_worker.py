@@ -287,7 +287,7 @@ def main():
                               WHERE je.job_type = job_queue.job_type
                                 AND JSON_UNQUOTE(JSON_EXTRACT(job_queue.payload, '$.job_execution_id')) = CAST(je.id AS CHAR)
                                 AND je.status = 'running'
-                                AND JSON_UNQUOTE(JSON_EXTRACT(je.payload, '$.market')) = JSON_UNQUOTE(JSON_EXTRACT(job_queue.payload, '$.market'))
+                                AND je.market = JSON_UNQUOTE(JSON_EXTRACT(job_queue.payload, '$.market'))
                           )
                         ORDER BY priority ASC, created_at ASC
                         LIMIT 1 FOR UPDATE SKIP LOCKED
