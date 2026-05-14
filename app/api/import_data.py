@@ -405,8 +405,18 @@ def scan_import(payload: ImportScanRequest):
 
 @router.post("/run")
 def run_import(payload: ImportRunRequest, db: Session = Depends(get_db)):
+    if not os.path.isdir(payload.source_dir):
+        raise HTTPException(
+            status_code=400,
+            detail=f"源目录不存在: {payload.source_dir}，请先确认 VIPDOC 路径"
+        )
     scan = scan_vipdoc_files(payload.source_dir, payload.market, payload.import_type)
     files = scan["files"]
+    if not files:
+        raise HTTPException(
+            status_code=400,
+            detail=f"源目录中无可用文件: {payload.source_dir}"
+        )
     if payload.limit_files:
         files = files[:payload.limit_files]
     _ensure_import_tables(db)

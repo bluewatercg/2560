@@ -139,14 +139,16 @@
   }
 
   function statusText(s) {
-    if (s.status === "done") return s.summary || "完成";
-    if (s.status === "skipped") return s.reason || "已跳过";
-    if (s.status === "failed") return s.error || "失败";
+    if (!s || !s.status) return "";
+    if (s.status === "done") return (s.summary != null && s.summary !== "") ? s.summary : "完成";
+    if (s.status === "skipped") return (s.reason != null && s.reason !== "") ? s.reason : "已跳过";
+    if (s.status === "failed") return (s.error != null && s.error !== "") ? s.error : "失败";
     if (s.status === "running" && s.progress != null) return `${s.progress}%`;
     return "";
   }
 
   function actionButtons(s, i) {
+    if (!s) return "";
     let btns = "";
     if (s.status === "pending") btns += `<button class="ghost wf-step-btn" onclick="window._wfSkip(${i})">跳过</button>`;
     if (s.status === "failed") btns += `<button class="ghost wf-step-btn" onclick="window._wfRetry(${i})">重试</button>`;
