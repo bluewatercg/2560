@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import bindparam, text
 from sqlalchemy.orm import Session
@@ -81,6 +81,12 @@ def _ensure_import_tables(db: Session) -> None:
           KEY idx_status_started (status, started_at)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     """))
+    # 修复已存在表缺少 updated_at 默认值的问题
+    db.execute(text("""
+        ALTER TABLE data_import_batch
+        MODIFY COLUMN updated_at DATETIME NOT NULL
+            DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    """))
     db.execute(text("""
         CREATE TABLE IF NOT EXISTS data_import_file (
           id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -96,6 +102,17 @@ def _ensure_import_tables(db: Session) -> None:
           KEY idx_batch (import_batch_id),
           KEY idx_status (status)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """))
+    # 修复已存在表缺少 updated_at 默认值的问题
+    db.execute(text("""
+        ALTER TABLE data_import_batch
+        MODIFY COLUMN updated_at DATETIME NOT NULL
+            DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    """))
+    db.execute(text("""
+        ALTER TABLE data_import_file
+        MODIFY COLUMN updated_at DATETIME NOT NULL
+            DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
     """))
     db.commit()
 
