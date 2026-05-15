@@ -555,9 +555,9 @@ def import_lc5_file(path: str, market: str, start: Optional[str] = None, end: Op
 
 def _flush_redis_to_db(db, batch_id: int, redis_client, redis_key: str, table: str, columns: list[str]) -> tuple[int, set[str]]:
     """
-    Read all rows from Redis and bulk INSERT into DB.
-    Does NOT delete or trim the Redis key — caller is responsible for cleanup
-    only after successful commit, so that DB failure preserves the Redis buffer.
+    Read all rows from Redis and bulk INSERT into DB in smaller transactions.
+    Commits every 10 batches to avoid keeping a huge transaction open.
+    On failure, the remaining rows stay in Redis for manual retry.
     Returns (rows_flushed, set of affected stock codes).
     """
     total = redis_client.llen(redis_key)
@@ -565,6 +565,7 @@ def _flush_redis_to_db(db, batch_id: int, redis_client, redis_key: str, table: s
         return 0, set()
 
     batch_size = 5000
+    commit_every = 10  # commit DB transaction every N batches (~50k rows)
     cols = ", ".join(columns)
     placeholders = ", ".join(f":{c}" for c in columns)
     on_dup = ", ".join(f"{c}=VALUES({c})" for c in columns if c not in ("code", "date", "period", "source"))
@@ -572,14 +573,36 @@ def _flush_redis_to_db(db, batch_id: int, redis_client, redis_key: str, table: s
 
     flushed = 0
     codes: set[str] = set()
-    for offset in range(0, total, batch_size):
-        raw = redis_client.lrange(redis_key, offset, offset + batch_size - 1)
-        if not raw:
-            break
-        params = [json.loads(r) for r in raw]
-        db.execute(text(sql), params)
-        flushed += len(params)
-        codes.update(p["code"] for p in params)
+    batches_since_commit = 0
+
+    try:
+        for offset in range(0, total, batch_size):
+            raw = redis_client.lrange(redis_key, offset, offset + batch_size - 1)
+            if not raw:
+                break
+            params = [json.loads(r) for r in raw]
+            db.execute(text(sql), params)
+            flushed += len(params)
+            codes.update(p["code"] for p in params)
+            batches_since_commit += 1
+
+            if batches_since_commit >= commit_every:
+                db.commit()
+                batches_since_commit = 0
+                logger.info("[flush] batch_id=%s flushed %d/%d so far", batch_id, flushed, total)
+
+        # Final commit for remaining rows
+        if flushed > 0:
+            db.commit()
+            logger.info("[flush] batch_id=%s completed: %d rows total", batch_id, flushed)
+
+    except Exception:
+        # Commit whatever succeeded so far, let caller decide what to do
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+        raise
 
     return flushed, codes
 
