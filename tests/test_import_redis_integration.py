@@ -294,7 +294,7 @@ def _claim_job_worker(engine, market: str, results: dict, worker_id: str):
         try:
             with engine.begin() as conn:
                 from scripts.job_worker import try_claim_job
-                job = try_claim_job(conn, "run_2560", market)
+                job = try_claim_job(conn, market)
                 if job:
                     claimed += 1
         except Exception as e:
@@ -338,6 +338,53 @@ def test_worker_concurrent_claim_no_deadlock(engine):
     assert total_claimed <= len(markets) * 2, f"Over-claim: {total_claimed} > {len(markets)*2}"
 
     # Cleanup test jobs
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM job_queue WHERE strategy_code='TEST'"))
+
+
+def test_market_worker_claims_all_job_types(engine):
+    """
+    B2. Market worker (sh60) claims import_vipdoc, build_30m, run_2560
+    for its market. Generic worker only claims jobs without market lane.
+    """
+    from scripts.job_worker import try_claim_job
+
+    # Insert market-lane jobs
+    with engine.begin() as conn:
+        for jt in ["import_vipdoc", "build_30m", "run_2560"]:
+            conn.execute(text("""
+                INSERT INTO job_queue (job_type, strategy_code, priority, payload, status, created_at)
+                VALUES (:jt, 'TEST', 5, :payload, 'pending', NOW())
+            """), {"jt": jt, "payload": json.dumps({"market": "sh60", "job_execution_id": 0, "import_batch_id": 0})})
+
+    # Market worker sh60 should claim 3 jobs
+    claimed_types = []
+    for _ in range(5):
+        with engine.begin() as conn:
+            job = try_claim_job(conn, "sh60")
+            if job:
+                claimed_types.append(job["job_type"])
+    assert sorted(claimed_types) == ["build_30m", "import_vipdoc", "run_2560"], f"Expected 3 types, got {claimed_types}"
+
+    # Generic worker should NOT claim any market-lane jobs
+    with engine.begin() as conn:
+        job = try_claim_job(conn, None)
+    assert job is None, "Generic worker should not claim market-lane jobs"
+
+    # Insert a non-lane job (market=null)
+    with engine.begin() as conn:
+        conn.execute(text("""
+            INSERT INTO job_queue (job_type, strategy_code, priority, payload, status, created_at)
+            VALUES ('run_2560', 'TEST', 5, :payload, 'pending', NOW())
+        """), {"payload": json.dumps({"job_execution_id": 0, "import_batch_id": 0})})
+
+    # Generic worker should now claim it
+    with engine.begin() as conn:
+        job = try_claim_job(conn, None)
+    assert job is not None, "Generic worker should claim non-lane jobs"
+    assert job["job_type"] == "run_2560"
+
+    # Cleanup
     with engine.begin() as conn:
         conn.execute(text("DELETE FROM job_queue WHERE strategy_code='TEST'"))
 

@@ -254,35 +254,22 @@ def mark_execution_cancelled(en, payload: dict[str, Any], message: str) -> None:
             )
 
 
-def try_claim_job(conn, job_type_filter: str, market: str | None) -> dict | None:
+def try_claim_job(conn, market: str | None) -> dict | None:
     """
     Claim one pending job using SELECT-then-UPDATE to avoid deadlock.
-    The two-step approach prevents multiple workers from acquiring overlapping
-    index locks simultaneously.
+
+    Market worker (WORKER_MARKET=sh60): claims ANY job_type where
+    payload.market matches this worker's market.
+
+    Generic worker (no WORKER_MARKET): claims only jobs where
+    payload.market is NULL/empty/'all' (no dedicated market lane).
     """
-    # Step 1: find a candidate (no locks, just read)
     if market:
+        # Market lane worker: claim any job for this market
         select_sql = """
             SELECT id FROM job_queue
             WHERE status='pending'
-              AND job_type = :job_type
               AND JSON_UNQUOTE(JSON_EXTRACT(payload, '$.market')) = :market
-              AND NOT EXISTS (
-                  SELECT 1 FROM job_execution je
-                  WHERE je.job_type = :job_type
-                    AND JSON_UNQUOTE(JSON_EXTRACT(job_queue.payload, '$.job_execution_id')) = CAST(je.id AS CHAR)
-                    AND je.status = 'running'
-                    AND je.market = JSON_UNQUOTE(JSON_EXTRACT(job_queue.payload, '$.market'))
-              )
-            ORDER BY priority ASC, created_at ASC
-            LIMIT 1
-        """
-        select_params = {"job_type": job_type_filter, "market": market}
-    else:
-        select_sql = """
-            SELECT id FROM job_queue
-            WHERE status='pending'
-              AND job_type != :job_type
               AND NOT EXISTS (
                   SELECT 1 FROM job_execution je
                   WHERE je.job_type = job_queue.job_type
@@ -293,7 +280,21 @@ def try_claim_job(conn, job_type_filter: str, market: str | None) -> dict | None
             ORDER BY priority ASC, created_at ASC
             LIMIT 1
         """
-        select_params = {"job_type": job_type_filter}
+        select_params = {"market": market}
+    else:
+        # Generic worker: only claim jobs without a specific market lane
+        select_sql = """
+            SELECT id FROM job_queue
+            WHERE status='pending'
+              AND (
+                  JSON_UNQUOTE(JSON_EXTRACT(payload, '$.market')) IS NULL
+                  OR JSON_UNQUOTE(JSON_EXTRACT(payload, '$.market')) = ''
+                  OR JSON_UNQUOTE(JSON_EXTRACT(payload, '$.market')) = 'all'
+              )
+            ORDER BY priority ASC, created_at ASC
+            LIMIT 1
+        """
+        select_params = {}
 
     row = conn.execute(text(select_sql), select_params).mappings().first()
     if not row:
@@ -322,21 +323,20 @@ def main():
     once = os.getenv("JOB_WORKER_ONCE", "").lower() in ("1", "true", "yes")
     worker_market = os.getenv("WORKER_MARKET", "").strip().lower()
     if worker_market:
-        log(f"[worker] started for market={worker_market}")
+        log(f"[worker] started lane={worker_market} (consumes import_vipdoc/build_30m/rebuild_indicator/run_2560)")
     else:
-        log("[worker] started (no WORKER_MARKET set, consumes all markets)")
+        log("[worker] started (generic: consumes tasks without market lane)")
     while not STOP:
         try:
             with en.begin() as conn:
-                # Determine job_type filter for the claim
-                job_type_filter = "run_2560" if worker_market else "run_2560"
-                job = try_claim_job(conn, job_type_filter, worker_market or None)
+                job = try_claim_job(conn, worker_market or None)
                 if not job:
                     if once:
                         break
                     time.sleep(poll)
                     continue
-                log(f"[worker] picked queue #{job['id']} type={job['job_type']}")
+                job_market = parse_payload(job.get("payload")).get("market", "")
+                log(f"[worker] picked queue #{job['id']} type={job['job_type']} market={job_market}")
 
             payload = parse_payload(job.get("payload"))
             payload.setdefault("job_execution_id", payload.get("job_execution_id"))

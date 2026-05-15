@@ -420,29 +420,34 @@ def scan_import(payload: ImportScanRequest):
     }
 
 
-@router.post("/run")
-def run_import(payload: ImportRunRequest, db: Session = Depends(get_db)):
-    if not os.path.isdir(payload.source_dir):
-        raise HTTPException(
-            status_code=400,
-            detail=f"源目录不存在: {payload.source_dir}，请先确认 VIPDOC 路径"
-        )
-    scan = scan_vipdoc_files(payload.source_dir, payload.market, payload.import_type)
-    files = scan["files"]
-    if not files:
-        raise HTTPException(
-            status_code=400,
-            detail=f"源目录中无可用文件: {payload.source_dir}"
-        )
-    if payload.limit_files:
-        files = files[:payload.limit_files]
+def _active_import_for_market(db: Session, market: str) -> dict | None:
+    """Check if there's already an active import_vipdoc for this market."""
+    if not _table_exists(db, "job_queue"):
+        return None
+    row = db.execute(text("""
+        SELECT id, status, job_type, payload
+        FROM job_queue
+        WHERE job_type = 'import_vipdoc'
+          AND status IN ('pending', 'running')
+          AND JSON_UNQUOTE(JSON_EXTRACT(payload, '$.market')) = :market
+        ORDER BY id ASC
+        LIMIT 1
+    """), {"market": market}).mappings().first()
+    return dict(row) if row else None
+
+
+MARKET_LANES = ["sh60", "sh68", "sz00", "sz30"]
+
+
+def _enqueue_single_import(db, payload: ImportRunRequest, market: str, files: list[str], workers: int) -> dict:
+    """Create one batch + one job for a single market import."""
     _ensure_import_tables(db)
     batch_id, id_map = _create_batch_and_files(db, payload, files)
     job_id = create_job_execution(
         db,
         "import_vipdoc",
-        market=payload.market,
-        shards=payload.workers,
+        market=market,
+        shards=workers,
         batch_id=str(batch_id),
         total=len(files),
         message=f"queued import batch={batch_id}",
@@ -452,11 +457,11 @@ def run_import(payload: ImportRunRequest, db: Session = Depends(get_db)):
         "job_execution_id": job_id,
         "import_batch_id": batch_id,
         "source_dir": payload.source_dir,
-        "market": payload.market,
+        "market": market,
         "import_type": payload.import_type,
         "start": payload.start,
         "end": payload.end,
-        "workers": payload.workers,
+        "workers": workers,
     })
     db.execute(text("""
         UPDATE data_import_batch
@@ -465,20 +470,119 @@ def run_import(payload: ImportRunRequest, db: Session = Depends(get_db)):
     """), {"id": batch_id, "message": f"queued import job #{job_id}"})
     db.commit()
     return {
-        "ok": True,
         "import_batch_id": batch_id,
         "job_id": job_id,
-        "status": "queued",
-        "scan_dirs": scan["scan_dirs"],
+        "market": market,
         "total_files": len(files),
-        "message": "import job queued",
         "progress_url": f"/api/jobs/executions/{job_id}/progress",
+    }
+
+
+@router.post("/run")
+def run_import(payload: ImportRunRequest, db: Session = Depends(get_db)):
+    if not os.path.isdir(payload.source_dir):
+        raise HTTPException(
+            status_code=400,
+            detail=f"源目录不存在: {payload.source_dir}，请先确认 VIPDOC 路径"
+        )
+    _ensure_import_tables(db)
+
+    # ── market=all: split into 4 lane-specific jobs ──
+    if payload.market.lower() == "all":
+        jobs = []
+        for lane in MARKET_LANES:
+            # Check for active import on this lane
+            active = _active_import_for_market(db, lane)
+            if active:
+                jobs.append({
+                    "market": lane,
+                    "skipped": True,
+                    "reason": f"active import already exists: queue #{active['id']} status={active['status']}",
+                })
+                continue
+
+            scan = scan_vipdoc_files(payload.source_dir, lane, payload.import_type)
+            files = scan["files"]
+            if not files:
+                jobs.append({"market": lane, "skipped": True, "reason": "no files found"})
+                continue
+            if payload.limit_files:
+                files = files[:payload.limit_files]
+
+            job_info = _enqueue_single_import(db, payload, lane, files, payload.workers)
+            job_info["scan_dirs"] = scan["scan_dirs"]
+            jobs.append(job_info)
+
+        return {"ok": True, "lanes": jobs, "message": "import jobs queued"}
+
+    # ── single market: check for active import ──
+    active = _active_import_for_market(db, payload.market)
+    if active:
+        return {
+            "ok": False,
+            "duplicate": True,
+            "reason": f"active import already exists for {payload.market}: queue #{active['id']}",
+            "existing_queue_id": active["id"],
+            "existing_status": active["status"],
+        }
+
+    scan = scan_vipdoc_files(payload.source_dir, payload.market, payload.import_type)
+    files = scan["files"]
+    if not files:
+        raise HTTPException(
+            status_code=400,
+            detail=f"源目录中无可用文件: {payload.source_dir}"
+        )
+    if payload.limit_files:
+        files = files[:payload.limit_files]
+
+    job_info = _enqueue_single_import(db, payload, payload.market, files, payload.workers)
+    return {
+        "ok": True,
+        **job_info,
+        "scan_dirs": scan["scan_dirs"],
+        "message": "import job queued",
     }
 
 
 @router.post("/build-30m")
 def build_30m(payload: Build30mRequest, db: Session = Depends(get_db)):
     _ensure_import_tables(db)
+
+    # ── market=all: split into 4 lane-specific jobs ──
+    if payload.market.lower() == "all":
+        jobs = []
+        for lane in MARKET_LANES:
+            range_key = f"%start={payload.start};end={payload.end or ''}%"
+            existing = db.execute(text("""
+                SELECT b.id, b.status, b.message, b.started_at, b.updated_at, e.id AS job_id
+                FROM data_import_batch b
+                LEFT JOIN job_execution e ON e.batch_id = CAST(b.id AS CHAR) AND e.job_type='build_30m'
+                WHERE b.import_type='build_30m'
+                  AND b.market=:market
+                  AND b.status IN ('queued','pending','running','cancelling')
+                  AND b.message LIKE :range_key
+                ORDER BY b.id DESC
+                LIMIT 1
+            """), {
+                "market": lane,
+                "range_key": range_key,
+            }).mappings().first()
+            if existing:
+                jobs.append({
+                    "market": lane,
+                    "skipped": True,
+                    "reason": "same build_30m job already queued/running",
+                    "import_batch_id": existing["id"],
+                    "job_id": existing["job_id"],
+                    "status": existing["status"],
+                })
+                continue
+            job_info = _enqueue_single_build30m(db, payload, lane)
+            jobs.append({"market": lane, **job_info, "skipped": False})
+        return {"ok": True, "lanes": jobs, "message": "build_30m jobs queued"}
+
+    # ── single market ──
     existing = db.execute(text("""
         SELECT b.id, b.status, b.message, b.started_at, b.updated_at, e.id AS job_id
         FROM data_import_batch b
@@ -502,16 +606,28 @@ def build_30m(payload: Build30mRequest, db: Session = Depends(get_db)):
             "status": existing["status"],
             "message": "same build_30m job already queued/running",
         }
+    job_info = _enqueue_single_build30m(db, payload, payload.market)
+    return {
+        "ok": True,
+        **job_info,
+        "message": "build_30m job queued",
+    }
+
+
+def _enqueue_single_build30m(db, payload: Build30mRequest, market: str) -> dict:
+    """Create one batch + one job for a single market build_30m."""
+    _ensure_import_tables(db)
+    range_key = f"start={payload.start};end={payload.end or ''}"
     res = db.execute(text("""
         INSERT INTO data_import_batch
         (import_type, source_dir, market, status, total_files, started_at, message)
         VALUES ('build_30m', 'minute_kline_period:5m', :market, 'queued', 0, NOW(), :message)
-    """), {"market": payload.market, "message": f"build 30m started, workers={payload.workers}, start={payload.start};end={payload.end or ''}"})
+    """), {"market": market, "message": f"build 30m started, workers={payload.workers}, {range_key}"})
     batch_id = int(res.lastrowid)
     job_id = create_job_execution(
         db,
         "build_30m",
-        market=payload.market,
+        market=market,
         shards=payload.workers,
         batch_id=str(batch_id),
         total=0,
@@ -523,7 +639,7 @@ def build_30m(payload: Build30mRequest, db: Session = Depends(get_db)):
         "import_batch_id": batch_id,
         "start": payload.start,
         "end": payload.end,
-        "market": payload.market,
+        "market": market,
         "workers": payload.workers,
         "limit_codes": payload.limit_codes,
         "dry_run": payload.dry_run,
@@ -532,14 +648,13 @@ def build_30m(payload: Build30mRequest, db: Session = Depends(get_db)):
         UPDATE data_import_batch
         SET status='queued', message=:message, updated_at=NOW()
         WHERE id=:id
-    """), {"id": batch_id, "message": f"queued build_30m job #{job_id}, start={payload.start};end={payload.end or ''}"})
+    """), {"id": batch_id, "message": f"queued build_30m job #{job_id}, {range_key}"})
     db.commit()
     return {
-        "ok": True,
         "import_batch_id": batch_id,
         "job_id": job_id,
+        "market": market,
         "status": "queued",
-        "message": "build_30m job queued",
         "progress_url": f"/api/jobs/executions/{job_id}/progress",
     }
 
