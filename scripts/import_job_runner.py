@@ -91,9 +91,10 @@ def main():
             message=f"import started files={len(files)}",
         )
 
-    # Detect Redis availability
-    rc = get_redis_client()
-    use_redis = ping_redis(rc)
+    # Redis is opt-in only. Set IMPORT_USE_REDIS=true to enable.
+    use_redis = os.getenv("IMPORT_USE_REDIS", "false").lower() in ("1", "true", "yes")
+    rc = get_redis_client() if use_redis else None
+    use_redis = use_redis and ping_redis(rc)
     mode_label = "redis" if use_redis else "db-fallback"
 
     result = import_vipdoc_files_parallel(

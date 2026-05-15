@@ -15,6 +15,7 @@ Vipdoc 行情导入工具。
 from __future__ import annotations
 
 import argparse
+import os
 import struct
 import json
 import logging
@@ -256,9 +257,19 @@ def _filter_rows_by_date(rows: list[dict], start_i: Optional[int], end_i: Option
     return out
 
 
-def _chunks(rows: list[dict], size: int = 1000) -> Iterable[list[dict]]:
-    for i in range(0, len(rows), size):
-        yield rows[i:i + size]
+def _chunk_size() -> int:
+    """Configurable batch INSERT size, default 1000."""
+    v = os.getenv("IMPORT_CHUNK_SIZE", "1000")
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return 1000
+
+
+def _chunks(rows: list[dict], size: int | None = None) -> Iterable[list[dict]]:
+    s = size if size is not None else _chunk_size()
+    for i in range(0, len(rows), s):
+        yield rows[i:i + s]
 
 
 def _lpush_rows_to_redis(redis_client, batch_id: int, rows: list[dict], redis_key: str) -> bool:
