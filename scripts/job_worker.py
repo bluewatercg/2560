@@ -267,43 +267,70 @@ def main():
         try:
             with en.begin() as conn:
                 # 按 market 隔离：worker 只消费自己市场的任务
-                market_filter = ""
                 if worker_market:
-                    market_filter = (
-                        f" AND job_queue.job_type = 'run_2560'"
-                        f" AND JSON_UNQUOTE(JSON_EXTRACT(payload, '$.market')) = '{worker_market}'"
-                    )
+                    # market lane worker：只抢自己市场的 run_2560 任务
+                    claim_sql = """
+                        UPDATE job_queue jq
+                        INNER JOIN (
+                            SELECT id FROM job_queue
+                            WHERE status='pending'
+                              AND job_type = 'run_2560'
+                              AND JSON_UNQUOTE(JSON_EXTRACT(payload, '$.market')) = :market
+                              AND NOT EXISTS (
+                                  SELECT 1 FROM job_execution je
+                                  WHERE je.job_type = 'run_2560'
+                                    AND JSON_UNQUOTE(JSON_EXTRACT(job_queue.payload, '$.job_execution_id')) = CAST(je.id AS CHAR)
+                                    AND je.status = 'running'
+                                    AND je.market = JSON_UNQUOTE(JSON_EXTRACT(job_queue.payload, '$.market'))
+                              )
+                            ORDER BY priority ASC, created_at ASC
+                            LIMIT 1
+                        ) AS t ON jq.id = t.id
+                        SET jq.status='running', jq.started_at=NOW(), jq.updated_at=NOW()
+                    """
+                    params = {"market": worker_market}
                 else:
-                    # data worker（无 WORKER_MARKET）不消费 run_2560 任务，留给 market lane worker
-                    market_filter = " AND job_queue.job_type != 'run_2560'"
+                    # data worker：不消费 run_2560 任务，留给 market lane worker
+                    claim_sql = """
+                        UPDATE job_queue jq
+                        INNER JOIN (
+                            SELECT id FROM job_queue
+                            WHERE status='pending'
+                              AND job_type != 'run_2560'
+                              AND NOT EXISTS (
+                                  SELECT 1 FROM job_execution je
+                                  WHERE je.job_type = job_queue.job_type
+                                    AND JSON_UNQUOTE(JSON_EXTRACT(job_queue.payload, '$.job_execution_id')) = CAST(je.id AS CHAR)
+                                    AND je.status = 'running'
+                                    AND je.market = JSON_UNQUOTE(JSON_EXTRACT(job_queue.payload, '$.market'))
+                              )
+                            ORDER BY priority ASC, created_at ASC
+                            LIMIT 1
+                        ) AS t ON jq.id = t.id
+                        SET jq.status='running', jq.started_at=NOW(), jq.updated_at=NOW()
+                    """
+                    params = {}
 
+                result = conn.execute(text(claim_sql), params)
+
+                if result.rowcount == 0:
+                    if once:
+                        break
+                    time.sleep(poll)
+                    continue
+
+                # 取回刚抢到的任务
                 row = conn.execute(
-                    text(f"""
-                        SELECT * FROM job_queue
-                        WHERE status='pending'
-                        {market_filter}
-                          AND NOT EXISTS (
-                              SELECT 1 FROM job_execution je
-                              WHERE je.job_type = job_queue.job_type
-                                AND JSON_UNQUOTE(JSON_EXTRACT(job_queue.payload, '$.job_execution_id')) = CAST(je.id AS CHAR)
-                                AND je.status = 'running'
-                                AND je.market = JSON_UNQUOTE(JSON_EXTRACT(job_queue.payload, '$.market'))
-                          )
-                        ORDER BY priority ASC, created_at ASC
-                        LIMIT 1 FOR UPDATE SKIP LOCKED
-                    """)
+                    text("SELECT * FROM job_queue WHERE status='running' AND started_at >= NOW() - INTERVAL 10 SECOND ORDER BY id ASC LIMIT 1")
                 ).mappings().first()
                 if not row:
                     if once:
                         break
                     time.sleep(poll)
                     continue
+
                 job = dict(row)
                 log(f"[worker] picked queue #{job['id']} type={job['job_type']}")
-                conn.execute(
-                    text("UPDATE job_queue SET status='running', started_at=NOW(), updated_at=NOW() WHERE id=:id"),
-                    {"id": job["id"]},
-                )
 
             payload = parse_payload(job.get("payload"))
             payload.setdefault("job_execution_id", payload.get("job_execution_id"))
