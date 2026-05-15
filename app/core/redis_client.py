@@ -35,10 +35,24 @@ def _build_client() -> Optional[redis.Redis]:
 
 
 def get_redis_client() -> Optional[redis.Redis]:
-    """Return a singleton Redis client, or None if connection fails."""
+    """Return a singleton Redis client, or None if connection fails.
+
+    If the cached client is stale (ping fails), it is reset and rebuilt
+    on the next call.
+    """
     global _client
-    if _client is None:
-        _client = _build_client()
+    if _client is not None:
+        try:
+            _client.ping()
+            return _client
+        except (redis.ConnectionError, redis.TimeoutError):
+            logger.warning("[redis] cached client stale, resetting")
+            try:
+                _client.close()
+            except Exception:
+                pass
+            _client = None
+    _client = _build_client()
     return _client
 
 

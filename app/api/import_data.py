@@ -757,6 +757,31 @@ def cancel_import_batch(batch_id: int, payload: CancelBatchRequest | None = None
     return _cancel_import_batch(db, batch_id, reason)
 
 
+@router.post("/batches/{batch_id}/redis-cleanup")
+def cleanup_batch_redis_keys(batch_id: int, db: Session = Depends(get_db)):
+    """Delete leftover Redis keys for a batch (flush failure recovery)."""
+    from app.core.redis_client import get_redis_client
+
+    rc = get_redis_client()
+    if not rc:
+        raise HTTPException(status_code=503, detail="Redis not available")
+
+    daily_key = f"import:{batch_id}:daily"
+    minute_key = f"import:{batch_id}:minute"
+    deleted = 0
+    for key in (daily_key, minute_key):
+        if rc.exists(key):
+            rc.delete(key)
+            deleted += 1
+
+    return {
+        "ok": True,
+        "batch_id": batch_id,
+        "deleted_keys": deleted,
+        "keys": [daily_key, minute_key],
+    }
+
+
 @router.get("/files")
 def import_files(limit: int = Query(100, ge=1, le=1000), batch_id: Optional[int] = None, db: Session = Depends(get_db)):
     if not _table_exists(db, "data_import_file"):
