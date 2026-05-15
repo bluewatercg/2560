@@ -7,6 +7,7 @@ import os
 from sqlalchemy import text
 
 from app.db.session import SessionLocal
+from app.core.redis_client import get_redis_client, ping_redis
 from app.services.job_orchestrator import (
     finalize_data_import_batch,
     update_job_execution,
@@ -90,6 +91,11 @@ def main():
             message=f"import started files={len(files)}",
         )
 
+    # Detect Redis availability
+    rc = get_redis_client()
+    use_redis = ping_redis(rc)
+    mode_label = "redis" if use_redis else "db-fallback"
+
     result = import_vipdoc_files_parallel(
         files,
         a.market or batch["market"] or "sh60",
@@ -100,10 +106,15 @@ def main():
         batch_id=a.batch_id,
         import_file_ids=id_map,
         on_result=on_result,
+        redis_client=rc if use_redis else None,
     )
+    print(f"[import_job_runner] mode={mode_label}", flush=True)
 
     status = "success" if result["failed_files"] == 0 else "failed"
+    flush_error = result.get("flush_error")
     with SessionLocal() as db:
+        # If flush failed, preserve the specific error message instead of overwriting
+        batch_message = flush_error if flush_error else f"finished import_type={a.import_type}, workers={a.workers}"
         finalize_data_import_batch(
             db,
             a.batch_id,
@@ -111,7 +122,7 @@ def main():
             success_files=result["success_files"],
             failed_files=result["failed_files"],
             total_rows=result["total_rows"],
-            message=f"finished import_type={a.import_type}, workers={a.workers}",
+            message=batch_message,
         )
         update_job_execution(
             db,
@@ -121,12 +132,12 @@ def main():
             progress_total=result["total_files"],
             success_count=result["success_files"],
             failed_count=result["failed_files"],
-            message=f"import finished files={result['total_files']}",
+            message=batch_message,
             finished=True,
         )
         db.commit()
 
-    # 更新 workspace_status：导入成功后查实际最新日期
+    # 更新 workspace_status：仅成功时刷新
     if status == "success":
         from app.services.workspace_service import refresh_market_from_db
         periods = ["daily"] if a.import_type == "lday" else ["5m"]

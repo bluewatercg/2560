@@ -254,6 +254,68 @@ def mark_execution_cancelled(en, payload: dict[str, Any], message: str) -> None:
             )
 
 
+def try_claim_job(conn, job_type_filter: str, market: str | None) -> dict | None:
+    """
+    Claim one pending job using SELECT-then-UPDATE to avoid deadlock.
+    The two-step approach prevents multiple workers from acquiring overlapping
+    index locks simultaneously.
+    """
+    # Step 1: find a candidate (no locks, just read)
+    if market:
+        select_sql = """
+            SELECT id FROM job_queue
+            WHERE status='pending'
+              AND job_type = :job_type
+              AND JSON_UNQUOTE(JSON_EXTRACT(payload, '$.market')) = :market
+              AND NOT EXISTS (
+                  SELECT 1 FROM job_execution je
+                  WHERE je.job_type = :job_type
+                    AND JSON_UNQUOTE(JSON_EXTRACT(job_queue.payload, '$.job_execution_id')) = CAST(je.id AS CHAR)
+                    AND je.status = 'running'
+                    AND je.market = JSON_UNQUOTE(JSON_EXTRACT(job_queue.payload, '$.market'))
+              )
+            ORDER BY priority ASC, created_at ASC
+            LIMIT 1
+        """
+        select_params = {"job_type": job_type_filter, "market": market}
+    else:
+        select_sql = """
+            SELECT id FROM job_queue
+            WHERE status='pending'
+              AND job_type != :job_type
+              AND NOT EXISTS (
+                  SELECT 1 FROM job_execution je
+                  WHERE je.job_type = job_queue.job_type
+                    AND JSON_UNQUOTE(JSON_EXTRACT(job_queue.payload, '$.job_execution_id')) = CAST(je.id AS CHAR)
+                    AND je.status = 'running'
+                    AND je.market = JSON_UNQUOTE(JSON_EXTRACT(job_queue.payload, '$.market'))
+              )
+            ORDER BY priority ASC, created_at ASC
+            LIMIT 1
+        """
+        select_params = {"job_type": job_type_filter}
+
+    row = conn.execute(text(select_sql), select_params).mappings().first()
+    if not row:
+        return None
+
+    # Step 2: atomically claim this exact row
+    claim_sql = """
+        UPDATE job_queue
+        SET status='running', started_at=NOW(), updated_at=NOW()
+        WHERE id=:id AND status='pending'
+    """
+    result = conn.execute(text(claim_sql), {"id": row["id"]})
+    if result.rowcount == 0:
+        return None  # another worker grabbed it first
+
+    # Step 3: fetch the full row we just claimed
+    return conn.execute(
+        text("SELECT * FROM job_queue WHERE id=:id"),
+        {"id": row["id"]}
+    ).mappings().first()
+
+
 def main():
     en = create_engine(get_database_url(), pool_pre_ping=True, future=True)
     poll = int(os.getenv("JOB_WORKER_POLL_INTERVAL", "10"))
@@ -266,70 +328,14 @@ def main():
     while not STOP:
         try:
             with en.begin() as conn:
-                # 按 market 隔离：worker 只消费自己市场的任务
-                if worker_market:
-                    # market lane worker：只抢自己市场的 run_2560 任务
-                    claim_sql = """
-                        UPDATE job_queue jq
-                        INNER JOIN (
-                            SELECT id FROM job_queue
-                            WHERE status='pending'
-                              AND job_type = 'run_2560'
-                              AND JSON_UNQUOTE(JSON_EXTRACT(payload, '$.market')) = :market
-                              AND NOT EXISTS (
-                                  SELECT 1 FROM job_execution je
-                                  WHERE je.job_type = 'run_2560'
-                                    AND JSON_UNQUOTE(JSON_EXTRACT(job_queue.payload, '$.job_execution_id')) = CAST(je.id AS CHAR)
-                                    AND je.status = 'running'
-                                    AND je.market = JSON_UNQUOTE(JSON_EXTRACT(job_queue.payload, '$.market'))
-                              )
-                            ORDER BY priority ASC, created_at ASC
-                            LIMIT 1
-                        ) AS t ON jq.id = t.id
-                        SET jq.status='running', jq.started_at=NOW(), jq.updated_at=NOW()
-                    """
-                    params = {"market": worker_market}
-                else:
-                    # data worker：不消费 run_2560 任务，留给 market lane worker
-                    claim_sql = """
-                        UPDATE job_queue jq
-                        INNER JOIN (
-                            SELECT id FROM job_queue
-                            WHERE status='pending'
-                              AND job_type != 'run_2560'
-                              AND NOT EXISTS (
-                                  SELECT 1 FROM job_execution je
-                                  WHERE je.job_type = job_queue.job_type
-                                    AND JSON_UNQUOTE(JSON_EXTRACT(job_queue.payload, '$.job_execution_id')) = CAST(je.id AS CHAR)
-                                    AND je.status = 'running'
-                                    AND je.market = JSON_UNQUOTE(JSON_EXTRACT(job_queue.payload, '$.market'))
-                              )
-                            ORDER BY priority ASC, created_at ASC
-                            LIMIT 1
-                        ) AS t ON jq.id = t.id
-                        SET jq.status='running', jq.started_at=NOW(), jq.updated_at=NOW()
-                    """
-                    params = {}
-
-                result = conn.execute(text(claim_sql), params)
-
-                if result.rowcount == 0:
+                # Determine job_type filter for the claim
+                job_type_filter = "run_2560" if worker_market else "run_2560"
+                job = try_claim_job(conn, job_type_filter, worker_market or None)
+                if not job:
                     if once:
                         break
                     time.sleep(poll)
                     continue
-
-                # 取回刚抢到的任务
-                row = conn.execute(
-                    text("SELECT * FROM job_queue WHERE status='running' AND started_at >= NOW() - INTERVAL 10 SECOND ORDER BY id ASC LIMIT 1")
-                ).mappings().first()
-                if not row:
-                    if once:
-                        break
-                    time.sleep(poll)
-                    continue
-
-                job = dict(row)
                 log(f"[worker] picked queue #{job['id']} type={job['job_type']}")
 
             payload = parse_payload(job.get("payload"))

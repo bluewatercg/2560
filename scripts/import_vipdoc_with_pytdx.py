@@ -16,6 +16,9 @@ from __future__ import annotations
 
 import argparse
 import struct
+import json
+import logging
+import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -23,6 +26,7 @@ from pathlib import Path
 from typing import Callable, Iterable, Optional
 
 import pandas as pd
+from pymysql.err import OperationalError
 from sqlalchemy import text
 
 try:
@@ -33,6 +37,8 @@ except Exception:  # pragma: no cover
 
 from app.core.market_scope import market_file_prefixes, normalize_market_scope
 from app.db.session import SessionLocal
+
+logger = logging.getLogger(__name__)
 
 SOURCE = "vipdoc"
 
@@ -255,6 +261,22 @@ def _chunks(rows: list[dict], size: int = 1000) -> Iterable[list[dict]]:
         yield rows[i:i + size]
 
 
+def _lpush_rows_to_redis(redis_client, batch_id: int, rows: list[dict], redis_key: str) -> bool:
+    """Batch LPUSH rows to Redis. Returns True on success."""
+    if not redis_client or not rows:
+        return False
+    try:
+        payload = [json.dumps(r, ensure_ascii=False) for r in rows]
+        pipe = redis_client.pipeline()
+        for item in payload:
+            pipe.lpush(redis_key, item)
+        pipe.execute()
+        return True
+    except Exception as exc:
+        logger.warning("[mode=redis] LPUSH failed for %s: %s", redis_key, exc)
+        return False
+
+
 def _update_import_file(db, import_file_id: Optional[int], status: str, rows: int = 0, err: Optional[str] = None):
     if not import_file_id:
         return
@@ -327,98 +349,239 @@ def _set_import_batch_status(db, batch_id: Optional[int], status: str, message: 
         """), {"id": batch_id, "status": status, "message": message})
 
 
-def import_daily_file(path: str, market: str, start: Optional[str] = None, end: Optional[str] = None, import_file_id: Optional[int] = None, batch_id: Optional[int] = None) -> dict:
+def import_daily_file(path: str, market: str, start: Optional[str] = None, end: Optional[str] = None, import_file_id: Optional[int] = None, batch_id: Optional[int] = None, redis_client=None) -> dict:
     p = Path(path)
-    code = code_from_filename(p, market)
-    start_i = _start_day_i(start)
-    end_i = _end_day_i(end)
-    with SessionLocal() as db:
-        try:
+    try:
+        code = code_from_filename(p, market)
+        start_i = _start_day_i(start)
+        end_i = _end_day_i(end)
+
+        # Parse file outside DB transaction
+        df = _read_daily(p)
+        rows: list[dict] = []
+        for _, row in df.iterrows():
+            d = _date_int(row.get("date") if "date" in row else row.iloc[0])
+            rows.append({
+                "code": code,
+                "date": d,
+                "open": float(row.get("open", 0) or 0),
+                "high": float(row.get("high", 0) or 0),
+                "low": float(row.get("low", 0) or 0),
+                "close": float(row.get("close", 0) or 0),
+                "volume": int(_volume(row)),
+                "amount": float(_amount(row)),
+                "source": SOURCE,
+            })
+        rows = _filter_rows_by_date(rows, start_i, end_i, "date")
+
+        mode = "redis" if redis_client else "db-fallback"
+
+        if redis_client:
+            # Redis mode: buffer rows to Redis, only update metadata in DB
+            redis_key = f"import:{batch_id}:daily"
+            ok = _lpush_rows_to_redis(redis_client, batch_id, rows, redis_key)
+            if not ok:
+                # Redis write failed, fall through to DB retry path
+                mode = "db-fallback"
+
+        if mode == "db-fallback":
+            # Retry on MySQL deadlock (error 1213)
+            last_err = None
+            for attempt in range(3):
+                if attempt > 0:
+                    time.sleep(0.5 * attempt)  # backoff: 0.5s, 1s
+                with SessionLocal() as db:
+                    try:
+                        _mark_import_file_running(db, import_file_id)
+                        db.commit()
+                        for part in _chunks(rows):
+                            db.execute(text("""
+                                INSERT INTO daily_kline (code, date, open, high, low, close, volume, amount, source)
+                                VALUES (:code, :date, :open, :high, :low, :close, :volume, :amount, :source)
+                                ON DUPLICATE KEY UPDATE open=VALUES(open), high=VALUES(high), low=VALUES(low),
+                                    close=VALUES(close), volume=VALUES(volume), amount=VALUES(amount)
+                            """), part)
+                        _touch_stock_import(db, [code])
+                        _update_import_file(db, import_file_id, "success", len(rows))
+                        _update_import_batch_progress(db, batch_id, rows=len(rows), success_delta=1)
+                        db.commit()
+                        return {"ok": True, "file": str(p), "code": code, "rows": len(rows), "type": "lday", "mode": mode}
+                    except OperationalError as exc:
+                        db.rollback()
+                        last_err = exc
+                        if exc.args and exc.args[0] == 1213:
+                            continue  # deadlock, retry
+                        break
+                    except Exception as exc:
+                        db.rollback()
+                        err = traceback.format_exc()
+                        _update_import_file(db, import_file_id, "failed", 0, err)
+                        _update_import_batch_progress(db, batch_id, failed_delta=1)
+                        db.commit()
+                        return {"ok": False, "file": str(p), "code": code, "rows": 0, "type": "lday", "error": str(exc), "mode": mode}
+
+            # Exhausted retries
+            err_str = f"Deadlock after 3 retries: {last_err}"
+            with SessionLocal() as db:
+                _update_import_file(db, import_file_id, "failed", 0, err_str)
+                _update_import_batch_progress(db, batch_id, failed_delta=1)
+                db.commit()
+            return {"ok": False, "file": str(p), "code": code, "rows": 0, "type": "lday", "error": err_str, "mode": mode}
+
+        # Redis mode success: only update metadata in DB
+        with SessionLocal() as db:
             _mark_import_file_running(db, import_file_id)
-            db.commit()
-            df = _read_daily(p)
-            rows: list[dict] = []
-            for _, row in df.iterrows():
-                d = _date_int(row.get("date") if "date" in row else row.iloc[0])
-                rows.append({
-                    "code": code,
-                    "date": d,
-                    "open": float(row.get("open", 0) or 0),
-                    "high": float(row.get("high", 0) or 0),
-                    "low": float(row.get("low", 0) or 0),
-                    "close": float(row.get("close", 0) or 0),
-                    "volume": int(_volume(row)),
-                    "amount": float(_amount(row)),
-                    "source": SOURCE,
-                })
-            rows = _filter_rows_by_date(rows, start_i, end_i, "date")
-            for part in _chunks(rows):
-                db.execute(text("""
-                    INSERT INTO daily_kline (code, date, open, high, low, close, volume, amount, source)
-                    VALUES (:code, :date, :open, :high, :low, :close, :volume, :amount, :source)
-                    ON DUPLICATE KEY UPDATE open=VALUES(open), high=VALUES(high), low=VALUES(low),
-                        close=VALUES(close), volume=VALUES(volume), amount=VALUES(amount)
-                """), part)
-            _touch_stock_import(db, [code])
             _update_import_file(db, import_file_id, "success", len(rows))
             _update_import_batch_progress(db, batch_id, rows=len(rows), success_delta=1)
             db.commit()
-            return {"ok": True, "file": str(p), "code": code, "rows": len(rows), "type": "lday"}
-        except Exception as exc:
-            db.rollback()
-            err = traceback.format_exc()
+        return {"ok": True, "file": str(p), "code": code, "rows": len(rows), "type": "lday", "mode": mode}
+
+    except Exception as exc:
+        # File-level catch: parse errors, struct errors, etc.
+        # Ensure this file is marked failed even if parsing blows up before any DB work
+        err = traceback.format_exc()
+        code = "<unknown>"
+        try:
+            code = code_from_filename(p, market)
+        except Exception:
+            pass
+        with SessionLocal() as db:
             _update_import_file(db, import_file_id, "failed", 0, err)
             _update_import_batch_progress(db, batch_id, failed_delta=1)
             db.commit()
-            return {"ok": False, "file": str(p), "code": code, "rows": 0, "type": "lday", "error": str(exc)}
+        return {"ok": False, "file": str(p), "code": code, "rows": 0, "type": "lday", "error": str(exc), "mode": "parse-error"}
 
 
-def import_lc5_file(path: str, market: str, start: Optional[str] = None, end: Optional[str] = None, import_file_id: Optional[int] = None, batch_id: Optional[int] = None) -> dict:
+def import_lc5_file(path: str, market: str, start: Optional[str] = None, end: Optional[str] = None, import_file_id: Optional[int] = None, batch_id: Optional[int] = None, redis_client=None) -> dict:
     p = Path(path)
-    code = code_from_filename(p, market)
-    start_i = _start_min_i(start)
-    end_i = _end_min_i(end)
-    with SessionLocal() as db:
-        try:
+    try:
+        code = code_from_filename(p, market)
+        start_i = _start_min_i(start)
+        end_i = _end_min_i(end)
+
+        # Parse file outside DB transaction
+        df = _read_lc5(p)
+        rows: list[dict] = []
+        for _, row in df.iterrows():
+            dtv = row.get("datetime", None) or row.get("date", None) or row.iloc[0]
+            d = _minute_int(dtv)
+            rows.append({
+                "code": code,
+                "date": d,
+                "period": "5m",
+                "source": SOURCE,
+                "open": float(row.get("open", 0) or 0),
+                "high": float(row.get("high", 0) or 0),
+                "low": float(row.get("low", 0) or 0),
+                "close": float(row.get("close", 0) or 0),
+                "volume": float(_volume(row)),
+                "amount": float(_amount(row)),
+            })
+        rows = _filter_rows_by_date(rows, start_i, end_i, "date")
+
+        mode = "redis" if redis_client else "db-fallback"
+
+        if redis_client:
+            redis_key = f"import:{batch_id}:minute"
+            ok = _lpush_rows_to_redis(redis_client, batch_id, rows, redis_key)
+            if not ok:
+                mode = "db-fallback"
+
+        if mode == "db-fallback":
+            # Retry on MySQL deadlock (error 1213)
+            last_err = None
+            for attempt in range(3):
+                if attempt > 0:
+                    time.sleep(0.5 * attempt)
+                with SessionLocal() as db:
+                    try:
+                        _mark_import_file_running(db, import_file_id)
+                        db.commit()
+                        for part in _chunks(rows):
+                            db.execute(text("""
+                                INSERT INTO minute_kline_period (code, date, period, source, open, high, low, close, volume, amount)
+                                VALUES (:code, :date, :period, :source, :open, :high, :low, :close, :volume, :amount)
+                                ON DUPLICATE KEY UPDATE open=VALUES(open), high=VALUES(high), low=VALUES(low),
+                                    close=VALUES(close), volume=VALUES(volume), amount=VALUES(amount)
+                            """), part)
+                        _touch_stock_import(db, [code])
+                        _update_import_file(db, import_file_id, "success", len(rows))
+                        _update_import_batch_progress(db, batch_id, rows=len(rows), success_delta=1)
+                        db.commit()
+                        return {"ok": True, "file": str(p), "code": code, "rows": len(rows), "type": "5m", "mode": mode}
+                    except OperationalError as exc:
+                        db.rollback()
+                        last_err = exc
+                        if exc.args and exc.args[0] == 1213:
+                            continue
+                        break
+                    except Exception as exc:
+                        db.rollback()
+                        err = traceback.format_exc()
+                        _update_import_file(db, import_file_id, "failed", 0, err)
+                        _update_import_batch_progress(db, batch_id, failed_delta=1)
+                        db.commit()
+                        return {"ok": False, "file": str(p), "code": code, "rows": 0, "type": "5m", "error": str(exc), "mode": mode}
+
+            err_str = f"Deadlock after 3 retries: {last_err}"
+            with SessionLocal() as db:
+                _update_import_file(db, import_file_id, "failed", 0, err_str)
+                _update_import_batch_progress(db, batch_id, failed_delta=1)
+                db.commit()
+            return {"ok": False, "file": str(p), "code": code, "rows": 0, "type": "5m", "error": err_str, "mode": mode}
+
+        # Redis mode success
+        with SessionLocal() as db:
             _mark_import_file_running(db, import_file_id)
-            db.commit()
-            df = _read_lc5(p)
-            rows: list[dict] = []
-            for _, row in df.iterrows():
-                dtv = row.get("datetime", None) or row.get("date", None) or row.iloc[0]
-                d = _minute_int(dtv)
-                rows.append({
-                    "code": code,
-                    "date": d,
-                    "period": "5m",
-                    "source": SOURCE,
-                    "open": float(row.get("open", 0) or 0),
-                    "high": float(row.get("high", 0) or 0),
-                    "low": float(row.get("low", 0) or 0),
-                    "close": float(row.get("close", 0) or 0),
-                    "volume": float(_volume(row)),
-                    "amount": float(_amount(row)),
-                })
-            rows = _filter_rows_by_date(rows, start_i, end_i, "date")
-            for part in _chunks(rows):
-                db.execute(text("""
-                    INSERT INTO minute_kline_period (code, date, period, source, open, high, low, close, volume, amount)
-                    VALUES (:code, :date, :period, :source, :open, :high, :low, :close, :volume, :amount)
-                    ON DUPLICATE KEY UPDATE open=VALUES(open), high=VALUES(high), low=VALUES(low),
-                        close=VALUES(close), volume=VALUES(volume), amount=VALUES(amount)
-                """), part)
-            _touch_stock_import(db, [code])
             _update_import_file(db, import_file_id, "success", len(rows))
             _update_import_batch_progress(db, batch_id, rows=len(rows), success_delta=1)
             db.commit()
-            return {"ok": True, "file": str(p), "code": code, "rows": len(rows), "type": "5m"}
-        except Exception as exc:
-            db.rollback()
-            err = traceback.format_exc()
+        return {"ok": True, "file": str(p), "code": code, "rows": len(rows), "type": "5m", "mode": mode}
+
+    except Exception as exc:
+        # File-level catch: parse errors, struct errors, etc.
+        err = traceback.format_exc()
+        code = "<unknown>"
+        try:
+            code = code_from_filename(p, market)
+        except Exception:
+            pass
+        with SessionLocal() as db:
             _update_import_file(db, import_file_id, "failed", 0, err)
             _update_import_batch_progress(db, batch_id, failed_delta=1)
             db.commit()
-            return {"ok": False, "file": str(p), "code": code, "rows": 0, "type": "5m", "error": str(exc)}
+        return {"ok": False, "file": str(p), "code": code, "rows": 0, "type": "5m", "error": str(exc), "mode": "parse-error"}
+
+
+def _flush_redis_to_db(db, batch_id: int, redis_client, redis_key: str, table: str, columns: list[str]) -> tuple[int, set[str]]:
+    """
+    Read all rows from Redis and bulk INSERT into DB.
+    Does NOT delete or trim the Redis key — caller is responsible for cleanup
+    only after successful commit, so that DB failure preserves the Redis buffer.
+    Returns (rows_flushed, set of affected stock codes).
+    """
+    total = redis_client.llen(redis_key)
+    if total == 0:
+        return 0, set()
+
+    batch_size = 5000
+    cols = ", ".join(columns)
+    placeholders = ", ".join(f":{c}" for c in columns)
+    on_dup = ", ".join(f"{c}=VALUES({c})" for c in columns if c not in ("code", "date", "period", "source"))
+    sql = f"INSERT INTO {table} ({cols}) VALUES ({placeholders}) ON DUPLICATE KEY UPDATE {on_dup}"
+
+    flushed = 0
+    codes: set[str] = set()
+    for offset in range(0, total, batch_size):
+        raw = redis_client.lrange(redis_key, offset, offset + batch_size - 1)
+        if not raw:
+            break
+        params = [json.loads(r) for r in raw]
+        db.execute(text(sql), params)
+        flushed += len(params)
+        codes.update(p["code"] for p in params)
+
+    return flushed, codes
 
 
 def _file_phase(path: str, import_type: str) -> str:
@@ -444,6 +607,7 @@ def import_vipdoc_files_parallel(
     batch_id: Optional[int] = None,
     import_file_ids: Optional[dict[str, int]] = None,
     on_result: Optional[Callable[[dict, int, int], None]] = None,
+    redis_client=None,
 ) -> dict:
     workers = max(1, int(workers or 1))
     results = []
@@ -454,8 +618,8 @@ def import_vipdoc_files_parallel(
         iid = import_file_ids.get(f) if import_file_ids else None
 
         if _file_phase(f, import_type) == "daily":
-            return import_daily_file(f, market, start, end, iid, batch_id=batch_id)
-        return import_lc5_file(f, market, start, end, iid, batch_id=batch_id)
+            return import_daily_file(f, market, start, end, iid, batch_id=batch_id, redis_client=redis_client)
+        return import_lc5_file(f, market, start, end, iid, batch_id=batch_id, redis_client=redis_client)
 
     def run_phase(phase_name: str, phase_files: list[str]):
         nonlocal completed
@@ -477,10 +641,56 @@ def import_vipdoc_files_parallel(
     run_phase("daily", daily_files)
     run_phase("5m", minute_files)
 
+    # Flush Redis buffer to DB (Phase 4)
+    flush_failed = False
+    flush_error = None
+    flushed_codes: set[str] = set()
+    if redis_client and batch_id:
+        daily_key = f"import:{batch_id}:daily"
+        minute_key = f"import:{batch_id}:minute"
+        with SessionLocal() as db:
+            try:
+                flushed_daily, daily_codes = _flush_redis_to_db(
+                    db, batch_id, redis_client, daily_key, "daily_kline",
+                    ["code", "date", "open", "high", "low", "close", "volume", "amount", "source"],
+                )
+                flushed_minute, minute_codes = _flush_redis_to_db(
+                    db, batch_id, redis_client, minute_key, "minute_kline_period",
+                    ["code", "date", "period", "source", "open", "high", "low", "close", "volume", "amount"],
+                )
+
+                flushed_codes = daily_codes | minute_codes
+                if flushed_codes:
+                    _touch_stock_import(db, flushed_codes)
+
+                db.commit()
+                logger.info("[mode=redis] flushed daily=%d minute=%d", flushed_daily, flushed_minute)
+
+                # Only delete Redis keys AFTER commit succeeds
+                if flushed_daily or flushed_minute:
+                    redis_client.delete(daily_key, minute_key)
+            except Exception as exc:
+                db.rollback()
+                flush_failed = True
+                flush_error = f"flush failed: {exc}"
+                logger.error("[mode=redis] flush failed (Redis keys preserved): %s", exc)
+
     ok = sum(1 for r in results if r.get("ok"))
     failed = len(results) - ok
+    if flush_failed:
+        failed += 1  # count flush failure as an extra failed "file"
     rows = sum(int(r.get("rows") or 0) for r in results)
-    return {"ok": failed == 0, "total_files": len(results), "success_files": ok, "failed_files": failed, "total_rows": rows, "results": results}
+    mode = "redis" if redis_client else "db-fallback"
+    return {
+        "ok": failed == 0 and not flush_failed,
+        "total_files": len(results),
+        "success_files": ok,
+        "failed_files": failed,
+        "total_rows": rows,
+        "mode": mode,
+        "results": results,
+        "flush_error": flush_error,
+    }
 
 
 def parse_args():

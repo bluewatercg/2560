@@ -11,6 +11,9 @@ services:
       - APP_PORT=8000
       - PYTHONPATH=/app
       - VIPDOC_ROOT=/data/vipdoc
+      - REDIS_HOST=${REDIS_HOST:-}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
     volumes:
       - ./logs:/app/logs
       - ./sql:/app/sql
@@ -26,6 +29,9 @@ services:
       - PYTHONPATH=/app
       - VIPDOC_ROOT=/data/vipdoc
       - WEB_BASE_URL=http://web:8000
+      - REDIS_HOST=${REDIS_HOST:-}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
     volumes:
       - ./logs:/app/logs
       - ./sql:/app/sql
@@ -50,6 +56,9 @@ services:
       - VIPDOC_ROOT=/data/vipdoc
       - WEB_BASE_URL=http://web:8000
       - WORKER_MARKET=sh60
+      - REDIS_HOST=${REDIS_HOST:-}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
     volumes:
       - ./logs:/app/logs
       - ./sql:/app/sql
@@ -73,6 +82,9 @@ services:
       - VIPDOC_ROOT=/data/vipdoc
       - WEB_BASE_URL=http://web:8000
       - WORKER_MARKET=sh68
+      - REDIS_HOST=${REDIS_HOST:-}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
     volumes:
       - ./logs:/app/logs
       - ./sql:/app/sql
@@ -96,6 +108,9 @@ services:
       - VIPDOC_ROOT=/data/vipdoc
       - WEB_BASE_URL=http://web:8000
       - WORKER_MARKET=sz00
+      - REDIS_HOST=${REDIS_HOST:-}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
     volumes:
       - ./logs:/app/logs
       - ./sql:/app/sql
@@ -119,6 +134,9 @@ services:
       - VIPDOC_ROOT=/data/vipdoc
       - WEB_BASE_URL=http://web:8000
       - WORKER_MARKET=sz30
+      - REDIS_HOST=${REDIS_HOST:-}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
     volumes:
       - ./logs:/app/logs
       - ./sql:/app/sql
