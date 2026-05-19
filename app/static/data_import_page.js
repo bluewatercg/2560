@@ -138,55 +138,6 @@
         <pre id="importActionResult" class="json-box">等待操作</pre>
       </div>
 
-      <div class="advanced-toggle" style="text-align:center;margin:16px 0">
-        <button id="advancedToggleBtn" class="ghost" style="opacity:0.6;font-size:12px">▸ 显示高级（批次/日志/详情）</button>
-      </div>
-
-      <div class="panel import-panel import-panel-batches advanced-panel" style="display:none">
-        <div class="panel-head split">
-          <h3>导入批次</h3>
-          <div class="filters" style="gap:8px;flex-wrap:wrap">
-            <label>
-              日志类型
-              <select id="importBatchTypeFilter">
-                <option value="vipdoc">行情导入</option>
-                <option value="build_30m">30m 构建</option>
-                <option value="rebuild_indicator">指标重算</option>
-                <option value="all">全部</option>
-              </select>
-            </label>
-            <button id="refreshImportBatchesBtn">刷新批次</button>
-          </div>
-        </div>
-        <div class="table-wrap">
-          <table id="importBatchTable"></table>
-        </div>
-      </div>
-
-      <div class="panel import-panel import-panel-execution advanced-panel" style="display:none">
-        <div class="panel-head split">
-          <div>
-            <h3>任务执行记录（job_execution）</h3>
-            <p class="muted" style="margin:4px 0 0">点选上方批次后，这里只显示该批次对应的后台执行记录。</p>
-          </div>
-        </div>
-        <div class="table-wrap">
-          <table id="importExecutionTable"></table>
-        </div>
-      </div>
-
-      <div class="panel import-panel import-panel-shards advanced-panel" style="display:none">
-        <div class="panel-head split">
-          <div>
-            <h3>Shard 汇总（每行是一组并发线程）</h3>
-            <p class="muted" style="margin:4px 0 0">行情导入按文件状态和并发组汇总；30m/指标重算按执行记录进度汇总。</p>
-          </div>
-        </div>
-        <div class="table-wrap">
-          <table id="importShardTable"></table>
-        </div>
-      </div>
-
       <div id="importFilePanel" class="panel import-panel import-panel-files" style="display:none">
         <div class="panel-head split">
           <div>
@@ -217,17 +168,6 @@
         setActiveImportStep(Number(btn.dataset.step));
       };
     });
-
-    // 高级面板折叠
-    const toggleBtn = $('advancedToggleBtn');
-    if(toggleBtn){
-      toggleBtn.onclick = function(){
-        const panels = all('.advanced-panel');
-        const isHidden = panels[0] && panels[0].style.display === 'none';
-        panels.forEach(p => { p.style.display = isHidden ? '' : 'none'; });
-        toggleBtn.textContent = isHidden ? '▾ 隐藏高级（批次/日志/详情）' : '▸ 显示高级（批次/日志/详情）';
-      };
-    }
   }
 
   let activeImportStep = 1;
@@ -306,52 +246,11 @@
   }
 
   async function loadImportBatches(){
-    const table = $('importBatchTable');
-    if(!table) return;
-
     try{
       const rows = await getJson('/api/import/batches?limit=50');
 
-      if(!rows || !rows.length){
-        table.innerHTML = '<tbody><tr><td>暂无导入批次</td></tr></tbody>';
-        return;
-      }
-
-      table.innerHTML =
-        '<thead><tr>' +
-        ['ID','类型','目录','市场','状态','并发','进度','数据范围','文件数','成功','失败','记录数','开始时间','结束时间','信息']
-          .map(c => `<th>${c}</th>`).join('') +
-        '</tr></thead><tbody>' +
-        rows.map(r => {
-          const done = Number(r.success_files || 0) + Number(r.failed_files || 0);
-          const total = Number(r.total_files || 0);
-          const progress = total ? `${done}/${total} (${((done * 100) / total).toFixed(1)}%)` : '-';
-          const selected = String(activeImportBatchId || '') === String(r.id || '');
-          return `
-          <tr data-import-batch-id="${cell(r.id)}" data-progress-url="${r.progress_url || ''}" style="cursor:pointer;${selected ? 'background:rgba(59,130,246,.15)' : ''}" title="点击追踪这个导入批次">
-            <td>${cell(r.id)}</td>
-            <td>${cell(r.import_type)}</td>
-            <td>${cell(r.source_dir)}</td>
-            <td>${cell(r.market)}</td>
-            <td>${cell(r.status)}</td>
-            <td>${cell(r.workers)}</td>
-            <td>${progress}</td>
-            <td>${cell(r.data_range)}</td>
-            <td>${cell(r.total_files)}</td>
-            <td>${cell(r.success_files)}</td>
-            <td>${cell(r.failed_files)}</td>
-            <td>${cell(r.total_rows)}</td>
-            <td>${cell(r.started_at)}</td>
-            <td>${cell(r.finished_at)}</td>
-            <td>${cell(r.message)}</td>
-          </tr>
-        `;
-        }).join('') +
-        '</tbody>';
-
-      // Auto-detect running batch (safe: boot() checks activeImportBatchId before calling refreshImportWatch,
-      // and refreshImportWatch calls loadImportBatches which won't re-trigger because activeImportBatchId is already set)
-      if(!activeImportBatchId){
+      // Auto-detect running batch for progress card
+      if(!activeImportBatchId && rows && rows.length){
         const runningBatch = rows.find(r => r.status === 'running');
         if(runningBatch){
           activeImportBatchId = runningBatch.id;
@@ -359,7 +258,7 @@
         }
       }
     }catch(e){
-      table.innerHTML = '<tbody><tr><td>导入批次接口未实现：GET /api/import/batches</td></tr></tbody>';
+      // batch table removed from UI, swallow errors
     }
   }
 
