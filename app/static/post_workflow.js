@@ -32,17 +32,17 @@
     const anyMissing30m = mr.some(m => (m.missing || []).includes("30m"));
     const targetDate = ws.target_date;
 
-    // 推导 import 的 start/end（取最新 k5m 或 daily，向前推5天）
-    let importEnd = null, importStart = null;
+    // 推导 import 的 start（取最新已有数据向前推5天，end 始终用 targetDate）
+    let latestExisting = targetDate;  // 默认就是今天
     for (const m of mr) {
       const cand = m.k5m_latest || m.daily_latest;
       if (cand) {
         const ymd = ymdFromInt(cand);
-        if (ymd && (!importEnd || ymd > importEnd)) importEnd = ymd;
+        if (ymd && ymd > latestExisting) latestExisting = ymd;
       }
     }
-    if (!importEnd) importEnd = targetDate;
-    importStart = dateMinusDays(importEnd, 5);
+    const importEnd = targetDate;
+    const importStart = dateMinusDays(latestExisting, 5);
 
     return [
       {
