@@ -9,6 +9,7 @@ from app.api.latest import router as latest_router
 from app.api.jobs import router as jobs_router
 from app.api.import_data import router as import_router
 from app.db.session import ping_database
+from app.db.clickhouse import get_clickhouse
 
 app = FastAPI(title='2560结构分析系统', description='结构化行情分析与历史复盘，不提供买卖决策。', version='3.0.0')
 app.include_router(strategy_router)
@@ -22,10 +23,21 @@ app.mount('/static', StaticFiles(directory='app/static'), name='static')
 
 @app.get('/health')
 def health():
+    db_ok = False
+    ch_ok = False
     try:
-        return {'status': 'ok', 'database': ping_database()}
-    except Exception as exc:
-        return {'status': 'warning', 'database': False, 'message': str(exc)}
+        db_ok = ping_database()
+    except Exception:
+        pass
+    try:
+        ch_ok = get_clickhouse().ping()
+    except Exception:
+        pass
+    return {
+        'status': 'ok' if db_ok and ch_ok else ('partial' if ch_ok else 'degraded'),
+        'database': db_ok,
+        'clickhouse': ch_ok,
+    }
 
 @app.get('/', response_class=HTMLResponse)
 def index():

@@ -10,7 +10,11 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.services.job_orchestrator import create_job_execution, enqueue_job, ensure_job_tables
-from scripts.import_vipdoc_with_pytdx import scan_vipdoc_files
+from scripts.import_vipdoc_clickhouse import scan_vipdoc_files
+from scripts.import_vipdoc_clickhouse import (
+    import_daily_clickhouse, import_5m_clickhouse,
+    CH_URL as _CH_URL, ch_ping as _ch_ping,
+)
 
 router = APIRouter(prefix="/api/import", tags=["import"])
 DEFAULT_VIPDOC_ROOT = os.getenv("VIPDOC_ROOT", "/data/vipdoc")
@@ -28,7 +32,7 @@ class ImportRunRequest(BaseModel):
     import_type: str = Field(default="lday")
     start: Optional[str] = None
     end: Optional[str] = None
-    workers: int = Field(default=4, ge=1, le=64)
+    workers: int = Field(default=4, ge=1, le=128)
     limit_files: Optional[int] = None
 
 
@@ -36,7 +40,7 @@ class Build30mRequest(BaseModel):
     start: str
     end: Optional[str] = None
     market: str = Field(default="all")
-    workers: int = Field(default=4, ge=1, le=64)
+    workers: int = Field(default=4, ge=1, le=128)
     limit_codes: Optional[int] = None
     dry_run: bool = False
 
@@ -422,18 +426,50 @@ def scan_import(payload: ImportScanRequest):
 
 def _active_import_for_market(db: Session, market: str) -> dict | None:
     """Check if there's already an active import_vipdoc for this market."""
-    if not _table_exists(db, "job_queue"):
-        return None
-    row = db.execute(text("""
-        SELECT id, status, job_type, payload
-        FROM job_queue
-        WHERE job_type = 'import_vipdoc'
-          AND status IN ('pending', 'running')
-          AND JSON_UNQUOTE(JSON_EXTRACT(payload, '$.market')) = :market
-        ORDER BY id ASC
-        LIMIT 1
-    """), {"market": market}).mappings().first()
-    return dict(row) if row else None
+    # 1. Check job_queue for pending/running jobs
+    if _table_exists(db, "job_queue"):
+        row = db.execute(text("""
+            SELECT id, status, job_type, payload,
+                   NULL AS batch_id, NULL AS exec_id
+            FROM job_queue
+            WHERE job_type = 'import_vipdoc'
+              AND status IN ('pending','queued','running')
+              AND JSON_UNQUOTE(JSON_EXTRACT(payload, '$.market')) = :market
+            ORDER BY id ASC
+            LIMIT 1
+        """), {"market": market}).mappings().first()
+        if row:
+            return dict(row)
+
+    # 2. Check job_execution for running/queued executions
+    if _table_exists(db, "job_execution"):
+        row2 = db.execute(text("""
+            SELECT id AS exec_id, job_type, status, batch_id,
+                   NULL AS id, NULL AS payload
+            FROM job_execution
+            WHERE job_type = 'import_vipdoc'
+              AND market = :market
+              AND status IN ('queued','pending','running','cancelling')
+            ORDER BY id DESC
+            LIMIT 1
+        """), {"market": market}).mappings().first()
+        if row2:
+            return dict(row2)
+
+    # 3. Check data_import_batch for active batches (belt-and-suspenders)
+    if _table_exists(db, "data_import_batch"):
+        row3 = db.execute(text("""
+            SELECT id, status, market, message, started_at
+            FROM data_import_batch
+            WHERE status IN ('queued','pending','running','cancelling')
+              AND market = :market
+            ORDER BY id DESC
+            LIMIT 1
+        """), {"market": market}).mappings().first()
+        if row3:
+            return dict(row3)
+
+    return None
 
 
 MARKET_LANES = ["sh60", "sh68", "sz00", "sz30"]
@@ -463,12 +499,6 @@ def _enqueue_single_import(db, payload: ImportRunRequest, market: str, files: li
         "end": payload.end,
         "workers": workers,
     })
-    db.execute(text("""
-        UPDATE data_import_batch
-        SET status='queued', message=:message, updated_at=NOW()
-        WHERE id=:id
-    """), {"id": batch_id, "message": f"queued import job #{job_id}"})
-    db.commit()
     return {
         "import_batch_id": batch_id,
         "job_id": job_id,
@@ -644,12 +674,6 @@ def _enqueue_single_build30m(db, payload: Build30mRequest, market: str) -> dict:
         "limit_codes": payload.limit_codes,
         "dry_run": payload.dry_run,
     })
-    db.execute(text("""
-        UPDATE data_import_batch
-        SET status='queued', message=:message, updated_at=NOW()
-        WHERE id=:id
-    """), {"id": batch_id, "message": f"queued build_30m job #{job_id}, {range_key}"})
-    db.commit()
     return {
         "import_batch_id": batch_id,
         "job_id": job_id,
@@ -710,12 +734,6 @@ def rebuild_indicators(payload: RebuildIndicatorRequest, db: Session = Depends(g
         "limit_codes": payload.limit_codes,
         "commit_every": payload.commit_every,
     })
-    db.execute(text("""
-        UPDATE data_import_batch
-        SET status='queued', message=:message, updated_at=NOW()
-        WHERE id=:id
-    """), {"id": batch_id, "message": f"queued rebuild_indicator job #{job_id}, {range_key}"})
-    db.commit()
     return {
         "ok": True,
         "import_batch_id": batch_id,
@@ -802,3 +820,102 @@ def import_files(limit: int = Query(100, ge=1, le=1000), batch_id: Optional[int]
         ORDER BY id DESC
         LIMIT :limit
     """), {"limit": limit}).mappings().all()
+
+
+# ── ClickHouse-only import (no MySQL dependency) ─────────────────
+
+@router.get("/ch/status")
+def ch_status():
+    """ClickHouse connection status."""
+    return {"url": _CH_URL, "ping": _ch_ping()}
+
+
+@router.get("/ch/tables")
+def ch_tables():
+    """List tables in strategy2560 database."""
+    try:
+        from app.db.clickhouse import get_clickhouse
+        ch = get_clickhouse()
+        result = ch.query("SHOW TABLES")
+        return [r.get("name") for r in result]
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@router.post("/ch/import")
+def ch_import(
+    source_dir: str = Query(default=DEFAULT_VIPDOC_ROOT),
+    market: str = Query(default="sh60"),
+    import_type: str = Query(default="all"),
+    start: Optional[str] = Query(default=None),
+    end: Optional[str] = Query(default=None),
+    workers: int = Query(default=4, ge=1, le=128),
+    dry_run: bool = Query(default=False),
+):
+    """Import vipdoc data into ClickHouse (no MySQL required)."""
+    if not _ch_ping():
+        raise HTTPException(status_code=503, detail="ClickHouse not reachable")
+
+    scan = scan_vipdoc_files(source_dir, market, import_type)
+
+    if dry_run:
+        return {
+            "dry_run": True,
+            "market": market,
+            "total_files": scan["total_files"],
+            "scan_dirs": scan["scan_dirs"],
+            "file_data_range": scan.get("file_data_range"),
+        }
+
+    # Filter files by type
+    lday_files = [f for f in scan["files"] if f.endswith(".day")]
+    lc5_files = [f for f in scan["files"] if f.endswith(".lc5")]
+
+    if import_type in ("lday", "daily"):
+        lc5_files = []
+    elif import_type in ("5m", "lc5", "fzline"):
+        lday_files = []
+
+    import concurrent.futures
+    import time
+
+    t0 = time.time()
+    total_rows = 0
+    ok_count = 0
+    fail_count = 0
+    failed_files = []
+
+    all_files = lday_files + lc5_files
+
+    def do_import(filepath: str) -> dict:
+        if filepath.endswith(".day"):
+            return import_daily_clickhouse(filepath, market, start, end)
+        else:
+            return import_5m_clickhouse(filepath, market, start, end)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(do_import, f): f for f in all_files}
+        for fut in concurrent.futures.as_completed(futures):
+            result = fut.result()
+            if result["ok"]:
+                total_rows += result["rows"]
+                ok_count += 1
+            else:
+                fail_count += 1
+                failed_files.append({
+                    "file": result.get("file", ""),
+                    "error": str(result.get("error", ""))[:200],
+                })
+
+    elapsed = time.time() - t0
+    return {
+        "ok": True,
+        "market": market,
+        "total_files": len(all_files),
+        "success": ok_count,
+        "failed": fail_count,
+        "total_rows": total_rows,
+        "elapsed_seconds": round(elapsed, 1),
+        "rows_per_second": round(total_rows / elapsed, 0) if elapsed > 0 else 0,
+        "failed_files": failed_files[:20],
+    }

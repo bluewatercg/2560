@@ -79,6 +79,59 @@ docker compose -f docker-compose.yml up -d
 docker compose -f docker-compose.yml logs -f web
 ```
 
+## 18 服务器更新与测试
+
+18 服务器指 `192.168.1.18`。常用连接和文件上传方式：
+
+```bash
+ssh user@192.168.1.18
+scp strategy2560_feature-v8-job-queue-ui.tar.gz user@192.168.1.18:/tmp/
+```
+
+生产环境更新采用 Docker 镜像包替换后重启 Compose 服务。上传镜像包后，在 18 服务器执行：
+
+```bash
+cd /data1/2560/strategy2560_project_v2_engine
+./scripts/load_deploy.sh /tmp/strategy2560_feature-v8-job-queue-ui.tar.gz
+```
+
+`scripts/load_deploy.sh` 会加载镜像、标记为 `strategy2560:latest`，然后执行：
+
+```bash
+docker compose down --remove-orphans || true
+docker compose up -d
+docker compose ps
+```
+
+开发环境热更新使用 Uvicorn reload：
+
+```bash
+export PYTHONPATH=$PWD
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+18 服务器上的生产更新不是 Python 进程内热重载，而是替换 Docker 镜像后重启 `web` 和 worker。更新后验证：
+
+```bash
+docker compose ps
+docker compose logs -f web
+curl http://127.0.0.1:8000/health
+```
+
+浏览器访问：
+
+| 地址 | 说明 |
+|------|------|
+| `http://192.168.1.18:8000/` | WebUI 主界面 |
+| `http://192.168.1.18:8000/health` | 健康检查 |
+| `http://192.168.1.18:8000/docs` | Swagger API 文档 |
+
+行情数据同步到 18：
+
+```bash
+./scripts/sync_vipdoc_to_server.sh /mnt/e/zd_ciccwm/vipdoc user@192.168.1.18:/data1/2560/zd_ciccwm/vipdoc
+```
+
 Compose 服务（5 worker 架构）：
 
 | 服务 | 职责 | 环境变量 |
