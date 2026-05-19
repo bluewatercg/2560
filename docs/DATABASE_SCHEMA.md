@@ -2,8 +2,8 @@
 
 > **数据库:** `watchlist_decision_support` @ `192.168.1.254:3306`
 > **字符集:** utf8mb4
-> **更新日期:** 2026-05-14
-> **表数量:** 21
+> **更新日期:** 2026-05-19
+> **表数量:** 21（MySQL）+ 3（ClickHouse）
 
 ---
 
@@ -389,7 +389,7 @@
 | import_type | VARCHAR(50) | | 导入类型: lday/5m/30m |
 | source_dir | VARCHAR(500) | | vipdoc 源目录路径 |
 | market | VARCHAR(20) | | 市场: sh60/sh68/sz00/sz30/all |
-| status | VARCHAR(20) | IDX | pending/running/success/failed |
+| status | VARCHAR(20) | IDX | pending/queued/running/success/failed/cancelling |
 | total_files | INT | | 文件总数 |
 | success_files | INT | | 成功文件数 |
 | failed_files | INT | | 失败文件数 |
@@ -551,3 +551,97 @@ workspace_status ←── (独立 4 行预计算表，由 runner 脚本刷新)
 | stock_calc_status | (last_job_id, last_batch_id, last_calculated_at) | IDX | 增量计算 |
 | structure_2560_tag_detail | (analysis_id, batch_id, tag_code) | IDX | 标签查询 |
 | data_quality_check | (check_date) | IDX | 按日期查询 |
+
+---
+
+## ClickHouse 表结构（行情数据）
+
+> **数据库:** `strategy2560` @ `192.168.1.18:8123`
+> ClickHouse 仅存储行情数据与技术指标，不存储任务队列、分析结果、配置等业务数据。
+
+### CH-1. daily_kline — 日线 K 线
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| code | String | 股票代码（如 `sh.600000`）|
+| date | Date | 交易日期 |
+| source | LowCardinality(String) | 数据源，默认 `vipdoc` |
+| open | Float64 | 开盘价 |
+| high | Float64 | 最高价 |
+| low | Float64 | 最低价 |
+| close | Float64 | 收盘价 |
+| volume | Float64 | 成交量 |
+| amount | Float64 | 成交额 |
+
+**引擎:** `MergeTree()`
+**排序键:** `(code, date)`
+**主键:** `(code, date)`
+
+### CH-2. minute_kline_period — 分钟 K 线（5m/30m/60m 统一存储）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| code | String | 股票代码 |
+| date | DateTime64(0) | K 线时间戳 |
+| period | LowCardinality(String) | 周期: `5m` / `30m` / `60m` |
+| source | LowCardinality(String) | 数据源，默认 `vipdoc` |
+| open | Float64 | 开盘价 |
+| high | Float64 | 最高价 |
+| low | Float64 | 最低价 |
+| close | Float64 | 收盘价 |
+| volume | Float64 | 成交量 |
+| amount | Float64 | 成交额 |
+
+**引擎:** `MergeTree()`
+**排序键:** `(code, period, date)`
+**主键:** `(code, period, date)`
+
+### CH-3. technical_indicator — 技术指标
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| code | String | 股票代码 |
+| period | LowCardinality(String) | 周期: `daily` / `5m` / `30m` |
+| date | Date | 指标日期 |
+| source | LowCardinality(String) | 数据源，默认 `vipdoc` |
+| stock_status | Nullable(String) | 状态: NORMAL / ST / *ST / SUSPENDED |
+| is_st | UInt8 | 是否 ST（0/1）|
+| ma25 ~ ma200 | Nullable(Float64) | 均线值 |
+| ma25_slope_3 | Nullable(Float64) | MA25 近 3 周期百分比斜率(%) |
+| atr14 | Nullable(Float64) | ATR14 |
+| atr20_avg | Nullable(Float64) | ATR20 均值 |
+| vol_ma5 / vol_ma60 | Nullable(Float64) | 均量 |
+| vol_ratio | Nullable(Float64) | 量比 |
+| vol_ma5_cross_vol_ma60 | UInt8 | 量金叉标记 |
+| price_ma25_deviation_pct | Nullable(Float64) | 价格偏离 MA25 百分比 |
+| high_20 / low_20 / low_30 | Nullable(Float64) | 高低点 |
+| resistance_level | Nullable(Float64) | 压力位 |
+| is_abnormal_bar | UInt8 | 异常 K 线标记 |
+| data_quality_status | Nullable(String) | normal / missing / abnormal |
+
+**引擎:** `MergeTree()`
+**排序键:** `(code, period, date)`
+
+> **注意:** ClickHouse 的 `technical_indicator` 无 `PRIMARY KEY`（与 MySQL 的复合主键不同），靠 `ORDER BY` 保证查询效率。
+
+---
+
+## 状态枚举速查
+
+### job_queue.status
+`pending` → `running` → `success` / `failed` / `cancelled`
+
+### job_execution.status
+`running` → `success` / `failed` / `cancelled`
+
+### data_import_batch.status
+`pending` → `queued` → `running` → `success` / `failed` / `cancelling`
+
+### job_task_item.status
+`pending` → `running` → `success` / `failed`
+
+### structure_2560_analysis.structure_status
+`完整` / `部分` / `缺失` / `不足`
+
+### technical_indicator.data_quality_status
+`normal` / `missing` / `abnormal`

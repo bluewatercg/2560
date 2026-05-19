@@ -474,6 +474,13 @@ def _active_import_for_market(db: Session, market: str) -> dict | None:
 
 MARKET_LANES = ["sh60", "sh68", "sz00", "sz30"]
 
+MARKET_LABELS = {
+    "sh60": "sh60 沪主板",
+    "sh68": "sh68 科创板",
+    "sz00": "sz00 深主板",
+    "sz30": "sz30 创业板",
+}
+
 
 def _enqueue_single_import(db, payload: ImportRunRequest, market: str, files: list[str], workers: int) -> dict:
     """Create one batch + one job for a single market import."""
@@ -823,6 +830,60 @@ def import_files(limit: int = Query(100, ge=1, le=1000), batch_id: Optional[int]
 
 
 # ── ClickHouse-only import (no MySQL dependency) ─────────────────
+
+@router.get("/latest")
+def latest_active_imports(db: Session = Depends(get_db)):
+    """返回所有活跃（running/queued/pending/cancelling）的导入批次；
+    若无活跃批次，则返回最近已完成的一批（用于页面重载后展示最终状态）。"""
+    if not _table_exists(db, "data_import_batch"):
+        return {"lanes": []}
+
+    batches = db.execute(text("""
+        SELECT id, import_type, market, status, total_files, success_files, failed_files,
+               total_rows, started_at, finished_at, message, updated_at
+        FROM data_import_batch
+        WHERE status IN ('queued', 'pending', 'running', 'cancelling')
+          AND import_type IN ('vipdoc', 'lday', 'all')
+        ORDER BY id DESC
+    """)).mappings().all()
+
+    # Fallback: if no active batches, get most recent completed ones
+    if not batches:
+        batches = db.execute(text("""
+            SELECT id, import_type, market, status, total_files, success_files, failed_files,
+                   total_rows, started_at, finished_at, message, updated_at
+            FROM data_import_batch
+            WHERE status IN ('success', 'failed')
+              AND import_type IN ('vipdoc', 'lday', 'all')
+            ORDER BY id DESC
+            LIMIT 4
+        """)).mappings().all()
+
+    lanes = []
+    for batch in batches:
+        b = dict(batch)
+        batch_id = int(b["id"])
+        market = str(b.get("market") or "")
+        job = _latest_job_for_batch(db, batch_id)
+
+        lane = {
+            "import_batch_id": batch_id,
+            "job_id": int(job["id"]) if job and job.get("id") else None,
+            "market": market,
+            "market_label": MARKET_LABELS.get(market, market),
+            "status": b["status"],
+            "total_files": int(b.get("total_files") or 0),
+            "success_files": int(b.get("success_files") or 0),
+            "failed_files": int(b.get("failed_files") or 0),
+            "total_rows": int(b.get("total_rows") or 0),
+            "progress_url": f"/api/jobs/executions/{int(job['id'])}/progress" if job and job.get("id") else None,
+            "started_at": b.get("started_at"),
+            "updated_at": b.get("updated_at"),
+        }
+        lanes.append(lane)
+
+    return {"lanes": lanes}
+
 
 @router.get("/ch/status")
 def ch_status():

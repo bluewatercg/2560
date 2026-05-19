@@ -3,7 +3,8 @@
   function $(id){ return document.getElementById(id); }
   function all(sel, root=document){ return Array.from(root.querySelectorAll(sel)); }
   let importWatchTimer = null;
-  let activeImportBatchId = null;
+  let activeImportLanes = {};  // { sh60: {batchId, jobId, progressUrl}, sh68: {...}, ... }
+  let activeImportBatchId = null;  // backward compat: single batch for single-market imports
   let activeImportProgressUrl = null;
   let activeImportMode = 'check';
 
@@ -112,6 +113,7 @@
           </label>
         </div>
 
+        <div id="importLiveCards" style="display:none;margin:16px 0"></div>
         <div id="importLiveCard" style="display:none;margin:16px 0">
           <div style="border:1px solid #334155;border-radius:12px;background:#0F172A;padding:20px">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
@@ -135,7 +137,7 @@
             <div id="liveCardActions" style="margin-top:16px;display:flex;gap:8px"></div>
           </div>
         </div>
-        <pre id="importActionResult" class="json-box">等待操作</pre>
+        <pre id="importActionResult" class="json-box" style="display:none">等待操作</pre>
       </div>
 
       <div id="importFilePanel" class="panel import-panel import-panel-files" style="display:none">
@@ -249,12 +251,24 @@
     try{
       const rows = await getJson('/api/import/batches?limit=50');
 
-      // Auto-detect running batch for progress card
-      if(!activeImportBatchId && rows && rows.length){
-        const runningBatch = rows.find(r => r.status === 'running');
-        if(runningBatch){
-          activeImportBatchId = runningBatch.id;
-          activeImportProgressUrl = runningBatch.progress_url || null;
+      // Auto-detect running batches for multi-lane tracking
+      if(rows && rows.length){
+        for(const r of rows){
+          const market = r.market;
+          if(market && r.status === 'running' && !activeImportLanes[market]){
+            activeImportLanes[market] = {
+              batchId: r.id,
+              jobId: r.job_id,
+              progressUrl: r.progress_url || null,
+              label: r.market || market,
+              detail: r,
+              job: {},
+            };
+          }
+        }
+        // If we found multi-lane, render them
+        if(Object.keys(activeImportLanes).length > 1){
+          renderMultiLaneCards();
         }
       }
     }catch(e){
@@ -371,6 +385,150 @@
     }
   }
 
+  function renderMultiLaneCards(){
+    const container = $('importLiveCards');
+    if(!container) return;
+
+    const laneKeys = Object.keys(activeImportLanes);
+    if(laneKeys.length === 0){
+      container.style.display = 'none';
+      return;
+    }
+
+    container.style.display = '';
+
+    let html = '';
+    for(const market of laneKeys){
+      const lane = activeImportLanes[market];
+      const d = lane.detail || {};
+      const job = lane.job || {};
+      const label = lane.label || market;
+      const status = ((job && job.status) || d.job_status || d.status || '-').toLowerCase();
+
+      const iconMap = { running: '⟳', success: '✓', failed: '✗', queued: '◷', pending: '◷', cancelled: '✗', cancelling: '⟳' };
+      const colorMap = { running: '#3B82F6', success: '#22C55E', failed: '#EF4444', queued: '#F59E0B', pending: '#94A3B8', cancelled: '#EF4444', cancelling: '#F59E0B' };
+      const labelMap = { running: '导入中', success: '导入完成', failed: '导入失败', queued: '排队中', pending: '等待中', cancelled: '已取消', cancelling: '取消中' };
+      const icon = iconMap[status] || '●';
+      const color = colorMap[status] || '#94A3B8';
+      const statusLabel = labelMap[status] || status;
+
+      const total = Number((job && job.total) || d.job_progress_total || d.total_files || 0);
+      const done = Number((job && job.done) || d.job_progress_current || d.done_files || 0);
+      const percentValue = total ? (done * 100 / total) : Number((job && job.percent) ?? d.progress_percent ?? 0);
+      const percent = total ? percentValue.toFixed(1) + '%' : '-';
+      const success = (job && job.success_count) ?? d.job_success_count ?? d.success_files ?? 0;
+      const failed = (job && job.failed_count) ?? d.job_failed_count ?? d.failed_files ?? 0;
+      const workers = (job && job.shards) || d.workers || '-';
+
+      const batchId = d.id || lane.batchId;
+
+      html += `<div class="lane-card" data-market="${market}" style="border:1px solid #334155;border-radius:12px;background:#0F172A;padding:16px;margin-bottom:12px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+          <div style="display:flex;align-items:center;gap:10px">
+            <span style="font-size:20px;color:${color}">${icon}</span>
+            <span style="font-weight:600;font-size:15px;color:#F8FAFC">${label}</span>
+            <span style="font-weight:600;font-size:14px;color:${color}">#${batchId} ${statusLabel}</span>
+            <span style="color:#64748B;font-size:12px;border:1px solid #334155;border-radius:4px;padding:2px 6px">并发 ${workers}</span>
+          </div>
+          <span style="color:#94A3B8;font-size:14px">${percent}</span>
+        </div>
+        <div style="height:6px;background:#1E293B;border-radius:3px;overflow:hidden;margin-bottom:12px">
+          <div style="height:100%;background:linear-gradient(90deg,#3B82F6,#22C55E);border-radius:3px;transition:width 0.5s;width:${total ? Math.min(percentValue, 100) : 0}%"></div>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px">
+          <div><div style="color:#64748B;font-size:11px">完成/总数</div><div style="font-size:16px;font-weight:600;margin-top:2px">${total ? done+'/'+total : done+'/-'} </div></div>
+          <div><div style="color:#64748B;font-size:11px">成功</div><div style="font-size:16px;font-weight:600;color:#22C55E;margin-top:2px">${success}</div></div>
+          <div><div style="color:#64748B;font-size:11px">失败</div><div style="font-size:16px;font-weight:600;color:#EF4444;margin-top:2px">${failed}</div></div>
+        </div>
+        <div style="margin-top:10px;display:flex;gap:8px;align-items:center">
+          ${status === 'running' ? '<span style="color:#64748B;font-size:11px">每5秒自动刷新…</span>' : ''}
+          ${status === 'success' || status === 'failed' ? `<button onclick="window.viewLaneFiles('${market}')" style="padding:4px 10px;border:1px solid #334155;border-radius:4px;background:#1E293B;color:#F8FAFC;cursor:pointer;font-size:11px">查看文件</button>` : ''}
+        </div>
+      </div>`;
+    }
+
+    // Summary bar
+    const activeCount = laneKeys.filter(k => {
+      const s = ((activeImportLanes[k].job && activeImportLanes[k].job.status) || (activeImportLanes[k].detail && activeImportLanes[k].detail.status) || '').toLowerCase();
+      return ['running', 'queued', 'pending', 'cancelling'].includes(s);
+    }).length;
+    const doneCount = laneKeys.filter(k => {
+      const s = ((activeImportLanes[k].job && activeImportLanes[k].job.status) || (activeImportLanes[k].detail && activeImportLanes[k].detail.status) || '').toLowerCase();
+      return ['success', 'failed', 'cancelled'].includes(s);
+    }).length;
+
+    if(activeCount > 0 || doneCount > 0){
+      html = `<div style="color:#94A3B8;font-size:12px;margin-bottom:10px">
+        导入任务：${laneKeys.length} 个市场 | 进行中 ${activeCount} | 已完成 ${doneCount}
+      </div>` + html;
+    }
+
+    container.innerHTML = html;
+  }
+
+  async function refreshMultiLaneWatch(){
+    const laneKeys = Object.keys(activeImportLanes);
+    if(laneKeys.length === 0) return;
+
+    for(const market of laneKeys){
+      const lane = activeImportLanes[market];
+      if(!lane.batchId) continue;
+
+      try{
+        const d = await getJson('/api/import/batches/' + encodeURIComponent(lane.batchId));
+        lane.detail = d || {};
+
+        if(lane.progressUrl){
+          const job = await getJson(lane.progressUrl);
+          lane.job = job || {};
+        }
+      }catch(e){
+        // ignore individual lane errors
+      }
+    }
+
+    renderMultiLaneCards();
+
+    // Keep completed lanes visible — don't auto-remove them.
+    // Users need to see final state of all markets, not just active ones.
+    // Only stop the polling timer when all lanes reach terminal state.
+    const allTerminal = laneKeys.every(k => {
+      const lane = activeImportLanes[k];
+      const s = ((lane.job && lane.job.status) || (lane.detail && lane.detail.status) || '').toLowerCase();
+      return ['success', 'failed', 'cancelled'].includes(s);
+    });
+    if(allTerminal && laneKeys.length > 0){
+      stopImportWatch();
+      loadImportBatches().catch(() => {});
+    }
+  }
+
+  function startMultiLaneWatch(lanes){
+    stopImportWatch();
+    activeImportLanes = {};
+
+    for(const lane of lanes){
+      if(lane.skipped) continue;
+      const market = lane.market;
+      activeImportLanes[market] = {
+        batchId: lane.import_batch_id,
+        jobId: lane.job_id,
+        progressUrl: lane.progress_url,
+        label: lane.market_label || market,
+        detail: {},
+        job: {},
+      };
+    }
+
+    if(Object.keys(activeImportLanes).length === 0) return;
+
+    renderMultiLaneCards();
+    refreshMultiLaneWatch().catch(() => {});
+    importWatchTimer = setInterval(function(){
+      refreshMultiLaneWatch().catch(() => {});
+    }, 5000);
+  }
+
   async function refreshImportWatch(batchId, progressUrl){
     if(!batchId) return;
     const d = await getJson('/api/import/batches/' + encodeURIComponent(batchId));
@@ -410,6 +568,7 @@
       clearInterval(importWatchTimer);
       importWatchTimer = null;
     }
+    activeImportLanes = {};
     activeImportBatchId = null;
     activeImportProgressUrl = null;
   }
@@ -428,8 +587,10 @@
             `源文件数据范围：${data.file_data_range || '-'}\n` +
             `文件数：${data.total_files || 0}\n` +
             `扫描目录：${(data.scan_dirs || []).join(', ') || '-'}\n\n`;
+          $('importActionResult').style.display = '';
           $('importActionResult').textContent = summary + JSON.stringify(data, null, 2);
         }catch(e){
+          $('importActionResult').style.display = '';
           $('importActionResult').textContent =
             '扫描接口未实现或调用失败：' + (e && e.message ? e.message : String(e)) +
             '\n\n需要后端实现 POST /api/import/scan';
@@ -456,14 +617,18 @@
 
         try{
           const data = await postJson('/api/import/run', {source_dir, market, import_type, start, end});
-          $('importActionResult').textContent = JSON.stringify(data, null, 2);
-          if(data && data.import_batch_id){
+          if(data && data.lanes){
+            startMultiLaneWatch(data.lanes);
+          }else if(data && data.import_batch_id){
             startImportWatch(data);
           }else{
             await loadImportBatches();
             await loadImportFiles();
+            $('importActionResult').style.display = '';
+            $('importActionResult').textContent = JSON.stringify(data, null, 2);
           }
         }catch(e){
+          $('importActionResult').style.display = '';
           $('importActionResult').textContent =
             '导入接口未实现或调用失败：' + (e && e.message ? e.message : String(e)) +
             '\n\n需要后端实现 POST /api/import/run';
@@ -486,15 +651,25 @@
 
   }
 
-  function boot(){
+  async function boot(){
     ensureDataImportPage();
     bindButtons();
     setActiveImportStep(1);
     updateImportMode(false);
 
-    // Auto-detect running batch on first load
+    // Auto-detect running multi-lane import on first load
+    try{
+      const latest = await getJson('/api/import/latest');
+      if(latest && latest.lanes && latest.lanes.length > 0){
+        startMultiLaneWatch(latest.lanes);
+      }
+    }catch(e){
+      // fallback: try old single-batch detection
+    }
+
+    // Fallback: also check batches list for single-market imports
     loadImportBatches().then(function(){
-      if(activeImportBatchId){
+      if(Object.keys(activeImportLanes).length === 0 && activeImportBatchId){
         refreshImportWatch(activeImportBatchId, activeImportProgressUrl).catch(() => {});
       }
     }).catch(() => {});
@@ -502,6 +677,20 @@
 
   document.addEventListener('DOMContentLoaded', boot);
   setTimeout(boot, 300);
+  window.viewLaneFiles = function(market){
+    const lane = activeImportLanes[market];
+    if(lane && lane.batchId){
+      $('importFilePanel').style.display = '';
+      loadImportFiles(String(lane.batchId));
+    }
+  };
+
+  // Expose multi-lane API for addon to share the same state
+  window.activeImportLanes = activeImportLanes;
+  window.startMultiLaneWatch = startMultiLaneWatch;
+  window.renderMultiLaneCards = renderMultiLaneCards;
+  window.refreshMultiLaneWatch = refreshMultiLaneWatch;
+
   window.updateDataImportMode = updateImportMode;
   window.showDataImportView = switchView;
 })();

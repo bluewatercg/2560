@@ -3,6 +3,7 @@
   function $(id){ return document.getElementById(id); }
   function all(sel, root=document){ return Array.from(root.querySelectorAll(sel)); }
   let importWatchTimer = null;
+  let activeImportLanes = {};  // { sh60: {batchId, jobId, progressUrl}, sh68: {...}, ... }
   let activeImportBatchId = null;
   let activeImportProgressUrl = null;
   let autoWatchBootstrapped = false;
@@ -469,12 +470,45 @@
   }
 
   function watchLatestActiveImport(rows){
-    if(!Array.isArray(rows) || activeImportBatchId) return;
-    const active = rows
+    if(!Array.isArray(rows)) return;
+
+    // If we already have multi-lane watching, only add lanes that aren't tracked yet
+    const activeRows = rows
       .filter(r => isActiveImportStatus(r.status))
-      .sort((a, b) => activeRank(a) - activeRank(b) || Number(b.id || 0) - Number(a.id || 0))[0];
-    if(active && active.id){
-      startImportWatch(active.id, active.progress_url);
+      .sort((a, b) => activeRank(a) - activeRank(b) || Number(b.id || 0) - Number(a.id || 0));
+
+    let foundAny = false;
+    for(const r of activeRows){
+      const market = r.market;
+      if(market && !activeImportLanes[market]){
+        activeImportLanes[market] = {
+          batchId: r.id,
+          jobId: r.job_id,
+          progressUrl: r.progress_url || null,
+          label: r.market || market,
+          detail: r,
+          job: {},
+        };
+        foundAny = true;
+      }
+    }
+
+    // If we found multiple lanes, start multi-lane watch
+    if(foundAny && Object.keys(activeImportLanes).length > 1){
+      startMultiLaneWatch(Object.values(activeImportLanes).map(l => ({
+        import_batch_id: l.batchId,
+        job_id: l.jobId,
+        market: l.label,
+        market_label: l.label,
+        progress_url: l.progressUrl,
+        skipped: false,
+      })));
+    } else if(!activeImportBatchId && activeRows.length > 0){
+      // Fallback: single batch tracking
+      const best = activeRows[0];
+      if(best && best.id){
+        startImportWatch(best.id, best.progress_url);
+      }
     }
   }
 
@@ -569,6 +603,74 @@
     }
   }
 
+  async function refreshMultiLaneWatch(){
+    if(window.refreshMultiLaneWatch && window.refreshMultiLaneWatch !== refreshMultiLaneWatch){
+      window.refreshMultiLaneWatch();
+      return;
+    }
+    const laneKeys = Object.keys(activeImportLanes);
+    if(laneKeys.length === 0) return;
+
+    for(const market of laneKeys){
+      const lane = activeImportLanes[market];
+      if(!lane.batchId) continue;
+      try{
+        const d = await getJson('/api/import/batches/' + encodeURIComponent(lane.batchId));
+        lane.detail = d || {};
+        if(lane.progressUrl){
+          lane.job = await getJson(lane.progressUrl) || {};
+        }
+      }catch(e){}
+    }
+
+    // Render multi-lane summary in the base card
+    if(window.renderMultiLaneCards) window.renderMultiLaneCards();
+
+    // Keep completed lanes visible — don't auto-remove them.
+    // Only stop the polling timer when all lanes reach terminal state.
+    const allTerminal = laneKeys.every(k => {
+      const lane = activeImportLanes[k];
+      const s = ((lane.job && lane.job.status) || (lane.detail && lane.detail.status) || '').toLowerCase();
+      return ['success', 'failed', 'cancelled'].includes(s);
+    });
+    if(allTerminal && laneKeys.length > 0){
+      stopImportWatch(true);
+      autoWatchBootstrapped = false;
+      loadImportBatches().catch(() => {});
+    }
+  }
+
+  function startMultiLaneWatch(lanes){
+    // Delegate to the shared base file version if available
+    if(window.startMultiLaneWatch && window.startMultiLaneWatch !== startMultiLaneWatch){
+      window.startMultiLaneWatch(lanes);
+      return;
+    }
+    stopImportWatch();
+    activeImportLanes = {};
+
+    for(const lane of lanes){
+      if(lane.skipped) continue;
+      const market = lane.market;
+      activeImportLanes[market] = {
+        batchId: lane.import_batch_id,
+        jobId: lane.job_id,
+        progressUrl: lane.progress_url,
+        label: lane.market_label || market,
+        detail: {},
+        job: {},
+      };
+    }
+
+    if(Object.keys(activeImportLanes).length === 0) return;
+
+    if(window.renderMultiLaneCards) window.renderMultiLaneCards();
+    refreshMultiLaneWatch().catch(() => {});
+    importWatchTimer = setInterval(function(){
+      refreshMultiLaneWatch().catch(() => {});
+    }, 5000);
+  }
+
   function startImportWatch(batchOrId, progressUrl){
     stopImportWatch();
     const batchId = typeof batchOrId === 'object' ? batchOrId.import_batch_id : batchOrId;
@@ -587,6 +689,7 @@
       clearInterval(importWatchTimer);
       importWatchTimer = null;
     }
+    activeImportLanes = {};
     if(!keepSelection){
       activeImportBatchId = null;
       activeImportProgressUrl = null;
@@ -649,7 +752,10 @@
         try{
           const data = await postJson('/api/import/run', p);
           if(out) out.textContent = JSON.stringify(data, null, 2);
-          if(data && data.import_batch_id){
+          if(data && data.lanes){
+            setBatchTypeFilter('vipdoc');
+            startMultiLaneWatch(data.lanes);
+          }else if(data && data.import_batch_id){
             setBatchTypeFilter('vipdoc');
             startImportWatch(data);
           }else{
@@ -803,13 +909,21 @@
     }
   }
 
-  function boot(){
+  async function boot(){
     ensureControls();
     bindButtons();
     if(window.updateDataImportMode){
       window.updateDataImportMode();
     }
-    bootstrapActiveImportWatch();
+
+    // Multi-lane boot is handled by the base file via /api/import/latest
+    // Only start the batch table auto-watch if base file hasn't started multi-lane
+    if(window.activeImportLanes && Object.keys(window.activeImportLanes).length > 0){
+      // Multi-lane is already active, just sync to addon's batch table
+      loadImportBatches().catch(() => {});
+    } else {
+      bootstrapActiveImportWatch();
+    }
   }
 
   document.addEventListener('DOMContentLoaded', boot);

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import quote_plus
 import httpx
 
 from app.core.config import get_settings
@@ -19,6 +20,13 @@ class ClickHouseClient:
         params = {"query": query, "database": self.database, "user": self.user}
         if self.password:
             params["password"] = self.password
+        return params
+
+    def _encoded_params(self, query: str) -> dict:
+        """Params with URL-encoded password for safe query string usage."""
+        params = {"query": query, "database": self.database, "user": self.user}
+        if self.password:
+            params["password"] = quote_plus(self.password)
         return params
 
     def command(self, query: str) -> Any:

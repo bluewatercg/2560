@@ -79,7 +79,11 @@
       "Bash($DOCKER build *)",
       "Bash('/mnt/c/Program Files/Docker/Docker/resources/bin/docker.exe' save strategy2560:latest)",
       "Bash('/mnt/c/Program Files/Docker/Docker/resources/bin/docker.exe' build -t strategy2560:latest .)",
-      "Bash(docker-compose ps *)"
+      "Bash(docker-compose ps *)",
+      "Bash(node -c /mnt/d/Project/Miller/strategy2560_project_v2_engine/app/static/data_import_page.js)",
+      "Bash(node -c /mnt/d/Project/Miller/strategy2560_project_v2_engine/app/static/data_import_type_addon.js)",
+      "mcp__memory__create_entities",
+      "Bash(PYTHONPATH=/mnt/d/Project/Miller/strategy2560_project_v2_engine python3 *)"
     ]
   }
 }
