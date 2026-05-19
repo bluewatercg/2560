@@ -137,6 +137,7 @@
             <div id="liveCardActions" style="margin-top:16px;display:flex;gap:8px"></div>
           </div>
         </div>
+        <pre id="importScanResult" class="json-box" style="display:none;margin-top:16px"></pre>
         <pre id="importActionResult" class="json-box" style="display:none">等待操作</pre>
       </div>
 
@@ -217,6 +218,10 @@
     if(rebuildBtn) rebuildBtn.style.display = step === 4 ? '' : 'none';
     if(refreshBtn) refreshBtn.style.display = step === 4 ? '' : 'none';
     if(fullGuard) fullGuard.style.display = step === 2 ? '' : 'none';
+
+    // 步骤1显示扫描结果区，其他步骤隐藏
+    const scanResult = $('importScanResult');
+    if(scanResult) scanResult.style.display = step === 1 ? '' : 'none';
 
     // 步骤4不再自动显示批次面板（批次/执行/shard 已降级为高级，由折叠按钮控制）
     const importFilePanel = $('importFilePanel');

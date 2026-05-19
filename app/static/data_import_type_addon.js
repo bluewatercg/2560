@@ -711,18 +711,19 @@
       scanBtn.dataset.bound = 'addon';
       scanBtn.onclick = async function(){
         const p = payload();
-        if(out) out.textContent = '正在扫描...';
+        const scanOut = $('importScanResult') || out;
+        if(scanOut){ scanOut.style.display = ''; scanOut.textContent = '正在扫描...'; }
         try{
           const data = await postJson('/api/import/scan', p);
-          if(out){
+          if(scanOut){
             const summary =
               `源文件数据范围：${data.file_data_range || '-'}\n` +
               `文件数：${data.total_files || 0}\n` +
               `扫描目录：${(data.scan_dirs || []).join(', ') || '-'}\n\n`;
-            out.textContent = summary + JSON.stringify(data, null, 2);
+            scanOut.textContent = summary + JSON.stringify(data, null, 2);
           }
         }catch(e){
-          if(out) out.textContent = '扫描失败：' + (e && e.message ? e.message : String(e));
+          if(scanOut){ scanOut.style.display = ''; scanOut.textContent = '扫描失败：' + (e && e.message ? e.message : String(e)); }
         }
       };
     }
@@ -748,7 +749,7 @@
           `注意：这里只导入行情数据，不触发 2560 / 2568 计算。`
         )) return;
 
-        if(out) out.textContent = '正在导入，请稍候...';
+        if(out){ out.style.display = ''; out.textContent = '正在导入，请稍候...'; }
         try{
           const data = await postJson('/api/import/run', p);
           if(out) out.textContent = JSON.stringify(data, null, 2);
@@ -764,7 +765,7 @@
             renderImportShardSummary(null, null, []);
           }
         }catch(e){
-          if(out) out.textContent = '导入失败：' + (e && e.message ? e.message : String(e));
+          if(out){ out.style.display = ''; out.textContent = '导入失败：' + (e && e.message ? e.message : String(e)); }
         }
       };
     }
@@ -795,7 +796,7 @@
           `注意：这里只做周期聚合，不触发 2560 / 2568 计算。`
         )) return;
 
-        if(out) out.textContent = '正在从 5m 生成 30m，请稍候...';
+        if(out){ out.style.display = ''; out.textContent = '正在从 5m 生成 30m，请稍候...'; }
         try{
           buildBtn.disabled = true;
           const data = await postJson('/api/import/build-30m', body);
@@ -812,7 +813,7 @@
             await loadImportBatches();
           }
         }catch(e){
-          if(out) out.textContent = '生成30m失败：' + (e && e.message ? e.message : String(e));
+          if(out){ out.style.display = ''; out.textContent = '生成30m失败：' + (e && e.message ? e.message : String(e)); }
         }finally{
           buildBtn.disabled = false;
         }
@@ -843,7 +844,7 @@
           `注意：这一步应在日线/5m导入和30m构建完成后执行。`
         )) return;
 
-        if(out) out.textContent = '正在提交指标重算任务...';
+        if(out){ out.style.display = ''; out.textContent = '正在提交指标重算任务...'; }
         try{
           rebuildIndicatorsBtn.disabled = true;
           const data = await postJson('/api/import/rebuild-indicators', body);
@@ -860,7 +861,7 @@
             await loadImportBatches();
           }
         }catch(e){
-          if(out) out.textContent = '提交指标重算失败：' + (e && e.message ? e.message : String(e));
+          if(out){ out.style.display = ''; out.textContent = '提交指标重算失败：' + (e && e.message ? e.message : String(e)); }
         }finally{
           rebuildIndicatorsBtn.disabled = false;
         }
