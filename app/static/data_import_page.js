@@ -112,7 +112,29 @@
           </label>
         </div>
 
-        <pre id="importLiveStatus" class="json-box">暂无选中的导入批次</pre>
+        <div id="importLiveCard" style="display:none;margin:16px 0">
+          <div style="border:1px solid #334155;border-radius:12px;background:#0F172A;padding:20px">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+              <div style="display:flex;align-items:center;gap:10px">
+                <span id="liveCardStatusIcon" style="font-size:20px"></span>
+                <span id="liveCardStatusText" style="font-weight:600;font-size:16px"></span>
+              </div>
+              <span id="liveCardPercent" style="color:#94A3B8;font-size:14px"></span>
+            </div>
+            <div style="height:8px;background:#1E293B;border-radius:4px;overflow:hidden;margin-bottom:16px">
+              <div id="liveCardProgressBar" style="height:100%;background:linear-gradient(90deg,#3B82F6,#22C55E);border-radius:4px;transition:width 0.5s;width:0%"></div>
+            </div>
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px">
+              <div><div style="color:#64748B;font-size:11px">完成/总数</div><div id="liveCardDone" style="font-size:18px;font-weight:600;margin-top:4px">-</div></div>
+              <div><div style="color:#64748B;font-size:11px">成功</div><div id="liveCardSuccess" style="font-size:18px;font-weight:600;color:#22C55E;margin-top:4px">0</div></div>
+              <div><div style="color:#64748B;font-size:11px">失败</div><div id="liveCardFailed" style="font-size:18px;font-weight:600;color:#EF4444;margin-top:4px">0</div></div>
+              <div><div style="color:#64748B;font-size:11px">记录数</div><div id="liveCardRows" style="font-size:18px;font-weight:600;color:#F59E0B;margin-top:4px">-</div></div>
+              <div><div style="color:#64748B;font-size:11px">开始时间</div><div id="liveCardStarted" style="font-size:13px;margin-top:4px">-</div></div>
+              <div><div style="color:#64748B;font-size:11px">最近更新</div><div id="liveCardUpdated" style="font-size:13px;margin-top:4px">-</div></div>
+            </div>
+            <div id="liveCardActions" style="margin-top:16px;display:flex;gap:8px"></div>
+          </div>
+        </div>
         <pre id="importActionResult" class="json-box">等待操作</pre>
       </div>
 
@@ -369,29 +391,75 @@
   }
 
   function renderLiveStatus(d, job){
-    const box = $('importLiveStatus');
-    if(!box) return;
+    const card = $('importLiveCard');
+    if(!card) return;
+
     if(!d){
-      box.textContent = '暂无正在导入的批次';
+      card.style.display = 'none';
       return;
     }
+
+    card.style.display = '';
+
     const total = Number((job && job.total) || d.job_progress_total || d.total_files || 0);
     const done = Number((job && job.done) || d.job_progress_current || d.done_files || 0);
     const percentValue = total ? (done * 100 / total) : Number((job && job.percent) ?? d.progress_percent ?? 0);
-    const percent = total ? percentValue.toFixed(2) + '%' : '-';
-    const status = (job && job.status) || d.job_status || d.status || '-';
-    const workers = (job && job.shards) || d.workers || '-';
-    const runningFiles = d.running_files ?? '-';
-    box.textContent =
-      `当前批次：#${d.id}\n` +
-      `任务：#${d.job_id || (job && job.id) || '-'} ${d.progress_url || activeImportProgressUrl || ''}\n` +
-      `状态：${status}\n` +
-      `并发：${workers}，运行中文件：${runningFiles}\n` +
-      `进度：${done}/${total} (${percent})\n` +
-      `成功：${(job && job.success_count) ?? d.job_success_count ?? d.success_files ?? 0}，失败：${(job && job.failed_count) ?? d.job_failed_count ?? d.failed_files ?? 0}，当前：${(job && job.current_code) || d.current_code || '-'}\n` +
-      `批次结果：成功 ${d.success_files || 0}，失败 ${d.failed_files || 0}，记录数 ${d.total_rows || 0}\n` +
-      `数据范围：${d.data_range || '-'}\n` +
-      `更新时间：${d.updated_at || '-'}`;
+    const percent = total ? percentValue.toFixed(1) + '%' : '-';
+    const status = ((job && job.status) || d.job_status || d.status || '-').toLowerCase();
+    const success = (job && job.success_count) ?? d.job_success_count ?? d.success_files ?? 0;
+    const failed = (job && job.failed_count) ?? d.job_failed_count ?? d.failed_files ?? 0;
+    const rows = d.total_rows || 0;
+    const started = d.started_at || '-';
+    const updated = d.updated_at || '-';
+
+    // Status icon & text
+    const iconMap = { running: '⟳', success: '✓', failed: '✗', queued: '◷', pending: '◷' };
+    const colorMap = { running: '#3B82F6', success: '#22C55E', failed: '#EF4444', queued: '#F59E0B', pending: '#94A3B8' };
+    const labelMap = { running: '导入中', success: '导入完成', failed: '导入失败', queued: '排队中', pending: '等待中' };
+    const icon = iconMap[status] || '●';
+    const color = colorMap[status] || '#94A3B8';
+    const label = labelMap[status] || status;
+
+    const statusIcon = $('liveCardStatusIcon');
+    const statusText = $('liveCardStatusText');
+    if(statusIcon){ statusIcon.textContent = icon; statusIcon.style.color = color; }
+    if(statusText){ statusText.textContent = `#${d.id} ${label}`; statusText.style.color = color; }
+
+    // Percent
+    const pctEl = $('liveCardPercent');
+    if(pctEl) pctEl.textContent = percent;
+
+    // Progress bar
+    const bar = $('liveCardProgressBar');
+    if(bar) bar.style.width = (total ? Math.min(percentValue, 100) : 0) + '%';
+
+    // Stats
+    const doneEl = $('liveCardDone');
+    if(doneEl) doneEl.textContent = total ? `${done}/${total}` : `${done}/-`;
+    const okEl = $('liveCardSuccess');
+    if(okEl) okEl.textContent = success;
+    const failEl = $('liveCardFailed');
+    if(failEl) failEl.textContent = failed;
+    const rowsEl = $('liveCardRows');
+    if(rowsEl) rowsEl.textContent = rows > 1000000 ? (rows/1000000).toFixed(1)+'M' : rows > 1000 ? (rows/1000).toFixed(0)+'K' : rows;
+    const startedEl = $('liveCardStarted');
+    if(startedEl) startedEl.textContent = started;
+    const updatedEl = $('liveCardUpdated');
+    if(updatedEl) updatedEl.textContent = updated;
+
+    // Actions
+    const actions = $('liveCardActions');
+    if(actions){
+      let html = '';
+      if(status === 'running'){
+        html += `<span style="color:#64748B;font-size:12px;align-self:center">每5秒自动刷新…</span>`;
+      } else if(status === 'success' || status === 'failed'){
+        html += `<button id="liveCardWatchFilesBtn" style="padding:6px 14px;border:1px solid #334155;border-radius:6px;background:#1E293B;color:#F8FAFC;cursor:pointer;font-size:12px">查看文件明细</button>`;
+      }
+      actions.innerHTML = html;
+      const wfBtn = $('liveCardWatchFilesBtn');
+      if(wfBtn) wfBtn.onclick = () => { $('importFilePanel').style.display = ''; loadImportFiles(String(d.id)); };
+    }
   }
 
   async function refreshImportWatch(batchId, progressUrl){
