@@ -440,6 +440,8 @@
       const workers = (job && job.shards) || d.workers || '-';
 
       const batchId = d.id || lane.batchId;
+      const jobId = lane.jobId;
+      const progressUrl = lane.progressUrl;
 
       html += `<div class="lane-card" data-market="${market}" style="border:1px solid #334155;border-radius:12px;background:#0F172A;padding:16px;margin-bottom:12px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
@@ -459,6 +461,7 @@
           <div><div style="color:#64748B;font-size:11px">成功</div><div style="font-size:16px;font-weight:600;color:#22C55E;margin-top:2px">${success}</div></div>
           <div><div style="color:#64748B;font-size:11px">失败</div><div style="font-size:16px;font-weight:600;color:#EF4444;margin-top:2px">${failed}</div></div>
         </div>
+        <div id="laneWorker-${market}" style="margin-top:12px"></div>
         <div style="margin-top:10px;display:flex;gap:8px;align-items:center">
           ${status === 'running' ? '<span style="color:#64748B;font-size:11px">每5秒自动刷新…</span>' : ''}
           ${status === 'success' || status === 'failed' ? `<button onclick="window.viewLaneFiles('${market}')" style="padding:4px 10px;border:1px solid #334155;border-radius:4px;background:#1E293B;color:#F8FAFC;cursor:pointer;font-size:11px">查看文件</button>` : ''}
@@ -508,6 +511,18 @@
 
     renderMultiLaneCards();
 
+    // Fetch and render per-worker shard detail for each lane
+    for(const market of laneKeys){
+      const lane = activeImportLanes[market];
+      if(!lane.jobId) continue;
+      try{
+        const shards = await getJson('/api/jobs/executions/' + encodeURIComponent(lane.jobId) + '/shards');
+        renderWorkerShards(market, shards);
+      }catch(e){
+        // ignore
+      }
+    }
+
     // Keep completed lanes visible — don't auto-remove them.
     // Users need to see final state of all markets, not just active ones.
     // Only stop the polling timer when all lanes reach terminal state.
@@ -520,6 +535,33 @@
       stopImportWatch();
       loadImportBatches().catch(() => {});
     }
+  }
+
+  function renderWorkerShards(market, shards){
+    const container = $('laneWorker-' + market);
+    if(!container || !shards || !shards.items || !shards.items.length) return;
+
+    let html = '<div style="border-top:1px solid #334155;padding-top:12px"><div style="color:#64748B;font-size:11px;margin-bottom:8px">Worker 进度（最近导入的文件）</div>';
+    html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:8px">';
+
+    for(const s of shards.items){
+      const statusColor = s.running_count > 0 ? '#3B82F6' : s.failed_count > 0 ? '#EF4444' : '#22C55E';
+      const statusLabel = s.running_count > 0 ? '导入中' : s.pending_count > 0 ? '等待中' : '已完成';
+      const code = s.current_code || s.last_file || '-';
+      const err = s.last_error ? `<div style="font-size:11px;color:#EF4444;margin-top:4px" title="${s.last_error}">失败：${s.last_error.slice(0, 80)}</div>` : '';
+
+      html += `<div style="border:1px solid #334155;border-radius:6px;padding:8px;background:#1E293B">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span style="font-size:12px;font-weight:600;color:${statusColor}">W${s.shard_id}</span>
+          <span style="font-size:11px;color:#94A3B8">${s.done}/${s.total} ${statusLabel}</span>
+        </div>
+        <div style="font-size:11px;color:#94A3B8;margin-top:4px">最后导入：${code}</div>
+        ${err}
+      </div>`;
+    }
+
+    html += '</div></div>';
+    container.innerHTML = html;
   }
 
   function startMultiLaneWatch(lanes){

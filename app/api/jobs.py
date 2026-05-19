@@ -359,73 +359,86 @@ def execution_shards(job_id: int, db: Session = Depends(get_db)):
                 batch_id = 0
 
             if batch_id:
-                # Get actual file status from data_import_file
-                file_stats = db.execute(text("""
-                    SELECT
-                        SUM(status='pending') AS pending_count,
-                        SUM(status='running') AS running_count,
-                        SUM(status='success') AS success_count,
-                        SUM(status='failed') AS failed_count
+                # Get actual file records with status, ordered by ID (insertion order = processing order)
+                file_rows = db.execute(text("""
+                    SELECT id, file_path, market, status, rows_imported, last_error,
+                           started_at, finished_at
                     FROM data_import_file
                     WHERE import_batch_id=:id
-                """), {"id": batch_id}).mappings().first()
+                    ORDER BY id ASC
+                """), {"id": batch_id}).mappings().all()
 
-                if file_stats:
-                    fs = dict(file_stats)
-                    pending = int(fs.get("pending_count") or 0)
-                    running = int(fs.get("running_count") or 0)
-                    success = int(fs.get("success_count") or 0)
-                    failed = int(fs.get("failed_count") or 0)
-                    total = pending + running + success + failed
-                    done = success + failed
+                if file_rows:
+                    # Round-robin assign files to shards (matches ThreadPoolExecutor behavior)
+                    files_list = [dict(r) for r in file_rows]
+                    shard_files: dict[int, list[dict]] = {s: [] for s in range(1, n_shards + 1)}
+                    for idx, f in enumerate(files_list):
+                        shard_id = (idx % n_shards) + 1
+                        shard_files[shard_id].append(f)
 
-                    if total > 0:
-                        # Distribute evenly across virtual shards
-                        items = []
-                        remaining = total
-                        rem_pending = pending
-                        rem_running = running
-                        rem_success = success
-                        rem_failed = failed
+                    items = []
+                    for s in range(1, n_shards + 1):
+                        sf = shard_files[s]
+                        shard_total = len(sf)
+                        shard_success = sum(1 for f in sf if f["status"] == "success")
+                        shard_failed = sum(1 for f in sf if f["status"] == "failed")
+                        shard_running = sum(1 for f in sf if f["status"] == "running")
+                        shard_pending = sum(1 for f in sf if f["status"] == "pending")
+                        shard_done = shard_success + shard_failed
 
-                        for s in range(1, n_shards + 1):
-                            shard_total = max(1, remaining // (n_shards - s + 1))
-                            remaining -= shard_total
+                        # Find the last completed file (most recent success/failed)
+                        last_done = None
+                        for f in reversed(sf):
+                            if f["status"] in ("success", "failed"):
+                                last_done = f
+                                break
 
-                            shard_success = min(rem_success, max(0, shard_total // 2))
-                            shard_failed = min(rem_failed, max(0, shard_total // 4))
-                            shard_pending = max(0, (shard_total - shard_success - shard_failed) // 2)
-                            shard_running = max(0, shard_total - shard_success - shard_failed - shard_pending)
+                        # Current running file path
+                        current_file = None
+                        for f in sf:
+                            if f["status"] == "running":
+                                current_file = f["file_path"]
+                                break
 
-                            rem_success -= shard_success
-                            rem_failed -= shard_failed
-                            rem_pending -= shard_pending
-                            rem_running -= shard_running
+                        # Last error
+                        last_error = None
+                        for f in reversed(sf):
+                            if f["status"] == "failed" and f.get("last_error"):
+                                last_error = f["last_error"]
+                                break
 
-                            shard_done = shard_success + shard_failed
+                        # Use basename of file path as current_code
+                        if current_file:
+                            current_code = current_file.split("/")[-1]
+                        elif last_done:
+                            current_code = last_done["file_path"].split("/")[-1]
+                        else:
+                            current_code = None
 
-                            items.append({
-                                "shard_id": s,
-                                "total": shard_total,
-                                "done": shard_done,
-                                "percent": round(shard_done * 100 / shard_total, 2) if shard_total else 0.0,
-                                "success_count": shard_success,
-                                "failed_count": shard_failed,
-                                "running_count": shard_running,
-                                "pending_count": shard_pending,
-                                "avg_elapsed_ms": None,
-                                "current_code": None,
-                                "updated_at": None,
-                            })
+                        items.append({
+                            "shard_id": s,
+                            "total": shard_total,
+                            "done": shard_done,
+                            "percent": round(shard_done * 100 / shard_total, 2) if shard_total else 0.0,
+                            "success_count": shard_success,
+                            "failed_count": shard_failed,
+                            "running_count": shard_running,
+                            "pending_count": shard_pending,
+                            "avg_elapsed_ms": None,
+                            "current_code": current_code,
+                            "last_file": last_done["file_path"].split("/")[-1] if last_done else None,
+                            "last_error": last_error,
+                            "updated_at": None,
+                        })
 
-                        return {
-                            "ok": True,
-                            "job_id": job_id,
-                            "total": total,
-                            "done": done,
-                            "percent": round(done * 100 / total, 2) if total else 0.0,
-                            "items": items,
-                        }
+                    return {
+                        "ok": True,
+                        "job_id": job_id,
+                        "total": len(files_list),
+                        "done": done,
+                        "percent": round(done * 100 / len(files_list), 2) if files_list else 0.0,
+                        "items": items,
+                    }
 
     return {"ok": True, "job_id": job_id, "total": 0, "done": 0, "percent": 0.0, "items": []}
 
