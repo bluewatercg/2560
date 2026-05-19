@@ -348,6 +348,16 @@
         `;
         }).join('') +
         '</tbody>';
+
+      // Auto-detect running batch (safe: boot() checks activeImportBatchId before calling refreshImportWatch,
+      // and refreshImportWatch calls loadImportBatches which won't re-trigger because activeImportBatchId is already set)
+      if(!activeImportBatchId){
+        const runningBatch = rows.find(r => r.status === 'running');
+        if(runningBatch){
+          activeImportBatchId = runningBatch.id;
+          activeImportProgressUrl = runningBatch.progress_url || null;
+        }
+      }
     }catch(e){
       table.innerHTML = '<tbody><tr><td>导入批次接口未实现：GET /api/import/batches</td></tr></tbody>';
     }
@@ -582,6 +592,13 @@
     bindButtons();
     setActiveImportStep(1);
     updateImportMode(false);
+
+    // Auto-detect running batch on first load
+    loadImportBatches().then(function(){
+      if(activeImportBatchId){
+        refreshImportWatch(activeImportBatchId, activeImportProgressUrl).catch(() => {});
+      }
+    }).catch(() => {});
   }
 
   document.addEventListener('DOMContentLoaded', boot);
