@@ -225,6 +225,15 @@
     const scanResult = $('importScanResult');
     if(scanResult) scanResult.style.display = step === 1 ? '' : 'none';
 
+    // 步骤1不显示导入进度卡片，步骤2+允许显示
+    const liveCards = $('importLiveCards');
+    const liveCard = $('importLiveCard');
+    if(liveCards) liveCards.style.display = step >= 2 ? liveCards.style.display : 'none';
+    if(liveCard) liveCard.style.display = step >= 2 ? liveCard.style.display : 'none';
+    if(step === 1 && window.activeImportLanes && Object.keys(window.activeImportLanes).length > 0){
+      if(liveCards) liveCards.style.display = 'none';
+    }
+
     // 步骤4不再自动显示批次面板（批次/执行/shard 已降级为高级，由折叠按钮控制）
     const importFilePanel = $('importFilePanel');
     if(importFilePanel) importFilePanel.style.display = 'none';
@@ -393,6 +402,9 @@
   }
 
   function renderMultiLaneCards(){
+    // 步骤1（扫描检查）不显示导入进度卡片
+    if(activeImportStep === 1) return;
+
     const container = $('importLiveCards');
     if(!container) return;
 
