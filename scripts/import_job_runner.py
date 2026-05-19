@@ -1,22 +1,33 @@
 #!/usr/bin/env python3
+"""Background job runner: import vipdoc行情 to ClickHouse (not MySQL).
+MySQL is used only for job tracking (batch/file/execution tables).
+All market data goes to ClickHouse.
+"""
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
+import json
 import os
+import threading
+import time
 
 from sqlalchemy import text
 
 from app.db.session import SessionLocal
-from app.core.redis_client import get_redis_client, ping_redis
 from app.services.job_orchestrator import (
     finalize_data_import_batch,
     update_job_execution,
 )
-from scripts.import_vipdoc_with_pytdx import import_vipdoc_files_parallel
+from scripts.import_vipdoc_clickhouse import (
+    import_daily_clickhouse,
+    import_5m_clickhouse,
+    ch_ping,
+)
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Run vipdoc import as background job")
+    p = argparse.ArgumentParser(description="Run vipdoc import as background job (ClickHouse)")
     p.add_argument("--job-id", type=int, default=int(os.getenv("JOB_ID", "0")))
     p.add_argument("--batch-id", type=int, default=int(os.getenv("IMPORT_BATCH_ID", "0")))
     p.add_argument("--market", default=os.getenv("MARKET", "sh60"))
@@ -33,6 +44,9 @@ def main():
     if not a.job_id or not a.batch_id:
         raise RuntimeError("job-id and batch-id are required")
 
+    if not ch_ping():
+        raise RuntimeError("ClickHouse not reachable")
+
     with SessionLocal() as db:
         batch = db.execute(text("""
             SELECT id, source_dir, market, status, message
@@ -48,104 +62,161 @@ def main():
             ORDER BY id
         """), {"id": a.batch_id}).mappings().all()
         files = [r["file_path"] for r in file_rows]
-        id_map = {r["file_path"]: int(r["id"]) for r in file_rows}
+        # Build path->file_id map for status updates
+        file_id_map = {r["file_path"]: r["id"] for r in file_rows}
 
         db.execute(text("""
             UPDATE data_import_batch
             SET status='running', message=:msg, updated_at=NOW()
             WHERE id=:id
-        """), {"id": a.batch_id, "msg": f"running import job #{a.job_id}"})
+        """), {"id": a.batch_id, "msg": f"running import job #{a.job_id} (ClickHouse)"})
         db.commit()
 
-    state = {"success": 0, "failed": 0}
+    market = a.market or batch["market"] or "sh60"
+    import_type = a.import_type or "all"
 
-    def on_result(result: dict, done: int, total: int):
-        if result.get("ok"):
-            state["success"] += 1
-            batch_message = f"import {done}/{total} phase={result.get('phase')}"
+    # Filter files by type
+    lday_files = [f for f in files if f.endswith(".day")]
+    lc5_files = [f for f in files if f.endswith(".lc5")]
+    if import_type in ("lday", "daily"):
+        lc5_files = []
+    elif import_type in ("5m", "lc5", "fzline"):
+        lday_files = []
+
+    all_files = lday_files + lc5_files
+    total = len(all_files)
+
+    # Thread-safe counters
+    _lock = threading.Lock()
+    _done = [0]
+    _success = [0]
+    _failed = [0]
+    _rows = [0]
+    _file_results = {}  # filepath -> ('success'|'failed', error_msg)
+
+    def do_import(filepath: str) -> dict:
+        if filepath.endswith(".day"):
+            return import_daily_clickhouse(filepath, market, a.start, a.end)
         else:
-            state["failed"] += 1
-            batch_message = f"import {done}/{total} phase={result.get('phase')}"
-        with SessionLocal() as db:
-            update_job_execution(
-                db,
-                a.job_id,
-                status="running",
-                progress_current=done,
-                progress_total=total,
-                success_count=state["success"],
-                failed_count=state["failed"],
-                current_code=result.get("code"),
-                message=batch_message,
-            )
+            return import_5m_clickhouse(filepath, market, a.start, a.end)
+
+    def on_done(filepath: str, result: dict):
+        with _lock:
+            _done[0] += 1
+            if result["ok"]:
+                _success[0] += 1
+                _rows[0] += result["rows"]
+                _file_results[filepath] = ("success", None)
+            else:
+                _failed[0] += 1
+                _file_results[filepath] = ("failed", str(result.get("error", ""))[:500])
+
+    # Background reporter: single thread writes MySQL every 2s (zero contention)
+    _stop_report = threading.Event()
+    _reported_ids = set()  # file_ids already updated in MySQL
+
+    def _reporter():
+        while not _stop_report.wait(2):
+            with _lock:
+                d, s, f, r = _done[0], _success[0], _failed[0], _rows[0]
+                pending_updates = {fp: st for fp, st in _file_results.items() if fp not in _reported_ids}
+
+            if not pending_updates and d == 0:
+                continue
+
+            try:
+                with SessionLocal() as db:
+                    # Batch update file statuses
+                    if pending_updates:
+                        for filepath, (status, err) in pending_updates.items():
+                            fid = file_id_map.get(filepath)
+                            if not fid:
+                                continue
+                            db.execute(text("""
+                                UPDATE data_import_file
+                                SET status=:status,
+                                    rows_imported=:rows,
+                                    last_error=:err,
+                                    finished_at=NOW(),
+                                    updated_at=NOW()
+                                WHERE id=:id
+                            """), {
+                                "id": fid,
+                                "status": status,
+                                "rows": 0,
+                                "err": err,
+                            })
+                        db.commit()
+
+                        # Only mark as reported AFTER commit succeeds
+                        with _lock:
+                            _reported_ids.update(pending_updates.keys())
+
+                    # Update job_execution progress
+                    if d > 0:
+                        update_job_execution(
+                            db, a.job_id, status="running",
+                            progress_current=d, progress_total=total,
+                            success_count=s, failed_count=f,
+                            message=f"import {d}/{total}",
+                        )
+                        db.commit()
+            except Exception as e:
+                print(f"[reporter] MySQL update failed: {e}", flush=True)
+                # Don't update _reported_ids — retry on next cycle
+
+    t0 = time.time()
+    reporter_thread = threading.Thread(target=_reporter, daemon=True)
+    reporter_thread.start()
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=a.workers) as pool:
+            futures = {pool.submit(do_import, f): f for f in all_files}
+            for fut in concurrent.futures.as_completed(futures):
+                filepath = futures[fut]
+                on_done(filepath, fut.result())
+    finally:
+        _stop_report.set()
+        reporter_thread.join(timeout=3)
+
+    # Final flush
+    with _lock:
+        d, s, f, r = _done[0], _success[0], _failed[0], _rows[0]
+
+    elapsed = time.time() - t0
+    print(f"[import_job_runner] done: ok={s} failed={f} rows={r} in {elapsed:.1f}s", flush=True)
+
+    status = "success" if f == 0 else "failed"
+    batch_message = f"finished to ClickHouse, workers={a.workers}"
+    if f:
+        batch_message = f"finished with {f} failed files"
 
     with SessionLocal() as db:
-        update_job_execution(
-            db,
-            a.job_id,
-            status="running",
-            progress_current=0,
-            progress_total=len(files),
-            success_count=0,
-            failed_count=0,
-            message=f"import started files={len(files)}",
-        )
+        # Final batch update for any remaining file statuses
+        with _lock:
+            remaining = {fp: st for fp, st in _file_results.items() if fp not in _reported_ids}
+        for filepath, (fstatus, err) in remaining.items():
+            fid = file_id_map.get(filepath)
+            if fid:
+                db.execute(text("""
+                    UPDATE data_import_file
+                    SET status=:status, rows_imported=0, last_error=:err,
+                        finished_at=NOW(), updated_at=NOW()
+                    WHERE id=:id
+                """), {"id": fid, "status": fstatus, "err": err})
 
-    # Redis is opt-in only. Set IMPORT_USE_REDIS=true to enable.
-    use_redis = os.getenv("IMPORT_USE_REDIS", "false").lower() in ("1", "true", "yes")
-    rc = get_redis_client() if use_redis else None
-    use_redis = use_redis and ping_redis(rc)
-    mode_label = "redis" if use_redis else "db-fallback"
-
-    result = import_vipdoc_files_parallel(
-        files,
-        a.market or batch["market"] or "sh60",
-        a.import_type,
-        a.start,
-        a.end,
-        a.workers,
-        batch_id=a.batch_id,
-        import_file_ids=id_map,
-        on_result=on_result,
-        redis_client=rc if use_redis else None,
-    )
-    print(f"[import_job_runner] mode={mode_label}", flush=True)
-
-    status = "success" if result["failed_files"] == 0 else "failed"
-    flush_error = result.get("flush_error")
-    with SessionLocal() as db:
-        # If flush failed, preserve the specific error message instead of overwriting
-        batch_message = flush_error if flush_error else f"finished import_type={a.import_type}, workers={a.workers}"
         finalize_data_import_batch(
-            db,
-            a.batch_id,
-            status=status,
-            success_files=result["success_files"],
-            failed_files=result["failed_files"],
-            total_rows=result["total_rows"],
-            message=batch_message,
+            db, a.batch_id, status=status,
+            success_files=s, failed_files=f,
+            total_rows=r, message=batch_message,
         )
         update_job_execution(
-            db,
-            a.job_id,
-            status=status,
-            progress_current=result["total_files"],
-            progress_total=result["total_files"],
-            success_count=result["success_files"],
-            failed_count=result["failed_files"],
-            message=batch_message,
-            finished=True,
+            db, a.job_id, status=status,
+            progress_current=total, progress_total=total,
+            success_count=s, failed_count=f,
+            message=batch_message, finished=True,
         )
         db.commit()
-
-    # 更新 workspace_status：仅成功时刷新
-    if status == "success":
-        from app.services.workspace_service import refresh_market_from_db
-        periods = ["daily"] if a.import_type == "lday" else ["5m"]
-        markets = ["sh60", "sh68", "sz00", "sz30"] if (a.market or "all") == "all" else [a.market]
-        with SessionLocal() as db:
-            for m in markets:
-                refresh_market_from_db(db, m, periods=periods)
 
 
 if __name__ == "__main__":
