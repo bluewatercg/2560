@@ -4,6 +4,8 @@ import pandas as pd
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.db.clickhouse import get_clickhouse
+
 
 def _column_exists(db: Session, table_name: str, column_name: str) -> bool:
     return bool(db.execute(text("""
@@ -48,42 +50,28 @@ class KlineRepository:
         return dict(row) if row else {'code': code, 'name': None}
 
     def read_daily(self, code: str, source: Optional[str] = None, lookback: Optional[int] = None) -> pd.DataFrame:
-        sql = 'SELECT code,date,open,high,low,close,volume,amount,source FROM daily_kline WHERE code=:code'
-        params = {'code': code}
-        if source:
-            sql += ' AND source=:source'
-            params['source'] = source
-        sql += ' ORDER BY date'
-        df = pd.read_sql(text(sql), self.db.bind, params=params)
+        sf = f" AND source='{source}'" if source else ""
+        rows = get_clickhouse().query(
+            f"SELECT code,date,open,high,low,close,volume,amount,source FROM daily_kline WHERE code='{code}'{sf} ORDER BY date"
+        )
+        if not rows:
+            return pd.DataFrame()
+        df = pd.DataFrame(rows)
+        # Convert ClickHouse Date strings to int YYYYMMDD
+        df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y%m%d').astype(int)
         return df.tail(lookback).reset_index(drop=True) if lookback else df.reset_index(drop=True)
 
     def read_minute(self, code: str, period: str, source: Optional[str] = None, lookback: Optional[int] = None) -> pd.DataFrame:
-        params = {'code': code, 'period': period}
-        sf = ''
-        if source:
-            params['source'] = source
-            sf = ' AND source=:source'
-        try:
-            df = pd.read_sql(text(f"""
-                SELECT code,date,period,open,high,low,close,volume,amount,source
-                FROM minute_kline_period
-                WHERE code=:code AND period=:period {sf}
-                ORDER BY date
-            """), self.db.bind, params=params)
-        except Exception:
+        sf = f" AND source='{source}'" if source else ""
+        rows = get_clickhouse().query(
+            f"SELECT code,date,open,high,low,close,volume,amount,source FROM minute_kline_period WHERE code='{code}' AND period='{period}'{sf} ORDER BY date"
+        )
+        if not rows:
             df = pd.DataFrame()
-        if df.empty and period == '5m':
-            params = {'code': code}
-            sf = ''
-            if source:
-                params['source'] = source
-                sf = ' AND source=:source'
-            df = pd.read_sql(text(f"""
-                SELECT code,date,'5m' AS period,open,high,low,close,volume,amount,source
-                FROM minute_kline
-                WHERE code=:code {sf}
-                ORDER BY date
-            """), self.db.bind, params=params)
+        else:
+            df = pd.DataFrame(rows)
+            # Convert ClickHouse DateTime64 strings to int YYYYMMDDHHMMSS
+            df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y%m%d%H%M%S').astype(int)
         return df.tail(lookback).reset_index(drop=True) if lookback and not df.empty else df.reset_index(drop=True)
 
     def upsert_indicators(self, rows: list[dict]) -> None:

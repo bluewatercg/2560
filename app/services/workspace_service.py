@@ -6,8 +6,11 @@
 from __future__ import annotations
 import json
 
+import pandas as pd
 from sqlalchemy import text
 from sqlalchemy.orm import Session
+
+from app.db.clickhouse import get_clickhouse
 
 _MARKETS = ["sh60", "sh68", "sz00", "sz30"]
 
@@ -161,6 +164,9 @@ def refresh_market_from_db(db: Session, market: str, *, periods: list[str] | Non
 
     periods 可指定需要刷新的周期，默认全部。
     用于操作完成后自动刷新，避免 runner 脚本传递错误日期。
+
+    注意：daily_kline 和 minute_kline_period 从 ClickHouse 读取，
+    technical_indicator 仍从 MySQL 读取。
     """
     ensure_workspace_table(db)
     from app.core.market_scope import market_sql_where
@@ -169,29 +175,44 @@ def refresh_market_from_db(db: Session, market: str, *, periods: list[str] | Non
     replace_fields: set[str] = set()
 
     if periods is None or "daily" in periods:
-        row = db.execute(
-            text(f"SELECT MAX(date) AS d FROM daily_kline WHERE {market_sql_where('code', market)}")
-        ).mappings().first()
-        sets["daily"] = int(row["d"]) if row and row["d"] else None
+        where = market_sql_where("code", market)
+        row = get_clickhouse().query_one(
+            f"SELECT max(date) AS d FROM daily_kline WHERE {where}"
+        )
+        if row and row.get("d"):
+            d = pd.to_datetime(row["d"])
+            sets["daily"] = int(d.strftime("%Y%m%d"))
+        else:
+            sets["daily"] = None
         replace_fields.add("daily")
-        sets["source_daily"] = sets["daily"]  # 导入成功即 DB=源，gap=0
+        sets["source_daily"] = sets["daily"]
         replace_fields.add("source_daily")
 
     if periods is None or "5m" in periods:
-        row = db.execute(
-            text(f"SELECT MAX(date) AS d FROM minute_kline_period WHERE {market_sql_where('code', market)} AND period='5m'")
-        ).mappings().first()
-        sets["k5m"] = int(row["d"]) if row and row["d"] else None
+        where = market_sql_where("code", market)
+        row = get_clickhouse().query_one(
+            f"SELECT max(date) AS d FROM minute_kline_period WHERE period='5m' AND {where}"
+        )
+        if row and row.get("d"):
+            d = pd.to_datetime(row["d"])
+            sets["k5m"] = int(d.strftime("%Y%m%d%H%M%S"))
+        else:
+            sets["k5m"] = None
         replace_fields.add("k5m")
 
     if periods is None or "30m" in periods:
-        row = db.execute(
-            text(f"SELECT MAX(date) AS d FROM minute_kline_period WHERE {market_sql_where('code', market)} AND period='30m'")
-        ).mappings().first()
-        sets["k30m"] = int(row["d"]) if row and row["d"] else None
+        where = market_sql_where("code", market)
+        row = get_clickhouse().query_one(
+            f"SELECT max(date) AS d FROM minute_kline_period WHERE period='30m' AND {where}"
+        )
+        if row and row.get("d"):
+            d = pd.to_datetime(row["d"])
+            sets["k30m"] = int(d.strftime("%Y%m%d%H%M%S"))
+        else:
+            sets["k30m"] = None
         replace_fields.add("k30m")
 
-    # 指标 — 也按 periods 过滤，避免不必要的表扫描
+    # 指标 — 仍从 MySQL 读取
     if periods is None or "daily" in periods:
         row = db.execute(
             text(f"SELECT MAX(date) AS d FROM technical_indicator WHERE {market_sql_where('code', market)} AND period='daily'")

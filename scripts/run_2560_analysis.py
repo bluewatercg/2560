@@ -2,6 +2,7 @@ import argparse
 from sqlalchemy import text
 
 from app.core.market_scope import market_sql_where
+from app.db.clickhouse import get_clickhouse
 from app.db.session import SessionLocal
 from app.services.signal_engine_2560 import SignalEngine2560
 from app.services.statistics_engine import StatisticsEngine
@@ -37,21 +38,13 @@ def load_codes(db, market_type: str, limit: int | None = None):
     if codes:
         return codes
 
-    # fallback：如果 stock_info 为空，从 daily_kline 取
-    sql = f"""
-        SELECT DISTINCT code
-        FROM daily_kline
-        WHERE {where}
-        ORDER BY code
-    """
-
+    # fallback：如果 stock_info 为空，从 ClickHouse daily_kline 取
+    where = market_where(market_type)
+    rows = get_clickhouse().query(f"SELECT DISTINCT code FROM daily_kline WHERE {where} ORDER BY code")
+    codes = [r['code'] for r in rows]
     if limit:
-        sql += " LIMIT :limit"
-        rows = db.execute(text(sql), {"limit": limit}).fetchall()
-    else:
-        rows = db.execute(text(sql)).fetchall()
-
-    return [r[0] for r in rows]
+        codes = codes[:limit]
+    return codes
 
 
 def main():

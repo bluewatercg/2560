@@ -2,6 +2,8 @@ from datetime import date, timedelta
 import json
 import time
 from typing import Optional
+
+import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import text
@@ -9,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.schemas.common import ApiResponse
 from app.core.market_scope import market_sql_where
+from app.db.clickhouse import get_clickhouse
 from app.services.data_freshness_service import can_run_2560, classify_gap
 from app.services.signal_engine_2560 import SignalEngine2560
 from app.services.statistics_engine import StatisticsEngine
@@ -138,15 +141,17 @@ def _market_latest_indicator(db: Session, market: str, period: str) -> int | Non
 
 
 def _market_latest_kline(db: Session, market: str, period: str) -> int | None:
-    """Return the latest date integer (YYYYMMDD) for a market+period, or None."""
+    """Return the latest date integer (YYYYMMDD or YYYYMMDDHHMMSS) for a market+period, or None."""
     table = "minute_kline_period" if period != "daily" else "daily_kline"
     where = market_sql_where("code", market)
     extra = f" AND period='{period}'" if period != "daily" else ""
-    row = db.execute(
-        text(f"SELECT MAX(date) AS d FROM {table} WHERE {where}{extra}"),
-    ).mappings().first()
-    val = row.get("d") if row else None
-    return int(val) if val is not None else None
+    row = get_clickhouse().query_one(
+        f"SELECT max(date) AS d FROM {table} WHERE {where}{extra}"
+    )
+    if not row or not row.get("d"):
+        return None
+    d = pd.to_datetime(row["d"])
+    return int(d.strftime("%Y%m%d%H%M%S")) if period != "daily" else int(d.strftime("%Y%m%d"))
 
 
 def _market_source_latest(db: Session, market: str) -> int | None:
@@ -193,12 +198,13 @@ def _market_source_latest(db: Session, market: str) -> int | None:
             codes.append(f"{digits[-6:]}")
     if not codes:
         return None
-    r = db.execute(
-        text(f"SELECT MAX(date) AS d FROM {table} WHERE code IN :codes"),
-        {"codes": tuple(codes)},
-    ).mappings().first()
-    val = r.get("d") if r else None
-    return int(val) if val is not None else None
+    codes_str = ",".join(f"'{c}'" for c in codes)
+    r = get_clickhouse().query_one(
+        f"SELECT MAX(date) AS d FROM daily_kline WHERE code IN ({codes_str})"
+    )
+    if not r or not r.get("d"):
+        return None
+    return int(pd.to_datetime(r["d"]).strftime("%Y%m%d"))
 
 
 def _zero_hit_explain(db: Session, today_int: int, funnel_summary: dict) -> dict:
@@ -565,23 +571,21 @@ def build_probe(db: Session, market_type: str = 'all', limit: int = 500, q: Opti
     ti_map = {(r['code'], r['period']): r for r in ti_rows}
 
     def count_map(sql: str) -> dict:
-        return dict(db.execute(text(sql), in_params).fetchall())
+        return dict(get_clickhouse().query(sql))
 
-    k30 = count_map(f"SELECT code, COUNT(*) cnt FROM minute_kline_period WHERE code IN {clause} AND period='30m' GROUP BY code")
-    k5 = count_map(f"SELECT code, COUNT(*) cnt FROM minute_kline_period WHERE code IN {clause} AND period='5m' GROUP BY code")
-    kd = count_map(f"SELECT code, COUNT(*) cnt FROM daily_kline WHERE code IN {clause} GROUP BY code")
+    k30 = count_map(f"SELECT code, count() AS cnt FROM minute_kline_period WHERE code IN {clause} AND period='30m' GROUP BY code")
+    k5 = count_map(f"SELECT code, count() AS cnt FROM minute_kline_period WHERE code IN {clause} AND period='5m' GROUP BY code")
+    kd = count_map(f"SELECT code, count() AS cnt FROM daily_kline WHERE code IN {clause} GROUP BY code")
 
     kline_sql = f"""
-        SELECT mk.code,mk.date,mk.close FROM minute_kline_period mk
-        JOIN (
-          SELECT code, MAX(date) AS max_date
-          FROM minute_kline_period
-          WHERE code IN {clause} AND period='30m'
-          GROUP BY code
-        ) x ON mk.code=x.code AND mk.date=x.max_date
-        WHERE mk.period='30m'
+        SELECT code,date,close FROM minute_kline_period WHERE code IN {clause} AND period='30m'
+          AND date = (SELECT max(date) FROM minute_kline_period WHERE code = mk.code AND period='30m' AND code IN {clause})
     """
-    latest_kline = {r['code']: dict(r) for r in db.execute(text(kline_sql), in_params).mappings().all()}
+    # Simpler approach: query latest 30m per code
+    latest_klines = get_clickhouse().query(
+        f"SELECT code,date,close FROM minute_kline_period WHERE code IN {clause} AND period='30m' ORDER BY date DESC LIMIT 1 BY code"
+    )
+    latest_kline = {r['code']: r for r in latest_klines}
 
     items = []
     reason_counter = {}

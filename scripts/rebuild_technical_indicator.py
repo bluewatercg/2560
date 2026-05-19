@@ -22,6 +22,7 @@ import pandas as pd
 from sqlalchemy import text
 
 from app.core.market_scope import market_sql_where
+from app.db.clickhouse import get_clickhouse
 from app.db.session import SessionLocal
 
 
@@ -119,10 +120,6 @@ def get_period_range(period: str, start: str, end: str):
     return minute_start_int(start), minute_end_int(end)
 
 
-def source_table(period: str) -> str:
-    return 'daily_kline' if period == 'daily' else 'minute_kline_period'
-
-
 def input_source(period: str) -> str:
     if period == 'daily':
         return 'vipdoc'
@@ -143,55 +140,37 @@ def select_source_rows(df: pd.DataFrame, source: str) -> pd.DataFrame:
     return df.sort_values(['date']).drop_duplicates(subset=['date'], keep='last').reset_index(drop=True)
 
 
-def get_codes(db, period: str, start_i: int, end_i: int, market_type: str, limit_codes: int | None):
+def get_codes(period: str, start_i: int, end_i: int, market_type: str, limit_codes: int | None):
     src = input_source(period)
+    # Convert int dates to ClickHouse date strings
+    start_s = str(start_i)[:4] + '-' + str(start_i)[4:6] + '-' + str(start_i)[6:8]
+    end_s = str(end_i)[:4] + '-' + str(end_i)[4:6] + '-' + str(end_i)[6:8]
     if period == 'daily':
-        sql = f"""
-            SELECT DISTINCT code
-            FROM daily_kline
-            WHERE date BETWEEN :s AND :e
-              AND source=:source
-              AND {market_where(market_type)}
-            ORDER BY code
-        """
-        params = {'s': start_i, 'e': end_i, 'source': src}
+        q = f"SELECT DISTINCT code FROM daily_kline WHERE source='{src}' AND date>='{start_s}' AND date<='{end_s}' AND {market_where(market_type)} ORDER BY code"
     else:
-        sql = f"""
-            SELECT DISTINCT code
-            FROM minute_kline_period
-            WHERE period=:period
-              AND source=:source
-              AND date BETWEEN :s AND :e
-              AND {market_where(market_type)}
-            ORDER BY code
-        """
-        params = {'period': period, 's': start_i, 'e': end_i, 'source': src}
-    codes = [r[0] for r in db.execute(text(sql), params).fetchall()]
+        q = f"SELECT DISTINCT code FROM minute_kline_period WHERE period='{period}' AND source='{src}' AND date>='{start_s}' AND date<='{end_s}' AND {market_where(market_type)} ORDER BY code"
+    codes = [r['code'] for r in get_clickhouse().query(q)]
     if limit_codes:
         codes = codes[:limit_codes]
     return codes
 
 
-def load_one_code(db, period: str, code: str, start_i: int, end_i: int) -> pd.DataFrame:
+def load_one_code(period: str, code: str, start_i: int, end_i: int) -> pd.DataFrame:
     src = input_source(period)
+    start_s = str(start_i)[:4] + '-' + str(start_i)[4:6] + '-' + str(start_i)[6:8]
+    end_s = str(end_i)[:4] + '-' + str(end_i)[4:6] + '-' + str(end_i)[6:8]
     if period == 'daily':
-        sql = """
-            SELECT code,date,source,open,high,low,close,volume
-            FROM daily_kline
-            WHERE code=:code AND source=:source AND date BETWEEN :s AND :e
-            ORDER BY date
-        """
-        params = {'code': code, 'source': src, 's': start_i, 'e': end_i}
+        q = f"SELECT code,date,source,open,high,low,close,volume FROM daily_kline WHERE code='{code}' AND source='{src}' AND date>='{start_s}' AND date<='{end_s}' ORDER BY date"
     else:
-        sql = """
-            SELECT code,date,source,open,high,low,close,volume
-            FROM minute_kline_period
-            WHERE code=:code AND period=:period AND source=:source AND date BETWEEN :s AND :e
-            ORDER BY date
-        """
-        params = {'code': code, 'period': period, 'source': src, 's': start_i, 'e': end_i}
-    rows = db.execute(text(sql), params).mappings().all()
-    df = pd.DataFrame([dict(r) for r in rows]) if rows else pd.DataFrame()
+        q = f"SELECT code,date,source,open,high,low,close,volume FROM minute_kline_period WHERE code='{code}' AND period='{period}' AND source='{src}' AND date>='{start_s}' AND date<='{end_s}' ORDER BY date"
+    rows = get_clickhouse().query(q)
+    df = pd.DataFrame(rows) if rows else pd.DataFrame()
+    # Convert ClickHouse date strings to int matching MySQL schema
+    if not df.empty and 'date' in df.columns:
+        if period == 'daily':
+            df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y%m%d').astype(int)
+        else:
+            df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y%m%d%H%M%S').astype(int)
     return select_source_rows(df, src)
 
 
@@ -226,7 +205,7 @@ def rebuild_period(period: str, start: str, end: str, market_type: str, limit_co
     print(f"\n=== Rebuild {period} technical_indicator: {start_i} ~ {end_i}, market={market_type} ===")
     total = 0
     with SessionLocal() as db:
-        codes = get_codes(db, period, start_i, end_i, market_type, limit_codes)
+        codes = get_codes(period, start_i, end_i, market_type, limit_codes)
         print(f"codes={len(codes)}")
         insert_sql = text("""
             INSERT INTO technical_indicator
@@ -243,7 +222,7 @@ def rebuild_period(period: str, start: str, end: str, market_type: str, limit_co
              :is_abnormal_bar,:data_quality_status)
         """)
         for idx, code in enumerate(codes, 1):
-            df = load_one_code(db, period, code, start_i, end_i)
+            df = load_one_code(period, code, start_i, end_i)
             if df.empty:
                 continue
             ind = compute_indicators(df)

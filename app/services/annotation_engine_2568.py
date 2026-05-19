@@ -8,6 +8,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.market_scope import market_sql_where
+from app.db.clickhouse import get_clickhouse
 
 
 @dataclass
@@ -121,28 +122,21 @@ class AnnotationEngine2568:
     def read_recent_daily(self, codes: list[str], days: int = 8) -> dict[str, pd.DataFrame]:
         if not codes:
             return {}
-        params = {f"c{i}": c for i, c in enumerate(codes)}
-        clause = "(" + ",".join(f":c{i}" for i in range(len(codes))) + ")"
-        sql = f"""
-        SELECT *
-        FROM (
-            SELECT code,date,open,high,low,close,volume,amount,source,
-                   ROW_NUMBER() OVER (PARTITION BY code ORDER BY date DESC) AS rn
-            FROM daily_kline
-            WHERE code IN {clause}
-        ) x
-        WHERE rn <= :days
-        ORDER BY code, date
-        """
-        params["days"] = days
-        rows = [dict(r) for r in self.db.execute(text(sql), params).mappings().all()]
         out: dict[str, pd.DataFrame] = {}
         for code in codes:
-            df = pd.DataFrame([r for r in rows if r["code"] == code])
-            if not df.empty:
-                for c in ["open", "high", "low", "close", "volume", "amount"]:
-                    if c in df.columns:
-                        df[c] = pd.to_numeric(df[c], errors="coerce")
+            rows = get_clickhouse().query(
+                f"SELECT code,date,open,high,low,close,volume,amount,source FROM daily_kline WHERE code='{code}' ORDER BY date DESC LIMIT {days}"
+            )
+            if not rows:
+                out[code] = pd.DataFrame()
+                continue
+            df = pd.DataFrame(rows)
+            # Convert ClickHouse Date strings to int YYYYMMDD
+            df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y%m%d').astype(int)
+            for c in ["open", "high", "low", "close", "volume", "amount"]:
+                if c in df.columns:
+                    df[c] = pd.to_numeric(df[c], errors="coerce")
+            df = df.sort_values(["date"]).reset_index(drop=True)
             out[code] = df
         return out
 
