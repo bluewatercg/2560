@@ -112,9 +112,11 @@
             我确认执行全量历史导入，可能写入数百万/千万行
           </label>
         </div>
+      </div>
 
-        <div id="importLiveCards" style="display:none;margin:16px 0"></div>
-        <div id="importLiveCard" style="display:none;margin:16px 0">
+      <!-- 实时导入进度（独立面板） -->
+      <div id="importLiveCards" style="display:none;margin:16px 0"></div>
+      <div id="importLiveCard" style="display:none;margin:16px 0">
           <div style="border:1px solid #334155;border-radius:12px;background:#0F172A;padding:20px">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
               <div style="display:flex;align-items:center;gap:10px">
@@ -137,7 +139,7 @@
             <div id="liveCardActions" style="margin-top:16px;display:flex;gap:8px"></div>
           </div>
         </div>
-        <pre id="importScanResult" class="json-box" style="display:none;margin-top:16px"></pre>
+        <div id="importScanResult" class="json-box" style="display:none;margin-top:16px;padding:16px;border:1px solid #334155;border-radius:8px;background:#1E293B;color:#F8FAFC;font-family:monospace;font-size:13px;white-space:pre-wrap"></div>
         <pre id="importActionResult" class="json-box" style="display:none">等待操作</pre>
       </div>
 
