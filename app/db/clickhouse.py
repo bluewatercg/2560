@@ -38,14 +38,17 @@ class ClickHouseClient:
 
     def query(self, query: str, fmt: str = "JSONEachRow") -> list[dict]:
         """Execute a SELECT query, return list of dicts."""
+        import json
         query_with_fmt = f"{query.rstrip(';')} FORMAT {fmt}"
         with httpx.Client(timeout=60) as client:
             r = client.post(self.url, params=self._params(query_with_fmt))
             r.raise_for_status()
-            if not r.text.strip():
+            text = r.text.strip()
+            if not text:
                 return []
-            import json
-            return json.loads(r.text)
+            if fmt == "JSONEachRow":
+                return [json.loads(line) for line in text.split('\n') if line.strip()]
+            return json.loads(text)
 
     def query_one(self, query: str) -> dict | None:
         """Execute a SELECT query, return first row or None."""
