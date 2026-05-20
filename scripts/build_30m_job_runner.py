@@ -127,7 +127,7 @@ def main():
     # 更新 workspace_status：构建30m后刷新对应market的30m数据记录
     if status == "success":
         from app.services.workspace_service import refresh_market_from_db
-        from app.core.market_scope import VALID_MARKETS
+        from app.core.market_scope import SUPPORTED_MARKET_SCOPES as VALID_MARKETS
         from app.db.session import SessionLocal as _DB
         actual_market = a.market or "all"
         if actual_market == "all":
