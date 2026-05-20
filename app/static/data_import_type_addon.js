@@ -556,29 +556,36 @@
   }
 
   function renderLiveStatus(d, job){
-    const box = $('importLiveStatus');
-    if(!box) return;
-    if(!d){
-      box.textContent = '暂无正在导入的批次';
+    // Delegate to the page's renderLiveStatus which writes to #importLiveCard
+    if(window.renderLiveStatus && window.renderLiveStatus !== renderLiveStatus){
+      window.renderLiveStatus(d, job);
       return;
     }
+    // Fallback: write to #importLiveCard directly
+    const card = $('importLiveCard');
+    if(!card) return;
+    if(!d){ card.style.display = 'none'; return; }
+    card.style.display = '';
     const total = Number((job && job.total) || d.job_progress_total || d.total_files || 0);
     const done = Number((job && job.done) || d.job_progress_current || d.done_files || 0);
     const percentValue = total ? (done * 100 / total) : Number((job && job.percent) ?? d.progress_percent ?? 0);
-    const percent = total ? percentValue.toFixed(2) + '%' : '-';
-    const status = (job && job.status) || d.job_status || d.status || '-';
-    const workers = (job && job.shards) || d.workers || '-';
-    const runningFiles = d.running_files ?? '-';
-    box.textContent =
-      `当前批次：#${d.id}\n` +
-      `任务：#${d.job_id || (job && job.id) || '-'} ${d.progress_url || activeImportProgressUrl || ''}\n` +
-      `状态：${status}\n` +
-      `并发：${workers}，运行中文件：${runningFiles}\n` +
-      `进度：${done}/${total} (${percent})\n` +
-      `成功：${(job && job.success_count) ?? d.job_success_count ?? d.success_files ?? 0}，失败：${(job && job.failed_count) ?? d.job_failed_count ?? d.failed_files ?? 0}，当前：${(job && job.current_code) || d.current_code || '-'}\n` +
-      `批次结果：成功 ${d.success_files || 0}，失败 ${d.failed_files || 0}，记录数 ${d.total_rows || 0}\n` +
-      `数据范围：${d.data_range || '-'}\n` +
-      `更新时间：${d.updated_at || '-'}`;
+    const status = ((job && job.status) || d.job_status || d.status || '-').toLowerCase();
+    const iconMap = { running: '⟳', success: '✓', failed: '✗', queued: '◷', pending: '◷' };
+    const colorMap = { running: '#3B82F6', success: '#22C55E', failed: '#EF4444', queued: '#F59E0B', pending: '#94A3B8' };
+    const labelMap = { running: '构建中', success: '构建完成', failed: '构建失败', queued: '排队中', pending: '等待中' };
+    const icon = iconMap[status] || '●';
+    const color = colorMap[status] || '#94A3B8';
+    const label = labelMap[status] || status;
+    const si = $('liveCardStatusIcon'); if(si){ si.textContent = icon; si.style.color = color; }
+    const st = $('liveCardStatusText'); if(st){ st.textContent = `#${d.id} ${label}`; st.style.color = color; }
+    const pe = $('liveCardPercent'); if(pe) pe.textContent = total ? percentValue.toFixed(1)+'%' : '-';
+    const pb = $('liveCardProgressBar'); if(pb) pb.style.width = (total ? Math.min(percentValue,100) : 0)+'%';
+    const de = $('liveCardDone'); if(de) de.textContent = total ? `${done}/${total}` : `${done}/-`;
+    const se = $('liveCardSuccess'); if(se) se.textContent = (job && job.success_count) ?? d.success_files ?? 0;
+    const fe = $('liveCardFailed'); if(fe) fe.textContent = (job && job.failed_count) ?? d.failed_files ?? 0;
+    const re = $('liveCardRows'); if(re) re.textContent = d.total_rows ?? 0;
+    const sa = $('liveCardStarted'); if(sa) sa.textContent = d.started_at ?? '-';
+    const ue = $('liveCardUpdated'); if(ue) ue.textContent = d.updated_at ?? '-';
   }
 
   async function refreshImportWatch(batchId, progressUrl){

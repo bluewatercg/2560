@@ -748,6 +748,7 @@
   };
 
   // Expose multi-lane API for addon to share the same state
+  window.renderLiveStatus = renderLiveStatus;
   window.activeImportLanes = activeImportLanes;
   window.startMultiLaneWatch = startMultiLaneWatch;
   window.renderMultiLaneCards = renderMultiLaneCards;
