@@ -48,8 +48,9 @@ class Build30mRequest(BaseModel):
 class RebuildIndicatorRequest(BaseModel):
     start: str
     end: str
-    market: str = Field(default="sh60")
+    market: str = Field(default="all")
     periods: str = Field(default="daily,5m,30m")
+    workers: int = Field(default=4, ge=1, le=128)
     limit_codes: Optional[int] = None
     commit_every: int = Field(default=50, ge=1, le=1000)
 
@@ -694,6 +695,40 @@ def _enqueue_single_build30m(db, payload: Build30mRequest, market: str) -> dict:
 def rebuild_indicators(payload: RebuildIndicatorRequest, db: Session = Depends(get_db)):
     _ensure_import_tables(db)
     range_key = f"start={payload.start};end={payload.end};periods={payload.periods}"
+
+    # ── market=all: split into 4 lane-specific jobs ──
+    if payload.market.lower() == "all":
+        jobs = []
+        for lane in MARKET_LANES:
+            existing = db.execute(text("""
+                SELECT b.id, b.status, b.message, b.started_at, b.updated_at, e.id AS job_id
+                FROM data_import_batch b
+                LEFT JOIN job_execution e ON e.batch_id = CAST(b.id AS CHAR) AND e.job_type='rebuild_indicator'
+                WHERE b.import_type='rebuild_indicator'
+                  AND b.market=:market
+                  AND b.status IN ('queued','pending','running','cancelling')
+                  AND b.message LIKE :range_key
+                ORDER BY b.id DESC
+                LIMIT 1
+            """), {
+                "market": lane,
+                "range_key": f"%{range_key}%",
+            }).mappings().first()
+            if existing:
+                jobs.append({
+                    "market": lane,
+                    "skipped": True,
+                    "reason": "same rebuild_indicator job already queued/running",
+                    "import_batch_id": existing["id"],
+                    "job_id": existing["job_id"],
+                    "status": existing["status"],
+                })
+                continue
+            job_info = _enqueue_single_rebuild(db, payload, lane)
+            jobs.append({"market": lane, **job_info, "skipped": False})
+        return {"ok": True, "lanes": jobs, "message": "rebuild_indicator jobs queued"}
+
+    # ── single market ──
     existing = db.execute(text("""
         SELECT b.id, b.status, b.message, b.started_at, b.updated_at, e.id AS job_id
         FROM data_import_batch b
@@ -714,18 +749,25 @@ def rebuild_indicators(payload: RebuildIndicatorRequest, db: Session = Depends(g
             "status": existing["status"],
             "message": "same rebuild_indicator job already queued/running",
         }
+    job_info = _enqueue_single_rebuild(db, payload, payload.market)
+    return {"ok": True, **job_info, "message": "rebuild_indicator job queued"}
 
+
+def _enqueue_single_rebuild(db, payload: RebuildIndicatorRequest, market: str) -> dict:
+    """Create one batch + one job for a single market rebuild_indicator."""
+    _ensure_import_tables(db)
+    range_key = f"start={payload.start};end={payload.end};periods={payload.periods}"
     res = db.execute(text("""
         INSERT INTO data_import_batch
         (import_type, source_dir, market, status, total_files, started_at, message)
         VALUES ('rebuild_indicator', 'technical_indicator', :market, 'queued', 0, NOW(), :message)
-    """), {"market": payload.market, "message": f"rebuild indicators queued, {range_key}"})
+    """), {"market": market, "message": f"rebuild indicators queued, {range_key}"})
     batch_id = int(res.lastrowid)
     job_id = create_job_execution(
         db,
         "rebuild_indicator",
-        market=payload.market,
-        shards=1,
+        market=market,
+        shards=payload.workers,
         batch_id=str(batch_id),
         total=0,
         message=f"queued rebuild_indicator batch={batch_id}",
@@ -736,17 +778,17 @@ def rebuild_indicators(payload: RebuildIndicatorRequest, db: Session = Depends(g
         "import_batch_id": batch_id,
         "start": payload.start,
         "end": payload.end,
-        "market": payload.market,
+        "market": market,
         "periods": payload.periods,
+        "workers": payload.workers,
         "limit_codes": payload.limit_codes,
         "commit_every": payload.commit_every,
     })
     return {
-        "ok": True,
         "import_batch_id": batch_id,
         "job_id": job_id,
+        "market": market,
         "status": "queued",
-        "message": "rebuild_indicator job queued",
         "progress_url": f"/api/jobs/executions/{job_id}/progress",
     }
 

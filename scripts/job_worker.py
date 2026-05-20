@@ -116,6 +116,8 @@ def build_job_command(job_type: str, payload: dict[str, Any]) -> tuple[list[str]
             cmd.extend(["--limit-codes", str(payload["limit_codes"])])
         if payload.get("commit_every") is not None:
             cmd.extend(["--commit-every", str(payload["commit_every"])])
+        if payload.get("workers") is not None:
+            cmd.extend(["--workers", str(payload["workers"])])
         return cmd, env
     if job_type == "run_2560":
         env["MARKET"] = str(payload.get("market", "all"))

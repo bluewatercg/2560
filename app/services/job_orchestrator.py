@@ -86,6 +86,9 @@ def ensure_job_tables(db: Session) -> None:
             KEY idx_shard (job_id, shard_id)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     """))
+    if not _column_exists(db, "job_task_item", "shard_id"):
+        db.execute(text("ALTER TABLE job_task_item ADD COLUMN shard_id INT NOT NULL DEFAULT 0 AFTER job_id"))
+        db.execute(text("ALTER TABLE job_task_item ADD KEY idx_shard (job_id, shard_id)"))
     db.commit()
 
 

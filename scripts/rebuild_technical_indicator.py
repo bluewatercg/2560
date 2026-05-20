@@ -32,6 +32,7 @@ def parse_args():
     p.add_argument('--end', required=True, help='YYYY-MM-DD')
     p.add_argument('--market-type', default='all', help='all/sh/sz/sh60/sh68/sz00/sz30')
     p.add_argument('--periods', default='daily,5m,30m', help='daily,5m,30m')
+    p.add_argument('--workers', type=int, default=4, help='并发线程数')
     p.add_argument('--limit-codes', type=int, default=None, help='调试用：限制每个周期处理前 N 个 code')
     p.add_argument('--commit-every', type=int, default=50, help='每处理 N 个 code commit 一次')
     return p.parse_args()

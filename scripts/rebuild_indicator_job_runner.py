@@ -25,6 +25,7 @@ def parse_args():
     p.add_argument("--periods", default=os.getenv("PERIODS", "daily,5m,30m"))
     p.add_argument("--limit-codes", type=int, default=int(os.getenv("LIMIT_CODES", "0")) or None)
     p.add_argument("--commit-every", type=int, default=int(os.getenv("COMMIT_EVERY", "50")))
+    p.add_argument("--workers", type=int, default=int(os.getenv("WORKERS", "4")))
     return p.parse_args()
 
 
@@ -63,6 +64,8 @@ def main():
         a.periods,
         "--commit-every",
         str(a.commit_every),
+        "--workers",
+        str(a.workers),
     ]
     if a.limit_codes:
         cmd.extend(["--limit-codes", str(a.limit_codes)])

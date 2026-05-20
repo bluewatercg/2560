@@ -431,12 +431,16 @@ def execution_shards(job_id: int, db: Session = Depends(get_db)):
                             "updated_at": None,
                         })
 
+                    # Aggregate totals from shard items
+                    done_all = sum(i["done"] for i in items)
+                    total_all = len(files_list)
+
                     return {
                         "ok": True,
                         "job_id": job_id,
-                        "total": len(files_list),
-                        "done": done,
-                        "percent": round(done * 100 / len(files_list), 2) if files_list else 0.0,
+                        "total": total_all,
+                        "done": done_all,
+                        "percent": round(done_all * 100 / total_all, 2) if total_all else 0.0,
                         "items": items,
                     }
 
