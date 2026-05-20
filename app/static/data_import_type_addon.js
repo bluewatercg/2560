@@ -754,6 +754,14 @@
           const data = await postJson('/api/import/run', p);
           if(out) out.textContent = JSON.stringify(data, null, 2);
           if(data && data.lanes){
+            const skipped = data.lanes.filter(l => l.skipped);
+            const queued = data.lanes.filter(l => !l.skipped);
+            if(queued.length === 0){
+              const msgs = skipped.map(l => `${l.market}: ${l.reason || '已跳过'}`).join('\n');
+              alert(`所有市场已有相同导入任务或无文件：\n${msgs}`);
+              await loadImportBatches();
+              return;
+            }
             setBatchTypeFilter('vipdoc');
             startMultiLaneWatch(data.lanes);
           }else if(data && data.import_batch_id){
@@ -807,6 +815,18 @@
             return;
           }
           if(data && data.lanes){
+            const skipped = data.lanes.filter(l => l.skipped);
+            const queued = data.lanes.filter(l => !l.skipped);
+            if(queued.length === 0){
+              const msgs = skipped.map(l => `${l.market}: ${l.reason || '已在运行中'}`).join('\n');
+              alert(`所有市场已有相同 30m 构建任务：\n${msgs}`);
+              await loadImportBatches();
+              return;
+            }
+            if(skipped.length > 0){
+              const msg = skipped.map(l => `${l.market} 已在运行中，已跳过`).join('\n');
+              out.textContent = msg + '\n\n' + JSON.stringify(data, null, 2);
+            }
             startMultiLaneWatch(data.lanes);
             await loadImportBatches();
           }else if(data && data.import_batch_id){
@@ -858,6 +878,18 @@
             return;
           }
           if(data && data.lanes){
+            const skipped = data.lanes.filter(l => l.skipped);
+            const queued = data.lanes.filter(l => !l.skipped);
+            if(queued.length === 0){
+              const msgs = skipped.map(l => `${l.market}: ${l.reason || '已在运行中'}`).join('\n');
+              alert(`所有市场已有相同指标重算任务：\n${msgs}`);
+              await loadImportBatches();
+              return;
+            }
+            if(skipped.length > 0){
+              const msg = skipped.map(l => `${l.market} 已在运行中，已跳过`).join('\n');
+              out.textContent = msg + '\n\n' + JSON.stringify(data, null, 2);
+            }
             startMultiLaneWatch(data.lanes);
             await loadImportBatches();
           }else if(data && data.import_batch_id){
