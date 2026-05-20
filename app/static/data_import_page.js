@@ -3,9 +3,7 @@
   function $(id){ return document.getElementById(id); }
   function all(sel, root=document){ return Array.from(root.querySelectorAll(sel)); }
   let importWatchTimer = null;
-  let activeImportLanes = {};  // { sh60: {batchId, jobId, progressUrl}, sh68: {...}, ... }
-  let activeImportBatchId = null;  // backward compat: single batch for single-market imports
-  let activeImportProgressUrl = null;
+  let activeImportLanes = {};  // { sh60: {batchId, jobId, progressUrl, label, detail, job}, ... }
   let activeImportMode = 'check';
 
   async function getJson(url){
@@ -144,6 +142,28 @@
         <pre id="importActionResult" class="json-box" style="display:none">等待操作</pre>
       </div>
 
+      <!-- 导入批次列表（步骤2/3/4 共用，按类型过滤） -->
+      <div id="importBatchPanel" class="panel import-panel" style="display:none;margin-top:16px">
+        <div class="panel-head split">
+          <div>
+            <h3>导入批次记录</h3>
+            <p class="muted" style="margin:4px 0 0">点击行可追踪该批次进度。</p>
+          </div>
+          <div class="filters" style="gap:8px;flex-wrap:wrap">
+            <select id="importBatchTypeFilter" style="min-width:140px">
+              <option value="all">全部类型</option>
+              <option value="vipdoc">行情导入</option>
+              <option value="build_30m">30m 构建</option>
+              <option value="rebuild_indicator">指标重算</option>
+            </select>
+            <button id="refreshImportBatchesBtn" type="button">刷新批次</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table id="importBatchTable"></table>
+        </div>
+      </div>
+
       <div id="importFilePanel" class="panel import-panel import-panel-files" style="display:none">
         <div class="panel-head split">
           <div>
@@ -228,15 +248,29 @@
     if(scanResult) scanResult.style.display = step === 1 ? '' : 'none';
 
     // 步骤1不显示导入进度卡片，步骤2+允许显示
+    // 切步骤时立即清空旧卡片，防止上一步骤的数据残留
     const liveCards = $('importLiveCards');
     const liveCard = $('importLiveCard');
-    if(liveCards) liveCards.style.display = step >= 2 ? liveCards.style.display : 'none';
-    if(liveCard) liveCard.style.display = step >= 2 ? liveCard.style.display : 'none';
-    if(step === 1 && window.activeImportLanes && Object.keys(window.activeImportLanes).length > 0){
-      if(liveCards) liveCards.style.display = 'none';
+    if(liveCards){
+      liveCards.innerHTML = '';
+      liveCards.style.display = 'none';
+    }
+    if(liveCard) liveCard.style.display = 'none';
+
+    // 批次列表面板：步骤2/3/4显示，步骤1隐藏
+    const importBatchPanel = $('importBatchPanel');
+    if(importBatchPanel) importBatchPanel.style.display = step >= 2 ? '' : 'none';
+
+    // 自动同步 importBatchTypeFilter 与当前步骤
+    const batchTypeFilter = $('importBatchTypeFilter');
+    if(batchTypeFilter){
+      if(step === 2) batchTypeFilter.value = 'vipdoc';
+      else if(step === 3) batchTypeFilter.value = 'build_30m';
+      else if(step === 4) batchTypeFilter.value = 'rebuild_indicator';
+      else batchTypeFilter.value = 'all';
     }
 
-    // 步骤4不再自动显示批次面板（批次/执行/shard 已降级为高级，由折叠按钮控制）
+    // 文件明细面板默认隐藏
     const importFilePanel = $('importFilePanel');
     if(importFilePanel) importFilePanel.style.display = 'none';
 
@@ -248,9 +282,17 @@
 
     activeImportMode = step === 1 ? 'check' : step === 4 ? 'batches' : 'run';
 
-    // Switching step: clear old lanes and reload for current step type
+    // Switching step: clear old lanes and reload for current step type.
+    // Filter sync (importBatchTypeFilter) must happen BEFORE calling addon's
+    // loadImportBatches so the table renders with the correct type filter.
     stopImportWatch();
     loadImportBatches().catch(() => {});
+    // Defer addon call slightly so the DOM filter value is already set
+    setTimeout(function(){
+      if(window._addonLoadImportBatches && window._addonLoadImportBatches !== loadImportBatches){
+        window._addonLoadImportBatches().catch(() => {});
+      }
+    }, 0);
   }
 
   function cell(v){
@@ -282,21 +324,26 @@
       const allowed = stepTypeMap[activeImportStep] || null;
 
       if(rows && rows.length){
-        // Group by market: pick latest running or fallback to latest overall
+        // Build per-market "best" batch map:
+        // Rows come DESC by id, so first-seen = newest.
+        // running beats any non-running for the same market.
         const latest = {};
         for(const r of rows){
           if(allowed && !allowed.includes(r.import_type)) continue;
           const m = r.market;
           if(!m) continue;
-          if(!latest[m]) latest[m] = r;
-          if(r.status === 'running' && !activeImportLanes[m]){
+          if(!latest[m]){
             latest[m] = r;
-            break; // running takes priority
+          } else if(['running','queued','pending'].includes(String(r.status||'').toLowerCase())
+                    && !['running','queued','pending'].includes(String(latest[m].status||'').toLowerCase())){
+            latest[m] = r; // active beats terminal within same market
           }
         }
 
         for(const [market, r] of Object.entries(latest)){
-          if(!activeImportLanes[market]){
+          const existing = activeImportLanes[market];
+          if(!existing){
+            // New market — add
             activeImportLanes[market] = {
               batchId: r.id,
               jobId: r.job_id,
@@ -305,13 +352,46 @@
               detail: r,
               job: {},
             };
+          } else {
+            // Existing market — upgrade to newer active batch if current is stale/terminal
+            const curStatus = String(
+              (existing.detail && existing.detail.status) ||
+              (existing.job && existing.job.status) || ''
+            ).toLowerCase();
+            const curIsTerminal = ['success','failed','cancelled'].includes(curStatus);
+            const newIsActive   = ['running','queued','pending'].includes(String(r.status||'').toLowerCase());
+            const newIsNewer    = Number(r.id) > Number(existing.batchId);
+            if(newIsNewer && (curIsTerminal || newIsActive)){
+              // Upgrade: current lane was stuck on a terminal/stale batch; switch to newer one
+              existing.batchId    = r.id;
+              existing.jobId      = r.job_id;
+              existing.progressUrl = r.progress_url || null;
+              existing.detail     = r;
+              existing.job        = {};
+            }
           }
         }
 
-        // Render multi-lane if we have 2+ markets
-        if(Object.keys(activeImportLanes).length > 1){
-          renderMultiLaneCards();
+        // Always re-render (even when empty) so stale cards from a previous step are cleared
+        renderMultiLaneCards();
+
+        // Auto-restart 5s polling if there are active lanes but no timer running
+        // (happens after step-switch which calls stopImportWatch first)
+        if(!importWatchTimer && Object.keys(activeImportLanes).length > 0){
+          const hasActive = Object.values(activeImportLanes).some(l => {
+            const s = String((l.detail&&l.detail.status)||(l.job&&l.job.status)||'').toLowerCase();
+            return ['running','queued','pending','cancelling'].includes(s);
+          });
+          if(hasActive){
+            refreshMultiLaneWatch().catch(() => {});
+            importWatchTimer = setInterval(function(){
+              refreshMultiLaneWatch().catch(() => {});
+            }, 5000);
+          }
         }
+      } else {
+        // No matching batches for this step — clear cards
+        renderMultiLaneCards();
       }
     }catch(e){
       // swallow
@@ -356,75 +436,12 @@
   }
 
   function renderLiveStatus(d, job){
+    // #importLiveCard is a legacy single-batch card.
+    // It is now permanently hidden: the multi-lane cards (#importLiveCards) show
+    // all markets with real-time status, making this card redundant and confusing.
+    // We keep the function (for backward compat calls) but never show the card.
     const card = $('importLiveCard');
-    if(!card) return;
-
-    if(!d){
-      card.style.display = 'none';
-      return;
-    }
-
-    card.style.display = '';
-
-    const total = Number((job && job.total) || d.job_progress_total || d.total_files || 0);
-    const done = Number((job && job.done) || d.job_progress_current || d.done_files || 0);
-    const percentValue = total ? (done * 100 / total) : Number((job && job.percent) ?? d.progress_percent ?? 0);
-    const percent = total ? percentValue.toFixed(1) + '%' : '-';
-    const status = ((job && job.status) || d.job_status || d.status || '-').toLowerCase();
-    const success = (job && job.success_count) ?? d.job_success_count ?? d.success_files ?? 0;
-    const failed = (job && job.failed_count) ?? d.job_failed_count ?? d.failed_files ?? 0;
-    const rows = d.total_rows || 0;
-    const started = d.started_at || '-';
-    const updated = d.updated_at || '-';
-
-    // Status icon & text
-    const iconMap = { running: '⟳', success: '✓', failed: '✗', queued: '◷', pending: '◷' };
-    const colorMap = { running: '#3B82F6', success: '#22C55E', failed: '#EF4444', queued: '#F59E0B', pending: '#94A3B8' };
-    const labelMap = { running: '导入中', success: '导入完成', failed: '导入失败', queued: '排队中', pending: '等待中' };
-    const icon = iconMap[status] || '●';
-    const color = colorMap[status] || '#94A3B8';
-    const label = labelMap[status] || status;
-
-    const statusIcon = $('liveCardStatusIcon');
-    const statusText = $('liveCardStatusText');
-    if(statusIcon){ statusIcon.textContent = icon; statusIcon.style.color = color; }
-    if(statusText){ statusText.textContent = `#${d.id} ${label}`; statusText.style.color = color; }
-
-    // Percent
-    const pctEl = $('liveCardPercent');
-    if(pctEl) pctEl.textContent = percent;
-
-    // Progress bar
-    const bar = $('liveCardProgressBar');
-    if(bar) bar.style.width = (total ? Math.min(percentValue, 100) : 0) + '%';
-
-    // Stats
-    const doneEl = $('liveCardDone');
-    if(doneEl) doneEl.textContent = total ? `${done}/${total}` : `${done}/-`;
-    const okEl = $('liveCardSuccess');
-    if(okEl) okEl.textContent = success;
-    const failEl = $('liveCardFailed');
-    if(failEl) failEl.textContent = failed;
-    const rowsEl = $('liveCardRows');
-    if(rowsEl) rowsEl.textContent = rows > 1000000 ? (rows/1000000).toFixed(1)+'M' : rows > 1000 ? (rows/1000).toFixed(0)+'K' : rows;
-    const startedEl = $('liveCardStarted');
-    if(startedEl) startedEl.textContent = started;
-    const updatedEl = $('liveCardUpdated');
-    if(updatedEl) updatedEl.textContent = updated;
-
-    // Actions
-    const actions = $('liveCardActions');
-    if(actions){
-      let html = '';
-      if(status === 'running'){
-        html += `<span style="color:#64748B;font-size:12px;align-self:center">每5秒自动刷新…</span>`;
-      } else if(status === 'success' || status === 'failed'){
-        html += `<button id="liveCardWatchFilesBtn" style="padding:6px 14px;border:1px solid #334155;border-radius:6px;background:#1E293B;color:#F8FAFC;cursor:pointer;font-size:12px">查看文件明细</button>`;
-      }
-      actions.innerHTML = html;
-      const wfBtn = $('liveCardWatchFilesBtn');
-      if(wfBtn) wfBtn.onclick = () => { $('importFilePanel').style.display = ''; loadImportFiles(String(d.id)); };
-    }
+    if(card) card.style.display = 'none';
   }
 
   function renderMultiLaneCards(){
@@ -591,8 +608,7 @@
   }
 
   function startMultiLaneWatch(lanes){
-    stopImportWatch();
-    activeImportLanes = {};
+    stopImportWatch();  // clears activeImportLanes in-place and stops timer
 
     for(const lane of lanes){
       if(lane.skipped) continue;
@@ -635,29 +651,34 @@
     }
   }
 
+  // startImportWatch: single-batch shim — routes through multi-lane cards.
+  // importLiveCard (legacy) is permanently hidden; multi-lane handles all display.
   function startImportWatch(batchOrId, progressUrl){
-    if(window.startDataImportWatch && window.startDataImportWatch !== startImportWatch){
-      window.startDataImportWatch(batchOrId, progressUrl);
-      return;
+    const batchId  = typeof batchOrId === 'object' ? (batchOrId.import_batch_id || batchOrId.id) : batchOrId;
+    const market   = typeof batchOrId === 'object' ? (batchOrId.market || null)     : null;
+    const jobId    = typeof batchOrId === 'object' ? (batchOrId.job_id || null)      : null;
+    const pUrl     = progressUrl || (typeof batchOrId === 'object' ? (batchOrId.progress_url || null) : null);
+    if(!batchId) return;
+
+    if(market){
+      // Full info available: create a single-lane multi-lane watch
+      startMultiLaneWatch([{ import_batch_id: batchId, job_id: jobId, market, market_label: market, progress_url: pUrl, skipped: false }]);
+    } else {
+      // No market: fetch batch detail first then start lane
+      getJson('/api/import/batches/' + encodeURIComponent(batchId)).then(d => {
+        if(d && d.market){
+          startMultiLaneWatch([{ import_batch_id: batchId, job_id: d.job_id || null, market: d.market, market_label: d.market, progress_url: d.progress_url || pUrl, skipped: false }]);
+        } else {
+          loadImportBatches().catch(() => {});
+        }
+      }).catch(() => loadImportBatches().catch(() => {}));
     }
-    stopImportWatch();
-    const batchId = typeof batchOrId === 'object' ? batchOrId.import_batch_id : batchOrId;
-    activeImportProgressUrl = progressUrl || (typeof batchOrId === 'object' ? batchOrId.progress_url : null);
-    activeImportBatchId = batchId;
-    refreshImportWatch(batchId, activeImportProgressUrl).catch(() => {});
-    importWatchTimer = setInterval(function(){
-      refreshImportWatch(batchId, activeImportProgressUrl).catch(() => {});
-    }, 5000);
   }
 
   function stopImportWatch(){
-    if(importWatchTimer){
-      clearInterval(importWatchTimer);
-      importWatchTimer = null;
-    }
-    activeImportLanes = {};
-    activeImportBatchId = null;
-    activeImportProgressUrl = null;
+    if(importWatchTimer){ clearInterval(importWatchTimer); importWatchTimer = null; }
+    // Clear in-place to keep object reference valid (window.activeImportLanes points here)
+    Object.keys(activeImportLanes).forEach(k => delete activeImportLanes[k]);
   }
 
   function bindButtons(){
@@ -686,6 +707,7 @@
     }
 
     const runBtn = $('runImportBtn');
+    // Only bind if not already bound by addon (addon sets dataset.bound='addon')
     if(runBtn && !runBtn.dataset.bound){
       runBtn.dataset.bound = '1';
       runBtn.onclick = async function(){
@@ -728,11 +750,7 @@
       refreshBtn.dataset.bound = '1';
       refreshBtn.onclick = async function(){
         await loadImportBatches();
-        if(activeImportBatchId){
-          await refreshImportWatch(activeImportBatchId, activeImportProgressUrl);
-        }else{
-          await loadImportFiles(activeImportBatchId);
-        }
+        if(window._addonLoadImportBatches) window._addonLoadImportBatches().catch(() => {});
       };
     }
 
@@ -772,7 +790,8 @@
   }
 
   document.addEventListener('DOMContentLoaded', boot);
-  setTimeout(boot, 300);
+  // NOTE: do NOT add setTimeout(boot) here — addon.js has its own boot and
+  // duplicate calls cause double-binding and step reset conflicts.
   window.viewLaneFiles = function(market){
     const lane = activeImportLanes[market];
     if(lane && lane.batchId){
@@ -782,13 +801,14 @@
   };
 
   // Expose multi-lane API for addon to share the same state
-  window.activeImportStep = activeImportStep;
-  window.renderLiveStatus = renderLiveStatus;
-  window.activeImportLanes = activeImportLanes;
+  window.activeImportStep    = activeImportStep;
+  window.renderLiveStatus    = renderLiveStatus;
+  window.activeImportLanes   = activeImportLanes;
   window.startMultiLaneWatch = startMultiLaneWatch;
-  window.renderMultiLaneCards = renderMultiLaneCards;
+  window.startDataImportWatch = startImportWatch;  // addon calls this for single-batch
+  window.renderMultiLaneCards  = renderMultiLaneCards;
   window.refreshMultiLaneWatch = refreshMultiLaneWatch;
 
   window.updateDataImportMode = updateImportMode;
-  window.showDataImportView = switchView;
+  window.showDataImportView   = switchView;
 })();

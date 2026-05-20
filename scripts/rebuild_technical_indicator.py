@@ -3,10 +3,13 @@
 """
 重算 technical_indicator：daily / 5m / 30m
 
+数据流：读 ClickHouse (kline) → 计算指标 → 写 ClickHouse (technical_indicator)
+MySQL 仅管理 job/task 表，不存储行情指标数据。
+
 修复点：
-1. 彻底把 pandas/numpy 的 NaN / inf 转成 None，避免 pymysql: nan can not be used with MySQL
+1. 彻底把 pandas/numpy 的 NaN / inf 转成 None
 2. 按 code 分批读取和写入，避免一次性把全市场 5m/30m 全读进内存
-3. 适配 2560_schema_v2.4：date 为 BIGINT / INT 数值时间
+3. 写入 ClickHouse 而非 MySQL，消除多市场并发死锁
 
 用法：
 PYTHONPATH=$PWD python scripts/rebuild_technical_indicator.py --start 2025-10-01 --end 2026-05-06 --market-type sh
@@ -19,11 +22,9 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from sqlalchemy import text
 
 from app.core.market_scope import market_sql_where
 from app.db.clickhouse import get_clickhouse
-from app.db.session import SessionLocal
 
 
 def parse_args():
@@ -175,7 +176,8 @@ def load_one_code(period: str, code: str, start_i: int, end_i: int) -> pd.DataFr
     return select_source_rows(df, src)
 
 
-def make_records(code: str, period: str, ind: pd.DataFrame) -> list[dict]:
+def make_records_for_clickhouse(code: str, period: str, ind: pd.DataFrame) -> list[dict]:
+    """Same as make_records but formats date as ClickHouse DateTime string."""
     cols = [
         'ma25', 'ma60', 'ma200', 'ma25_slope_3', 'ma60_slope_3',
         'atr14', 'atr20_avg', 'vol_ma5', 'vol_ma60', 'vol_ratio',
@@ -185,10 +187,17 @@ def make_records(code: str, period: str, ind: pd.DataFrame) -> list[dict]:
     ]
     records = []
     for _, r in ind.iterrows():
+        date_val = r['date']
+        if period == 'daily':
+            date_str = str(date_val)  # YYYYMMDD -> ClickHouse parses as date
+            date_str = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+        else:
+            date_str = str(date_val)  # YYYYMMDDHHMMSS -> YYYY-MM-DD HH:MM:SS
+            date_str = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]} {date_str[8:10]}:{date_str[10:12]}:{date_str[12:14]}"
         rec = {
             'code': code,
             'period': period,
-            'date': int(r['date']),
+            'date': date_str,
             'source': 'rebuild',
             'stock_status': 'NORMAL',
             'is_st': 0,
@@ -202,43 +211,39 @@ def make_records(code: str, period: str, ind: pd.DataFrame) -> list[dict]:
 
 
 def rebuild_period(period: str, start: str, end: str, market_type: str, limit_codes: int | None, commit_every: int):
+    ch = get_clickhouse()
     start_i, end_i = get_period_range(period, start, end)
     print(f"\n=== Rebuild {period} technical_indicator: {start_i} ~ {end_i}, market={market_type} ===")
     total = 0
-    with SessionLocal() as db:
-        codes = get_codes(period, start_i, end_i, market_type, limit_codes)
-        print(f"codes={len(codes)}")
-        insert_sql = text("""
-            INSERT INTO technical_indicator
-            (code,period,date,source,stock_status,is_st,
-             ma25,ma60,ma200,ma25_slope_3,ma60_slope_3,
-             atr14,atr20_avg,vol_ma5,vol_ma60,vol_ratio,vol_ma5_cross_vol_ma60,
-             price_ma25_deviation_pct,high_20,low_20,low_30,resistance_level,
-             is_abnormal_bar,data_quality_status)
-            VALUES
-            (:code,:period,:date,:source,:stock_status,:is_st,
-             :ma25,:ma60,:ma200,:ma25_slope_3,:ma60_slope_3,
-             :atr14,:atr20_avg,:vol_ma5,:vol_ma60,:vol_ratio,:vol_ma5_cross_vol_ma60,
-             :price_ma25_deviation_pct,:high_20,:low_20,:low_30,:resistance_level,
-             :is_abnormal_bar,:data_quality_status)
-        """)
-        for idx, code in enumerate(codes, 1):
-            df = load_one_code(period, code, start_i, end_i)
-            if df.empty:
-                continue
-            ind = compute_indicators(df)
-            records = make_records(code, period, ind)
-            db.execute(text("""
-                DELETE FROM technical_indicator
-                WHERE code=:code AND period=:period AND date BETWEEN :s AND :e
-            """), {'code': code, 'period': period, 's': start_i, 'e': end_i})
-            if records:
-                db.execute(insert_sql, records)
-                total += len(records)
-            if idx % commit_every == 0:
-                db.commit()
-                print(f"{period}: processed {idx}/{len(codes)}, inserted={total}")
-        db.commit()
+    codes = get_codes(period, start_i, end_i, market_type, limit_codes)
+    print(f"codes={len(codes)}")
+
+    # ClickHouse date strings for queries
+    start_s = str(start_i)[:4] + '-' + str(start_i)[4:6] + '-' + str(start_i)[6:8]
+    end_s = str(end_i)[:4] + '-' + str(end_i)[4:6] + '-' + str(end_i)[6:8]
+    if period != 'daily':
+        start_s += ' 00:00:00'
+        end_s += ' 23:59:59'
+
+    for idx, code in enumerate(codes, 1):
+        df = load_one_code(period, code, start_i, end_i)
+        if df.empty:
+            continue
+        ind = compute_indicators(df)
+        records = make_records_for_clickhouse(code, period, ind)
+
+        # Delete existing rows in ClickHouse for this code + period + date range
+        del_q = f"ALTER TABLE {ch.database}.technical_indicator DELETE WHERE code='{code}' AND period='{period}' AND date >= '{start_s}' AND date <= '{end_s}'"
+        ch.command(del_q)
+
+        # Insert new rows
+        if records:
+            ch.insert_batch("technical_indicator", records)
+            total += len(records)
+
+        if idx % commit_every == 0:
+            print(f"{period}: processed {idx}/{len(codes)}, inserted={total}")
+
     print(f"[OK] {period} inserted: {total}")
 
 

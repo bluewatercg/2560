@@ -121,8 +121,8 @@ def main():
                 d, s, f, r = _done[0], _success[0], _failed[0], _rows[0]
                 pending_updates = {fp: st for fp, st in _file_results.items() if fp not in _reported_ids}
 
-            if not pending_updates and d == 0:
-                continue
+            # Always update job_execution so frontend shows "running" immediately;
+            # file status updates are skipped when there's nothing pending.
 
             try:
                 with SessionLocal() as db:
@@ -152,15 +152,14 @@ def main():
                         with _lock:
                             _reported_ids.update(pending_updates.keys())
 
-                    # Update job_execution progress
-                    if d > 0:
-                        update_job_execution(
-                            db, a.job_id, status="running",
-                            progress_current=d, progress_total=total,
-                            success_count=s, failed_count=f,
-                            message=f"import {d}/{total}",
-                        )
-                        db.commit()
+                    # Update job_execution progress (every cycle, even at 0/total)
+                    update_job_execution(
+                        db, a.job_id, status="running",
+                        progress_current=d, progress_total=total,
+                        success_count=s, failed_count=f,
+                        message=f"import {d}/{total}",
+                    )
+                    db.commit()
             except Exception as e:
                 print(f"[reporter] MySQL update failed: {e}", flush=True)
                 # Don't update _reported_ids — retry on next cycle

@@ -3,9 +3,7 @@
   function $(id){ return document.getElementById(id); }
   function all(sel, root=document){ return Array.from(root.querySelectorAll(sel)); }
   let importWatchTimer = null;
-  let activeImportLanes = {};  // { sh60: {batchId, jobId, progressUrl}, sh68: {...}, ... }
-  let activeImportBatchId = null;
-  let activeImportProgressUrl = null;
+  let activeImportLanes = {};  // mirrors window.activeImportLanes via in-place mutation
   let autoWatchBootstrapped = false;
 
   async function postJson(url, body){
@@ -377,11 +375,12 @@
     try{
       const data = await postJson('/api/import/batches/' + encodeURIComponent(batchId) + '/cancel', {reason});
       if(out) out.textContent = JSON.stringify(data, null, 2);
-      if(String(activeImportBatchId || '') === String(batchId) && data && data.status === 'cancelled'){
+      // After cancel, refresh lanes to reflect new status
+      if(data && data.status === 'cancelled'){
         stopImportWatch(true);
       }
       await loadImportBatches();
-      await refreshImportWatch(batchId, activeImportProgressUrl);
+      if(window._addonLoadImportBatches) window._addonLoadImportBatches().catch(() => {});
     }catch(e){
       if(out) out.textContent = '取消/废弃失败：' + (e && e.message ? e.message : String(e));
     }
@@ -417,7 +416,7 @@
             ? `<button class="danger cancel-import-batch" data-import-batch-id="${r.id ?? ''}" title="取消 queued/pending；running 请求后台停止">取消/废弃</button>`
             : '-';
           return `
-          <tr data-import-batch-id="${r.id ?? ''}" data-progress-url="${r.progress_url || ''}" style="cursor:pointer;${selected ? 'background:rgba(59,130,246,.15)' : ''}" title="点击追踪这个导入批次">
+          <tr data-import-batch-id="${r.id ?? ''}" data-progress-url="${r.progress_url || ''}" data-market="${r.market ?? ''}" style="cursor:pointer" title="点击追踪这个导入批次">
             <td>${r.id ?? '-'}</td>
             <td>${batchTypeLabel(r.import_type)}</td>
             <td>${r.market ?? '-'}</td>
@@ -445,8 +444,16 @@
     table.querySelectorAll('tbody tr[data-import-batch-id]').forEach(tr => {
       tr.onclick = function(){
         const batchId = this.dataset.importBatchId;
+        const market  = this.dataset.market || null;
+        const pUrl    = this.dataset.progressUrl || null;
         if(!batchId) return;
-        startImportWatch(batchId, this.dataset.progressUrl || null);
+        // Highlight selected row
+        table.querySelectorAll('tr').forEach(r => r.style.background = '');
+        this.style.background = 'rgba(59,130,246,.15)';
+        // Route through page.js startDataImportWatch → startImportWatch → startMultiLaneWatch
+        if(window.startDataImportWatch){
+          window.startDataImportWatch({ import_batch_id: batchId, market, progress_url: pUrl }, pUrl);
+        }
       };
     });
     table.querySelectorAll('.cancel-import-batch').forEach(btn => {
@@ -471,61 +478,58 @@
 
   function watchLatestActiveImport(rows){
     if(!Array.isArray(rows)) return;
-
-    // Map step → import_type to filter
-    const stepTypes = {
-      2: ['all', 'lday', '5m', 'vipdoc'],
-      3: ['build_30m'],
-      4: ['rebuild_indicator']
-    };
+    // Map step → import_type filter
+    const stepTypes = { 2: ['all','lday','5m','vipdoc'], 3: ['build_30m'], 4: ['rebuild_indicator'] };
     const allowed = stepTypes[window.activeImportStep || 1] || null;
 
-    // Group by market: pick latest running first, fallback to latest overall
+    // Group by market: running/queued/pending beats terminal
     const latest = {};
     for(const r of rows){
       if(allowed && !allowed.includes(r.import_type)) continue;
       const m = r.market;
       if(!m) continue;
       if(!latest[m]) latest[m] = r;
-      if(isActiveImportStatus(r.status)) latest[m] = r; // running takes priority
+      if(isActiveImportStatus(r.status) && !isActiveImportStatus(latest[m].status)) latest[m] = r;
     }
 
-    let foundAny = false;
+    // Upgrade existing lanes or add new ones (same logic as page.js loadImportBatches)
+    let changed = false;
     for(const [market, r] of Object.entries(latest)){
-      if(!activeImportLanes[market]){
-        activeImportLanes[market] = {
-          batchId: r.id,
-          jobId: r.job_id,
-          progressUrl: r.progress_url || null,
-          label: r.market || market,
-          detail: r,
-          job: {},
-        };
-        foundAny = true;
+      const existing = activeImportLanes[market];
+      if(!existing){
+        activeImportLanes[market] = { batchId: r.id, jobId: r.job_id, progressUrl: r.progress_url||null, label: r.market||market, detail: r, job: {} };
+        changed = true;
+      } else {
+        const curStatus = String((existing.detail&&existing.detail.status)||(existing.job&&existing.job.status)||'').toLowerCase();
+        const curTerminal = ['success','failed','cancelled'].includes(curStatus);
+        const newActive   = isActiveImportStatus(r.status);
+        if(Number(r.id) > Number(existing.batchId) && (curTerminal || newActive)){
+          existing.batchId = r.id; existing.jobId = r.job_id;
+          existing.progressUrl = r.progress_url||null; existing.detail = r; existing.job = {};
+          changed = true;
+        }
       }
     }
 
-    // If we found multiple lanes, start multi-lane watch
-    if(foundAny && Object.keys(activeImportLanes).length > 1){
-      startMultiLaneWatch(Object.values(activeImportLanes).map(l => ({
-        import_batch_id: l.batchId,
-        job_id: l.jobId,
-        market: l.label,
-        market_label: l.label,
-        progress_url: l.progressUrl,
-        skipped: false,
-      })));
-    } else if(!activeImportBatchId && Object.keys(latest).length > 0){
-      // Fallback: single batch tracking — pick first market's latest
-      const best = Object.values(latest)[0];
-      if(best && best.id){
-        startImportWatch(best.id, best.progress_url);
+    // Start multi-lane watch if any lanes are active
+    if(changed && Object.keys(activeImportLanes).length > 0){
+      const hasActive = Object.values(activeImportLanes).some(l =>
+        isActiveImportStatus(String((l.detail&&l.detail.status)||(l.job&&l.job.status)||''))
+      );
+      if(hasActive){
+        startMultiLaneWatch(Object.values(activeImportLanes).map(l => ({
+          import_batch_id: l.batchId, job_id: l.jobId,
+          market: l.label, market_label: l.label,
+          progress_url: l.progressUrl, skipped: false,
+        })));
+      } else if(window.renderMultiLaneCards){
+        window.renderMultiLaneCards();
       }
     }
   }
 
   function bootstrapActiveImportWatch(){
-    if(autoWatchBootstrapped || activeImportBatchId) return;
+    if(autoWatchBootstrapped) return;
     autoWatchBootstrapped = true;
     loadImportBatches().catch(() => {});
   }
@@ -568,36 +572,14 @@
   }
 
   function renderLiveStatus(d, job){
-    // Delegate to the page's renderLiveStatus which writes to #importLiveCard
+    // Delegate to page.js renderLiveStatus (which is now a permanent no-op that hides the card)
     if(window.renderLiveStatus && window.renderLiveStatus !== renderLiveStatus){
       window.renderLiveStatus(d, job);
       return;
     }
-    // Fallback: write to #importLiveCard directly
+    // Fallback: just ensure the card stays hidden
     const card = $('importLiveCard');
-    if(!card) return;
-    if(!d){ card.style.display = 'none'; return; }
-    card.style.display = '';
-    const total = Number((job && job.total) || d.job_progress_total || d.total_files || 0);
-    const done = Number((job && job.done) || d.job_progress_current || d.done_files || 0);
-    const percentValue = total ? (done * 100 / total) : Number((job && job.percent) ?? d.progress_percent ?? 0);
-    const status = ((job && job.status) || d.job_status || d.status || '-').toLowerCase();
-    const iconMap = { running: '⟳', success: '✓', failed: '✗', queued: '◷', pending: '◷' };
-    const colorMap = { running: '#3B82F6', success: '#22C55E', failed: '#EF4444', queued: '#F59E0B', pending: '#94A3B8' };
-    const labelMap = { running: '构建中', success: '构建完成', failed: '构建失败', queued: '排队中', pending: '等待中' };
-    const icon = iconMap[status] || '●';
-    const color = colorMap[status] || '#94A3B8';
-    const label = labelMap[status] || status;
-    const si = $('liveCardStatusIcon'); if(si){ si.textContent = icon; si.style.color = color; }
-    const st = $('liveCardStatusText'); if(st){ st.textContent = `#${d.id} ${label}`; st.style.color = color; }
-    const pe = $('liveCardPercent'); if(pe) pe.textContent = total ? percentValue.toFixed(1)+'%' : '-';
-    const pb = $('liveCardProgressBar'); if(pb) pb.style.width = (total ? Math.min(percentValue,100) : 0)+'%';
-    const de = $('liveCardDone'); if(de) de.textContent = total ? `${done}/${total}` : `${done}/-`;
-    const se = $('liveCardSuccess'); if(se) se.textContent = (job && job.success_count) ?? d.success_files ?? 0;
-    const fe = $('liveCardFailed'); if(fe) fe.textContent = (job && job.failed_count) ?? d.failed_files ?? 0;
-    const re = $('liveCardRows'); if(re) re.textContent = d.total_rows ?? 0;
-    const sa = $('liveCardStarted'); if(sa) sa.textContent = d.started_at ?? '-';
-    const ue = $('liveCardUpdated'); if(ue) ue.textContent = d.updated_at ?? '-';
+    if(card) card.style.display = 'none';
   }
 
   async function refreshImportWatch(batchId, progressUrl){
@@ -605,17 +587,14 @@
     const d = await getJson('/api/import/batches/' + encodeURIComponent(batchId));
     const url = progressUrl || (d && d.progress_url);
     let job = null;
-    if(url){
-      job = await getJson(url);
-      activeImportProgressUrl = url;
-    }
+    if(url) job = await getJson(url);
     renderLiveStatus(d, job);
     renderImportExecution(d, job);
     const files = await loadImportFiles(batchId);
     renderImportShardSummary(d, job, files);
     await loadImportBatches();
     const status = (job && job.status) || (d && d.job_status) || (d && d.status);
-    if(status && !['queued', 'pending', 'running'].includes(status)){
+    if(status && !['queued','pending','running'].includes(status)){
       stopImportWatch(true);
       autoWatchBootstrapped = false;
       loadImportBatches().catch(() => {});
@@ -665,8 +644,7 @@
       window.startMultiLaneWatch(lanes);
       return;
     }
-    stopImportWatch();
-    activeImportLanes = {};
+    stopImportWatch();  // clears activeImportLanes in-place
 
     for(const lane of lanes){
       if(lane.skipped) continue;
@@ -704,16 +682,11 @@
   window.startDataImportWatch = startImportWatch;
 
   function stopImportWatch(keepSelection){
-    if(importWatchTimer){
-      clearInterval(importWatchTimer);
-      importWatchTimer = null;
-    }
-    activeImportLanes = {};
-    if(!keepSelection){
-      activeImportBatchId = null;
-      activeImportProgressUrl = null;
-    }
+    if(importWatchTimer){ clearInterval(importWatchTimer); importWatchTimer = null; }
+    // Clear in-place: keeps object reference valid for window.activeImportLanes
+    Object.keys(activeImportLanes).forEach(k => delete activeImportLanes[k]);
   }
+
 
   function bindButtons(){
     const scanBtn = $('scanImportDirBtn');
@@ -846,6 +819,7 @@
               const msg = skipped.map(l => `${l.market} 已在运行中，已跳过`).join('\n');
               out.textContent = msg + '\n\n' + JSON.stringify(data, null, 2);
             }
+            setBatchTypeFilter('build_30m');  // 确保批次列表过滤器同步
             startMultiLaneWatch(data.lanes);
             await loadImportBatches();
           }else if(data && data.import_batch_id){
@@ -910,6 +884,7 @@
               const msg = skipped.map(l => `${l.market} 已在运行中，已跳过`).join('\n');
               out.textContent = msg + '\n\n' + JSON.stringify(data, null, 2);
             }
+            setBatchTypeFilter('rebuild_indicator');  // 确保批次列表过滤器同步
             startMultiLaneWatch(data.lanes);
             await loadImportBatches();
           }else if(data && data.import_batch_id){
@@ -985,6 +960,11 @@
     }
   }
 
+  // Expose addon's loadImportBatches so page.js can call it on step switch
+  window._addonLoadImportBatches = loadImportBatches;
+
   document.addEventListener('DOMContentLoaded', boot);
+  // NOTE: do NOT duplicate setTimeout(boot) here — page.js already handles its own boot.
+  // A single DOMContentLoaded listener per file is sufficient.
   setTimeout(boot, 300);
 })();

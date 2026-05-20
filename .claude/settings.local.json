@@ -83,7 +83,10 @@
       "Bash(node -c /mnt/d/Project/Miller/strategy2560_project_v2_engine/app/static/data_import_page.js)",
       "Bash(node -c /mnt/d/Project/Miller/strategy2560_project_v2_engine/app/static/data_import_type_addon.js)",
       "mcp__memory__create_entities",
-      "Bash(PYTHONPATH=/mnt/d/Project/Miller/strategy2560_project_v2_engine python3 *)"
+      "Bash(PYTHONPATH=/mnt/d/Project/Miller/strategy2560_project_v2_engine python3 *)",
+      "mcp__memory__read_graph",
+      "Bash(git *)",
+      "Bash(docker exec strategy2560-web-1 sh -c 'PYTHONPATH=/app python -c \" *)"
     ]
   }
 }

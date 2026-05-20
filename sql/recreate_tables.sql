@@ -25,26 +25,7 @@ CREATE TABLE minute_kline_period (
   PRIMARY KEY (code, date, period, source)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-DROP TABLE IF EXISTS technical_indicator;
-CREATE TABLE technical_indicator (
-  code VARCHAR(20) NOT NULL,
-  period VARCHAR(10) NOT NULL,
-  date BIGINT NOT NULL,
-  source VARCHAR(20) NOT NULL DEFAULT 'vipdoc',
-  stock_status VARCHAR(20),
-  is_st TINYINT(1) DEFAULT 0,
-  ma25 DOUBLE, ma60 DOUBLE, ma200 DOUBLE,
-  ma25_slope_3 DOUBLE, ma60_slope_3 DOUBLE,
-  atr14 DOUBLE, atr20_avg DOUBLE,
-  vol_ma5 DOUBLE, vol_ma60 DOUBLE, vol_ratio DOUBLE,
-  vol_ma5_cross_vol_ma60 TINYINT(1) DEFAULT 0,
-  price_ma25_deviation_pct DOUBLE,
-  high_20 DOUBLE, low_20 DOUBLE, low_30 DOUBLE, resistance_level DOUBLE,
-  is_abnormal_bar TINYINT(1) DEFAULT 0,
-  data_quality_status VARCHAR(30),
-  created_at DATETIME(3), updated_at DATETIME(3),
-  PRIMARY KEY (code, period, date, source)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+-- technical_indicator 已迁移至 ClickHouse，MySQL 不再存储
 
 DROP TABLE IF EXISTS minute_kline;
 CREATE TABLE minute_kline (
@@ -95,6 +76,7 @@ CREATE TABLE strategy_config (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 4. 2560 分析
+-- 注：technical_indicator 已迁移至 ClickHouse，MySQL 不再存储（见 sql/clickhouse_tables.sql）
 DROP TABLE IF EXISTS structure_2560_analysis;
 CREATE TABLE structure_2560_analysis (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -204,53 +186,59 @@ CREATE TABLE analysis_job_log (
 DROP TABLE IF EXISTS job_queue;
 CREATE TABLE job_queue (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
-  job_type VARCHAR(50),
-  priority INT DEFAULT 3,
-  status VARCHAR(20) DEFAULT 'pending',
-  payload JSON,
+  job_type VARCHAR(50) NOT NULL,
+  strategy_code VARCHAR(20) NOT NULL,
+  priority INT NOT NULL DEFAULT 5,
+  payload JSON NOT NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'pending',
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  started_at DATETIME,
-  finished_at DATETIME,
+  started_at DATETIME NULL,
+  finished_at DATETIME NULL,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  INDEX idx_status_priority (status, priority),
-  INDEX idx_job_type (job_type)
+  KEY idx_queue (status, priority, created_at),
+  KEY idx_strategy (strategy_code)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 DROP TABLE IF EXISTS job_execution;
 CREATE TABLE job_execution (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
-  job_type VARCHAR(50),
-  status VARCHAR(20),
-  batch_id VARCHAR(64),
-  progress_current INT,
-  progress_total INT,
-  success_count INT,
-  failed_count INT,
-  current_code VARCHAR(30),
-  market VARCHAR(20),
-  shards INT,
-  pid BIGINT,
-  log_file TEXT,
-  message TEXT,
-  cancel_requested_at DATETIME,
-  started_at DATETIME,
-  finished_at DATETIME,
-  updated_at DATETIME,
-  INDEX idx_status (status),
-  INDEX idx_batch (batch_id)
+  job_type VARCHAR(50) NOT NULL,
+  batch_id VARCHAR(100) NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'running',
+  cancel_requested_at DATETIME NULL,
+  progress_current INT NOT NULL DEFAULT 0,
+  progress_total INT NOT NULL DEFAULT 0,
+  success_count INT NOT NULL DEFAULT 0,
+  failed_count INT NOT NULL DEFAULT 0,
+  current_code VARCHAR(30) NULL,
+  market VARCHAR(20) NULL,
+  shards INT NULL,
+  pid BIGINT NULL,
+  log_file VARCHAR(500) NULL,
+  message TEXT NULL,
+  started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  finished_at DATETIME NULL,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  KEY idx_status_started (status, started_at),
+  KEY idx_updated (updated_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 DROP TABLE IF EXISTS job_task_item;
 CREATE TABLE job_task_item (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
-  job_id BIGINT,
-  code VARCHAR(20),
-  status VARCHAR(20),
-  attempt INT DEFAULT 0,
-  error_message TEXT,
-  started_at DATETIME,
-  finished_at DATETIME,
-  INDEX idx_job (job_id, status)
+  job_id BIGINT NOT NULL,
+  shard_id INT NOT NULL DEFAULT 0,
+  code VARCHAR(30) NOT NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'pending',
+  retry_count INT NOT NULL DEFAULT 0,
+  elapsed_ms INT NULL,
+  last_error TEXT NULL,
+  started_at DATETIME NULL,
+  finished_at DATETIME NULL,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_job_code (job_id, code),
+  KEY idx_job_status (job_id, status),
+  KEY idx_shard (job_id, shard_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 6. 数据导入

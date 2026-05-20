@@ -59,8 +59,8 @@ class AnnotationEngine2568:
     def read_latest_indicators(self, codes: list[str]) -> dict[str, list[dict[str, Any]]]:
         if not codes:
             return {}
-        params = {f"c{i}": c for i, c in enumerate(codes)}
-        clause = "(" + ",".join(f":c{i}" for i in range(len(codes))) + ")"
+        ch = get_clickhouse()
+        code_list = ",".join(f"'{c}'" for c in codes)
         sql = f"""
         SELECT t.*
         FROM technical_indicator t
@@ -70,7 +70,7 @@ class AnnotationEngine2568:
                 SELECT code, date,
                        ROW_NUMBER() OVER (PARTITION BY code ORDER BY date DESC) AS rn
                 FROM technical_indicator
-                WHERE period='daily' AND code IN {clause}
+                WHERE period='daily' AND code IN ({code_list})
             ) x
             WHERE rn <= 2
         ) y ON t.code=y.code AND t.date=y.date
@@ -78,18 +78,19 @@ class AnnotationEngine2568:
         ORDER BY t.code, t.date DESC
         """
         out: dict[str, list[dict[str, Any]]] = {}
-        for r in self.db.execute(text(sql), params).mappings().all():
+        for r in ch.query(sql):
             out.setdefault(r["code"], []).append(dict(r))
         return out
 
     def latest_daily_indicator_date(self, market_type: str) -> int | None:
-        row = self.db.execute(text(f"""
-            SELECT MAX(t.date) AS latest_date
-            FROM technical_indicator t
-            WHERE t.period='daily'
-              AND {self.market_where("t", market_type)}
-        """)).mappings().first()
-        return int(row["latest_date"]) if row and row.get("latest_date") is not None else None
+        where = market_sql_where("code", market_type)
+        row = get_clickhouse().query_one(
+            f"SELECT max(date) AS latest_date FROM technical_indicator WHERE period='daily' AND {where}"
+        )
+        if row and row.get("latest_date"):
+            d = pd.to_datetime(row["latest_date"])
+            return int(d.strftime("%Y%m%d"))
+        return None
 
     def latest_2560_batch(self) -> dict[str, Any] | None:
         row = self.db.execute(text("""

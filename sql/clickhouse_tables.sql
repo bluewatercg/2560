@@ -54,15 +54,15 @@ CREATE TABLE minute_kline_period (
 ORDER BY (code, period, date)
 PRIMARY KEY (code, period, date);
 
--- 技术指标
+-- 技术指标（对应 MySQL `technical_indicator` 字段，转 ClickHouse 语法）
 DROP TABLE IF EXISTS technical_indicator;
 CREATE TABLE technical_indicator (
     code String,
     period LowCardinality(String),
-    date Date,
+    date DateTime64(3),
     source LowCardinality(String) DEFAULT 'vipdoc',
     stock_status Nullable(String),
-    is_st UInt8 DEFAULT 0,
+    is_st Nullable(UInt8) DEFAULT 0,
     ma25 Nullable(Float64),
     ma60 Nullable(Float64),
     ma200 Nullable(Float64),
@@ -73,16 +73,18 @@ CREATE TABLE technical_indicator (
     vol_ma5 Nullable(Float64),
     vol_ma60 Nullable(Float64),
     vol_ratio Nullable(Float64),
-    vol_ma5_cross_vol_ma60 UInt8 DEFAULT 0,
+    vol_ma5_cross_vol_ma60 Nullable(UInt8) DEFAULT 0,
     price_ma25_deviation_pct Nullable(Float64),
     high_20 Nullable(Float64),
     low_20 Nullable(Float64),
     low_30 Nullable(Float64),
     resistance_level Nullable(Float64),
-    is_abnormal_bar UInt8 DEFAULT 0,
-    data_quality_status Nullable(String)
+    is_abnormal_bar Nullable(UInt8) DEFAULT 0,
+    data_quality_status Nullable(String),
+    created_at DateTime64(3) DEFAULT now64(3),
+    updated_at DateTime64(3) DEFAULT now64(3)
 ) ENGINE = MergeTree()
-ORDER BY (code, period, date);
+ORDER BY (code, period, date, source);
 
 SELECT 'ClickHouse tables created' AS result;
 SELECT name AS table_name FROM system.tables WHERE database = 'strategy2560' ORDER BY name;

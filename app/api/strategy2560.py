@@ -130,14 +130,15 @@ def _table_exists(db: Session, table_name: str) -> bool:
 
 def _market_latest_indicator(db: Session, market: str, period: str) -> int | None:
     """Return latest date for technical_indicator of a market+period, or None."""
-    if not _table_exists(db, "technical_indicator"):
-        return None
+    # technical_indicator 现在存储在 ClickHouse
     where = market_sql_where("code", market)
-    row = db.execute(
-        text(f"SELECT MAX(date) AS d FROM technical_indicator WHERE {where} AND period='{period}'"),
-    ).mappings().first()
-    val = row.get("d") if row else None
-    return int(val) if val is not None else None
+    row = get_clickhouse().query_one(
+        f"SELECT max(date) AS d FROM technical_indicator WHERE {where} AND period='{period}'"
+    )
+    if not row or not row.get("d"):
+        return None
+    d = pd.to_datetime(row["d"])
+    return int(d.strftime("%Y%m%d%H%M%S")) if period != "daily" else int(d.strftime("%Y%m%d"))
 
 
 def _market_latest_kline(db: Session, market: str, period: str) -> int | None:
@@ -558,16 +559,17 @@ def build_probe(db: Session, market_type: str = 'all', limit: int = 500, q: Opti
     codes = [s['code'] for s in stocks]
     clause, in_params = in_clause(codes)
 
+    # technical_indicator 现在存储在 ClickHouse
     ti_sql = f"""
         SELECT ti.* FROM technical_indicator ti
         JOIN (
-          SELECT code, period, MAX(date) AS max_date
+          SELECT code, period, max(date) AS max_date
           FROM technical_indicator
-          WHERE code IN {clause} AND period IN ('30m','daily','5m')
+          WHERE code IN ({','.join(f"'{c}'" for c in codes)}) AND period IN ('30m','daily','5m')
           GROUP BY code, period
         ) x ON ti.code=x.code AND ti.period=x.period AND ti.date=x.max_date
     """
-    ti_rows = [dict(r) for r in db.execute(text(ti_sql), in_params).mappings().all()]
+    ti_rows = get_clickhouse().query(ti_sql)
     ti_map = {(r['code'], r['period']): r for r in ti_rows}
 
     def count_map(sql: str) -> dict:

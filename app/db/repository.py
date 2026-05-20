@@ -77,14 +77,26 @@ class KlineRepository:
     def upsert_indicators(self, rows: list[dict]) -> None:
         if not rows:
             return
-        self.db.execute(text("""
-            INSERT INTO technical_indicator
-            (code,period,date,source,stock_status,is_st,ma25,ma60,ma200,ma25_slope_3,ma60_slope_3,atr14,atr20_avg,vol_ma5,vol_ma60,vol_ratio,vol_ma5_cross_vol_ma60,price_ma25_deviation_pct,high_20,low_20,low_30,resistance_level,is_abnormal_bar,data_quality_status)
-            VALUES
-            (:code,:period,:date,:source,:stock_status,:is_st,:ma25,:ma60,:ma200,:ma25_slope_3,:ma60_slope_3,:atr14,:atr20_avg,:vol_ma5,:vol_ma60,:vol_ratio,:vol_ma5_cross_vol_ma60,:price_ma25_deviation_pct,:high_20,:low_20,:low_30,:resistance_level,:is_abnormal_bar,:data_quality_status)
-            ON DUPLICATE KEY UPDATE
-            ma25=VALUES(ma25),ma60=VALUES(ma60),ma200=VALUES(ma200),ma25_slope_3=VALUES(ma25_slope_3),ma60_slope_3=VALUES(ma60_slope_3),atr14=VALUES(atr14),atr20_avg=VALUES(atr20_avg),vol_ma5=VALUES(vol_ma5),vol_ma60=VALUES(vol_ma60),vol_ratio=VALUES(vol_ratio),vol_ma5_cross_vol_ma60=VALUES(vol_ma5_cross_vol_ma60),price_ma25_deviation_pct=VALUES(price_ma25_deviation_pct),high_20=VALUES(high_20),low_20=VALUES(low_20),low_30=VALUES(low_30),resistance_level=VALUES(resistance_level),is_abnormal_bar=VALUES(is_abnormal_bar),data_quality_status=VALUES(data_quality_status),updated_at=CURRENT_TIMESTAMP
-        """), rows)
+        ch = get_clickhouse()
+        # ClickHouse 不支持 ON DUPLICATE KEY UPDATE，先删后插
+        # 按 (code, period, date) 组合去重，批量 DELETE
+        keys = set()
+        for r in rows:
+            keys.add((r['code'], r['period'], r['date']))
+        # 按 code 分组删除，避免太多 ALTER TABLE 语句
+        by_code: dict[str, list[tuple]] = {}
+        for code, period, date in keys:
+            by_code.setdefault(code, []).append((period, date))
+        for code, periods_dates in by_code.items():
+            for period, date in periods_dates:
+                if isinstance(date, int):
+                    date_s = str(date)
+                    if len(date_s) == 8:
+                        date_s = f"{date_s[:4]}-{date_s[4:6]}-{date_s[6:8]}"
+                    else:
+                        date_s = f"{date_s[:4]}-{date_s[4:6]}-{date_s[6:8]} {date_s[8:10]}:{date_s[10:12]}:{date_s[12:14]}"
+                ch.command(f"ALTER TABLE {ch.database}.technical_indicator DELETE WHERE code='{code}' AND period='{period}' AND date='{date_s}'")
+        ch.insert_batch("technical_indicator", rows)
 
     def insert_batch(self, batch: dict) -> None:
         ensure_analysis_batch_columns(self.db)

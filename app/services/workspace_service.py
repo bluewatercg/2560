@@ -212,26 +212,38 @@ def refresh_market_from_db(db: Session, market: str, *, periods: list[str] | Non
             sets["k30m"] = None
         replace_fields.add("k30m")
 
-    # 指标 — 仍从 MySQL 读取
+    # 指标 — 从 ClickHouse technical_indicator 读取（行情指标，不存 MySQL）
     if periods is None or "daily" in periods:
-        row = db.execute(
-            text(f"SELECT MAX(date) AS d FROM technical_indicator WHERE {market_sql_where('code', market)} AND period='daily'")
-        ).mappings().first()
-        sets["ind_daily"] = int(row["d"]) if row and row["d"] else None
+        row = get_clickhouse().query_one(
+            f"SELECT max(date) AS d FROM technical_indicator WHERE period='daily' AND {market_sql_where('code', market)}"
+        )
+        if row and row.get("d"):
+            d = pd.to_datetime(row["d"])
+            sets["ind_daily"] = int(d.strftime("%Y%m%d"))
+        else:
+            sets["ind_daily"] = None
         replace_fields.add("ind_daily")
 
     if periods is None or "5m" in periods:
-        row = db.execute(
-            text(f"SELECT MAX(date) AS d FROM technical_indicator WHERE {market_sql_where('code', market)} AND period='5m'")
-        ).mappings().first()
-        sets["ind_5m"] = int(row["d"]) if row and row["d"] else None
+        row = get_clickhouse().query_one(
+            f"SELECT max(date) AS d FROM technical_indicator WHERE period='5m' AND {market_sql_where('code', market)}"
+        )
+        if row and row.get("d"):
+            d = pd.to_datetime(row["d"])
+            sets["ind_5m"] = int(d.strftime("%Y%m%d%H%M%S"))
+        else:
+            sets["ind_5m"] = None
         replace_fields.add("ind_5m")
 
     if periods is None or "30m" in periods:
-        row = db.execute(
-            text(f"SELECT MAX(date) AS d FROM technical_indicator WHERE {market_sql_where('code', market)} AND period='30m'")
-        ).mappings().first()
-        sets["ind_30m"] = int(row["d"]) if row and row["d"] else None
+        row = get_clickhouse().query_one(
+            f"SELECT max(date) AS d FROM technical_indicator WHERE period='30m' AND {market_sql_where('code', market)}"
+        )
+        if row and row.get("d"):
+            d = pd.to_datetime(row["d"])
+            sets["ind_30m"] = int(d.strftime("%Y%m%d%H%M%S"))
+        else:
+            sets["ind_30m"] = None
         replace_fields.add("ind_30m")
 
     update_market_latest(db, market, replace_fields=replace_fields, **sets)
