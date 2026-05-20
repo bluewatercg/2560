@@ -863,6 +863,7 @@
           end: p.end,
           market: p.market,
           periods: 'daily,5m,30m',
+          workers: p.workers,
           commit_every: 50
         };
         if(!confirm(
