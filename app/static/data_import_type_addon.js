@@ -472,20 +472,23 @@
   function watchLatestActiveImport(rows){
     if(!Array.isArray(rows)) return;
 
-    // Map step → import_type to filter auto-detection
+    // Map step → import_type to filter
     const stepTypes = { 2: 'vipdoc', 3: 'build_30m', 4: 'rebuild_indicator' };
     const allowed = stepTypes[window.activeImportStep || 1] || null;
 
-    // If we already have multi-lane watching, only add lanes that aren't tracked yet
-    const activeRows = rows
-      .filter(r => isActiveImportStatus(r.status))
-      .filter(r => !allowed || r.import_type === allowed)
-      .sort((a, b) => activeRank(a) - activeRank(b) || Number(b.id || 0) - Number(a.id || 0));
+    // Group by market: pick latest running first, fallback to latest overall
+    const latest = {};
+    for(const r of rows){
+      if(allowed && r.import_type !== allowed) continue;
+      const m = r.market;
+      if(!m) continue;
+      if(!latest[m]) latest[m] = r;
+      if(isActiveImportStatus(r.status)) latest[m] = r; // running takes priority
+    }
 
     let foundAny = false;
-    for(const r of activeRows){
-      const market = r.market;
-      if(market && !activeImportLanes[market]){
+    for(const [market, r] of Object.entries(latest)){
+      if(!activeImportLanes[market]){
         activeImportLanes[market] = {
           batchId: r.id,
           jobId: r.job_id,
@@ -508,9 +511,9 @@
         progress_url: l.progressUrl,
         skipped: false,
       })));
-    } else if(!activeImportBatchId && activeRows.length > 0){
-      // Fallback: single batch tracking
-      const best = activeRows[0];
+    } else if(!activeImportBatchId && Object.keys(latest).length > 0){
+      // Fallback: single batch tracking — pick first market's latest
+      const best = Object.values(latest)[0];
       if(best && best.id){
         startImportWatch(best.id, best.progress_url);
       }

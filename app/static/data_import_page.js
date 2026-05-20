@@ -269,17 +269,26 @@
     try{
       const rows = await getJson('/api/import/batches?limit=50');
 
-      // Map step → import_type to filter auto-detection
+      // Map step → import_type to filter
       const stepTypes = { 2: 'vipdoc', 3: 'build_30m', 4: 'rebuild_indicator' };
       const allowed = stepTypes[activeImportStep] || null;
 
-      // Auto-detect running batches for multi-lane tracking
       if(rows && rows.length){
+        // Group by market: pick latest running or fallback to latest overall
+        const latest = {};
         for(const r of rows){
-          const market = r.market;
-          // Skip batches from other steps (e.g. don't show step2 import on step3 page)
           if(allowed && r.import_type !== allowed) continue;
-          if(market && r.status === 'running' && !activeImportLanes[market]){
+          const m = r.market;
+          if(!m) continue;
+          if(!latest[m]) latest[m] = r;
+          if(r.status === 'running' && !activeImportLanes[m]){
+            latest[m] = r;
+            break; // running takes priority
+          }
+        }
+
+        for(const [market, r] of Object.entries(latest)){
+          if(!activeImportLanes[market]){
             activeImportLanes[market] = {
               batchId: r.id,
               jobId: r.job_id,
@@ -290,13 +299,14 @@
             };
           }
         }
-        // If we found multi-lane, render them
+
+        // Render multi-lane if we have 2+ markets
         if(Object.keys(activeImportLanes).length > 1){
           renderMultiLaneCards();
         }
       }
     }catch(e){
-      // batch table removed from UI, swallow errors
+      // swallow
     }
   }
 
