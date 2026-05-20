@@ -473,13 +473,17 @@
     if(!Array.isArray(rows)) return;
 
     // Map step → import_type to filter
-    const stepTypes = { 2: 'vipdoc', 3: 'build_30m', 4: 'rebuild_indicator' };
+    const stepTypes = {
+      2: ['all', 'lday', '5m', 'vipdoc'],
+      3: ['build_30m'],
+      4: ['rebuild_indicator']
+    };
     const allowed = stepTypes[window.activeImportStep || 1] || null;
 
     // Group by market: pick latest running first, fallback to latest overall
     const latest = {};
     for(const r of rows){
-      if(allowed && r.import_type !== allowed) continue;
+      if(allowed && !allowed.includes(r.import_type)) continue;
       const m = r.market;
       if(!m) continue;
       if(!latest[m]) latest[m] = r;

@@ -273,15 +273,19 @@
     try{
       const rows = await getJson('/api/import/batches?limit=50');
 
-      // Map step → import_type to filter
-      const stepTypes = { 2: 'vipdoc', 3: 'build_30m', 4: 'rebuild_indicator' };
-      const allowed = stepTypes[activeImportStep] || null;
+      // Step 2 stores import_type as 'all'/'lday'/'5m', step 3/4 as 'build_30m'/'rebuild_indicator'
+      const stepTypeMap = {
+        2: ['all', 'lday', '5m', 'vipdoc'],
+        3: ['build_30m'],
+        4: ['rebuild_indicator']
+      };
+      const allowed = stepTypeMap[activeImportStep] || null;
 
       if(rows && rows.length){
         // Group by market: pick latest running or fallback to latest overall
         const latest = {};
         for(const r of rows){
-          if(allowed && r.import_type !== allowed) continue;
+          if(allowed && !allowed.includes(r.import_type)) continue;
           const m = r.market;
           if(!m) continue;
           if(!latest[m]) latest[m] = r;
