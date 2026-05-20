@@ -180,6 +180,7 @@
 
   function setActiveImportStep(step){
     activeImportStep = step;
+    window.activeImportStep = step;
     all('.import-step-btn').forEach(b => {
       const s = Number(b.dataset.step);
       if(s === step){
@@ -268,10 +269,16 @@
     try{
       const rows = await getJson('/api/import/batches?limit=50');
 
+      // Map step → import_type to filter auto-detection
+      const stepTypes = { 2: 'vipdoc', 3: 'build_30m', 4: 'rebuild_indicator' };
+      const allowed = stepTypes[activeImportStep] || null;
+
       // Auto-detect running batches for multi-lane tracking
       if(rows && rows.length){
         for(const r of rows){
           const market = r.market;
+          // Skip batches from other steps (e.g. don't show step2 import on step3 page)
+          if(allowed && r.import_type !== allowed) continue;
           if(market && r.status === 'running' && !activeImportLanes[market]){
             activeImportLanes[market] = {
               batchId: r.id,
@@ -748,6 +755,7 @@
   };
 
   // Expose multi-lane API for addon to share the same state
+  window.activeImportStep = activeImportStep;
   window.renderLiveStatus = renderLiveStatus;
   window.activeImportLanes = activeImportLanes;
   window.startMultiLaneWatch = startMultiLaneWatch;

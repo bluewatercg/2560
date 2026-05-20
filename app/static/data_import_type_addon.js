@@ -472,9 +472,14 @@
   function watchLatestActiveImport(rows){
     if(!Array.isArray(rows)) return;
 
+    // Map step → import_type to filter auto-detection
+    const stepTypes = { 2: 'vipdoc', 3: 'build_30m', 4: 'rebuild_indicator' };
+    const allowed = stepTypes[window.activeImportStep || 1] || null;
+
     // If we already have multi-lane watching, only add lanes that aren't tracked yet
     const activeRows = rows
       .filter(r => isActiveImportStatus(r.status))
+      .filter(r => !allowed || r.import_type === allowed)
       .sort((a, b) => activeRank(a) - activeRank(b) || Number(b.id || 0) - Number(a.id || 0));
 
     let foundAny = false;
