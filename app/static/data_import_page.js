@@ -247,6 +247,10 @@
     });
 
     activeImportMode = step === 1 ? 'check' : step === 4 ? 'batches' : 'run';
+
+    // Switching step: clear old lanes and reload for current step type
+    stopImportWatch();
+    loadImportBatches().catch(() => {});
   }
 
   function cell(v){
