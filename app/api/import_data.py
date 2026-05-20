@@ -885,7 +885,7 @@ def latest_active_imports(db: Session = Depends(get_db)):
                total_rows, started_at, finished_at, message, updated_at
         FROM data_import_batch
         WHERE status IN ('queued', 'pending', 'running', 'cancelling')
-          AND import_type IN ('vipdoc', 'lday', 'all')
+          AND import_type IN ('vipdoc', 'lday', 'all', 'build_30m', 'rebuild_indicator')
         ORDER BY id DESC
     """)).mappings().all()
 
@@ -896,9 +896,9 @@ def latest_active_imports(db: Session = Depends(get_db)):
                    total_rows, started_at, finished_at, message, updated_at
             FROM data_import_batch
             WHERE status IN ('success', 'failed')
-              AND import_type IN ('vipdoc', 'lday', 'all')
+              AND import_type IN ('vipdoc', 'lday', 'all', 'build_30m', 'rebuild_indicator')
             ORDER BY id DESC
-            LIMIT 4
+            LIMIT 16
         """)).mappings().all()
 
     lanes = []
