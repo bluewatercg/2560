@@ -30,7 +30,7 @@
     const panel = document.createElement('div');
     panel.className = 'panel';
     panel.id = 'jobProgressPanel';
-    panel.innerHTML = `<div class="panel-head split"><h3>当前执行进度</h3><button id="jobProgressRefreshBtn">刷新进度</button></div><div id="jobProgressCards" class="cards"></div><div style="margin:12px 0;height:12px;background:#334155;border-radius:999px;overflow:hidden"><div id="jobProgressBar" style="height:12px;width:0%;background:#3B82F6"></div></div><pre id="jobProgressText" class="json-box">暂无执行任务</pre><h3 style="margin-top:12px">每组执行进度</h3><div class="table-wrap"><table id="jobShardProgressTable"></table></div><h3 style="margin-top:12px">实时后台日志</h3><pre id="jobLiveLog" class="json-box" style="max-height:320px;overflow:auto">暂无日志</pre>`;
+    panel.innerHTML = `<div class="panel-head split"><h3>当前执行进度</h3><button id="jobProgressRefreshBtn">刷新进度</button></div><div id="jobProgressCards" class="cards"></div><div style="margin:12px 0;height:12px;background:#334155;border-radius:999px;overflow:hidden"><div id="jobProgressBar" style="height:12px;width:0%;background:#3B82F6"></div></div><pre id="jobProgressText" class="json-box">暂无执行任务</pre><h3 style="margin-top:12px">每组执行进度</h3><div class="table-wrap"><table id="jobShardProgressTable"></table></div><h3 style="margin-top:12px">实时后台日志</h3><pre id="jobLiveLog" class="json-box" style="max-height:320px;overflow:auto">暂无日志</pre><h3 style="margin-top:12px;display:none" id="jobErrLogHeader">错误日志 (stderr)</h3><pre id="jobErrLog" class="json-box" style="max-height:400px;overflow:auto;display:none;color:#FCA5A5"></pre>`;
     const action = $('jobActionPanel');
     if(action && action.parentNode) action.parentNode.insertBefore(panel, action.nextSibling); else view.insertBefore(panel, view.firstChild);
     $('jobProgressRefreshBtn').onclick = refreshProgress;
@@ -197,11 +197,32 @@
       try {
         const logs = await getJson(`/api/jobs/executions/${currentJobId}/logs?tail=200`);
         if(logs && logs.lines && $('jobLiveLog')){
-          $('jobLiveLog').textContent = logs.lines.join('
-');
+          $('jobLiveLog').textContent = logs.lines.join('\n');
         }
       } catch(e) {
         console.error('load job logs failed', e);
+      }
+
+      // 错误日志（仅失败时显示）
+      try {
+        const errHeader = $('jobErrLogHeader');
+        const errLog = $('jobErrLog');
+        if(p.status === 'failed') {
+          const r = await fetch(`/api/jobs/executions/${currentJobId}/error-log`);
+          if(r.ok) {
+            const text = await r.text();
+            if(errHeader) errHeader.style.display = 'block';
+            if(errLog) { errLog.style.display = 'block'; errLog.textContent = text || '(错误日志为空)'; }
+          } else {
+            if(errHeader) errHeader.style.display = 'none';
+            if(errLog) { errLog.style.display = 'block'; errLog.textContent = '(无法获取错误日志，请查看服务器 logs/job_' + currentJobId + '.err.log)'; }
+          }
+        } else {
+          if(errHeader) errHeader.style.display = 'none';
+          if(errLog) { errLog.style.display = 'none'; }
+        }
+      } catch(e) {
+        console.error('load error log failed', e);
       }
 
       if(['success','failed','cancelled'].includes(p.status) && timer){
