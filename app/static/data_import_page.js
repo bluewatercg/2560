@@ -92,6 +92,7 @@
           <label class="import-field import-field-market">
             市场范围
             <select id="importMarket">
+              <option value="all">all 全部市场</option>
               <option value="sh60">sh60 沪主板60</option>
               <option value="sh68">sh68 科创68</option>
               <option value="sz00">sz00 深主板00</option>
@@ -640,7 +641,7 @@
       scanBtn.dataset.bound = '1';
       scanBtn.onclick = async function(){
         const source_dir = $('importSourceDir') ? $('importSourceDir').value : '';
-        const market = $('importMarket') ? $('importMarket').value : 'sh';
+        const market = $('importMarket') ? $('importMarket').value : 'all';
 
         try{
           const data = await postJson('/api/import/scan', {source_dir, market});
@@ -664,7 +665,7 @@
       runBtn.dataset.bound = '1';
       runBtn.onclick = async function(){
         const source_dir = $('importSourceDir') ? $('importSourceDir').value : '';
-        const market = $('importMarket') ? $('importMarket').value : 'sh';
+        const market = $('importMarket') ? $('importMarket').value : 'all';
         const start = $('importStartDate') && $('importStartDate').value ? $('importStartDate').value : null;
         const end = $('importEndDate') && $('importEndDate').value ? $('importEndDate').value : null;
         const import_type = $('importType') ? $('importType').value : 'lday';

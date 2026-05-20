@@ -165,7 +165,7 @@
   function payload(){
     return {
       source_dir: $('importSourceDir') ? $('importSourceDir').value : '/data/vipdoc',
-      market: $('importMarket') ? $('importMarket').value : 'sh',
+      market: $('importMarket') ? $('importMarket').value : 'all',
       import_type: $('importType') ? $('importType').value : 'lday',
       start: $('importStartDate') && $('importStartDate').value ? $('importStartDate').value : null,
       end: $('importEndDate') && $('importEndDate').value ? $('importEndDate').value : null,
