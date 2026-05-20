@@ -744,22 +744,31 @@
     setActiveImportStep(1);
     updateImportMode(false);
 
-    // Auto-detect running multi-lane import on first load
+    // Step→import_type filter
+    const stepTypeMap = {
+      2: ['all', 'lday', '5m', 'vipdoc'],
+      3: ['build_30m'],
+      4: ['rebuild_indicator']
+    };
+
+    // Auto-detect running imports on first load, filtered by step type
+    // (boot starts at step 1, user may have clicked a step already)
+    // We use activeImportStep which may have been changed before boot finishes
     try{
       const latest = await getJson('/api/import/latest');
       if(latest && latest.lanes && latest.lanes.length > 0){
-        startMultiLaneWatch(latest.lanes);
+        const allowed = stepTypeMap[activeImportStep] || null;
+        const filtered = allowed
+          ? latest.lanes.filter(l => allowed.includes(l.import_type))
+          : latest.lanes;
+        if(filtered.length > 0){
+          startMultiLaneWatch(filtered);
+        }
       }
-    }catch(e){
-      // fallback: try old single-batch detection
-    }
+    }catch(e){}
 
-    // Fallback: also check batches list for single-market imports
-    loadImportBatches().then(function(){
-      if(Object.keys(activeImportLanes).length === 0 && activeImportBatchId){
-        refreshImportWatch(activeImportBatchId, activeImportProgressUrl).catch(() => {});
-      }
-    }).catch(() => {});
+    // Fallback: also check batches list
+    loadImportBatches().catch(() => {});
   }
 
   document.addEventListener('DOMContentLoaded', boot);

@@ -910,6 +910,7 @@ def latest_active_imports(db: Session = Depends(get_db)):
 
         lane = {
             "import_batch_id": batch_id,
+            "import_type": b.get("import_type", ""),
             "job_id": int(job["id"]) if job and job.get("id") else None,
             "market": market,
             "market_label": MARKET_LABELS.get(market, market),
