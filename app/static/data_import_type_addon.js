@@ -806,7 +806,10 @@
             await loadImportBatches();
             return;
           }
-          if(data && data.import_batch_id){
+          if(data && data.lanes){
+            startMultiLaneWatch(data.lanes);
+            await loadImportBatches();
+          }else if(data && data.import_batch_id){
             setBatchTypeFilter('build_30m');
             startImportWatch(data);
           }else{
@@ -854,7 +857,10 @@
             await loadImportBatches();
             return;
           }
-          if(data && data.import_batch_id){
+          if(data && data.lanes){
+            startMultiLaneWatch(data.lanes);
+            await loadImportBatches();
+          }else if(data && data.import_batch_id){
             setBatchTypeFilter('rebuild_indicator');
             startImportWatch(data);
           }else{
