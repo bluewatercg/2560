@@ -347,8 +347,16 @@ def main():
             log_path = PROJECT_ROOT / "logs" / f"job_worker_{datetime.now():%Y%m%d}.log"
             log_path.parent.mkdir(exist_ok=True)
             log(f"[worker] command: {' '.join(cmd)}")
+
+            # Per-job error log (stderr only)
+            job_execution_id = payload.get("job_execution_id")
+            err_log = None
+            if job_execution_id:
+                err_log_path = PROJECT_ROOT / "logs" / f"job_{job_execution_id}.err.log"
+                err_log = open(err_log_path, "w")
+
             with open(log_path, "ab") as out:
-                proc = subprocess.Popen(cmd, cwd=str(PROJECT_ROOT), env=env, stdout=out, stderr=subprocess.STDOUT)
+                proc = subprocess.Popen(cmd, cwd=str(PROJECT_ROOT), env=env, stdout=out, stderr=subprocess.STDOUT if err_log is None else subprocess.PIPE)
                 mark_execution_started(en, payload, log_path, proc.pid)
                 while True:
                     rc = proc.poll()
@@ -364,7 +372,21 @@ def main():
                             rc = proc.wait()
                         mark_execution_cancelled(en, payload, f"user cancelled queue #{job['id']}")
                         break
+                    # Stream stderr to per-job error log
+                    if err_log and proc.stderr:
+                        chunk = proc.stderr.read(8192)
+                        if chunk:
+                            err_log.write(chunk.decode("utf-8", errors="replace"))
+                            err_log.flush()
                     time.sleep(5)
+                # Flush remaining stderr
+                if err_log and proc.stderr:
+                    remaining = proc.stderr.read()
+                    if remaining:
+                        err_log.write(remaining.decode("utf-8", errors="replace"))
+                        err_log.flush()
+                    err_log.close()
+                    err_log = None
             log(f"[worker] queue #{job['id']} finished rc={rc}")
             was_cancelled = cancel_requested(en, payload)
             if rc != 0 and not was_cancelled:

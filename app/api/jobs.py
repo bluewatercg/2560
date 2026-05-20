@@ -269,6 +269,7 @@ def execution_progress(job_id: int, db: Session = Depends(get_db)):
             "eta_seconds": eta,
             "eta_text": _format_seconds(eta),
             "elapsed_text": _format_seconds(elapsed),
+            "error_log_url": f"/api/jobs/executions/{job_id}/error-log",
         }
     )
     return d
@@ -473,6 +474,20 @@ def execution_logs(
         }
     except FileNotFoundError:
         return {"ok": False, "job_id": job_id, "log_file": str(log_file), "lines": []}
+
+
+@router.get("/executions/{job_id}/error-log")
+def execution_error_log(job_id: int, db: Session = Depends(get_db)):
+    """Per-job stderr log captured by job_worker."""
+    err_path = PROJECT_ROOT / "logs" / f"job_{job_id}.err.log"
+    try:
+        if not err_path.exists():
+            return {"ok": False, "job_id": job_id, "message": "error log not found", "content": ""}
+        with open(err_path, "r") as f:
+            content = f.read()
+        return {"ok": True, "job_id": job_id, "content": content}
+    except FileNotFoundError:
+        return {"ok": False, "job_id": job_id, "message": "error log not found", "content": ""}
 
 
 VALID_2560_MARKETS = ["sh60", "sh68", "sz00", "sz30"]
