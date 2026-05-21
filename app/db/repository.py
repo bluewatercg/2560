@@ -113,11 +113,12 @@ class KlineRepository:
         return int(self.db.execute(text('SELECT id FROM structure_2560_analysis WHERE signal_uid=:uid'), {'uid': row['signal_uid']}).scalar_one())
 
     def replace_tags(self, analysis_id: int, batch_id: int, code: str, signal_time: int, tags: list[dict]) -> None:
-        self.db.execute(text('DELETE FROM structure_2560_tag_detail WHERE analysis_id=:id'), {'id': analysis_id})
+        # Use INSERT IGNORE instead of DELETE+INSERT to avoid deadlocks on concurrent batch runs.
+        # For fresh batches tags are always new; for re-runs IGNORE skips duplicates.
         if not tags:
             return
         rows = [{'analysis_id': analysis_id, 'batch_id': batch_id, 'code': code, 'signal_time': signal_time, **t} for t in tags]
         self.db.execute(text("""
-            INSERT INTO structure_2560_tag_detail (analysis_id,batch_id,code,signal_time,tag_code,tag_name,tag_type)
+            INSERT IGNORE INTO structure_2560_tag_detail (analysis_id,batch_id,code,signal_time,tag_code,tag_name,tag_type)
             VALUES (:analysis_id,:batch_id,:code,:signal_time,:tag_code,:tag_name,:tag_type)
         """), rows)
