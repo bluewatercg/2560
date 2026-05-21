@@ -47,6 +47,8 @@ class SignalEngine2560:
                 daily_i = enrich_indicators(daily, 'daily', source, cfg)
                 m30_i = enrich_indicators(m30, '30m', source, cfg)
                 m5_i = enrich_indicators(m5, '5m', source, cfg) if not m5.empty else pd.DataFrame()
+                # Delete old indicators once per stock (1 mutation per period), then insert fresh ones
+                self.repo.delete_indicators_for_code(code)
                 self.repo.upsert_indicators(to_indicator_rows(daily_i.tail(260)))
                 self.repo.upsert_indicators(to_indicator_rows(m30_i.tail(1200)))
                 if not m5_i.empty:

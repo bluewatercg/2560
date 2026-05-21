@@ -75,28 +75,20 @@ class KlineRepository:
         return df.tail(lookback).reset_index(drop=True) if lookback and not df.empty else df.reset_index(drop=True)
 
     def upsert_indicators(self, rows: list[dict]) -> None:
+        """Batch insert indicators. Assumes stale data was already deleted by delete_indicators_for_code()."""
         if not rows:
             return
         ch = get_clickhouse()
-        # ClickHouse 不支持 ON DUPLICATE KEY UPDATE，先删后插
-        # 按 (code, period, date) 组合去重，批量 DELETE
-        keys = set()
-        for r in rows:
-            keys.add((r['code'], r['period'], r['date']))
-        # 按 code 分组删除，避免太多 ALTER TABLE 语句
-        by_code: dict[str, list[tuple]] = {}
-        for code, period, date in keys:
-            by_code.setdefault(code, []).append((period, date))
-        for code, periods_dates in by_code.items():
-            for period, date in periods_dates:
-                if isinstance(date, int):
-                    date_s = str(date)
-                    if len(date_s) == 8:
-                        date_s = f"{date_s[:4]}-{date_s[4:6]}-{date_s[6:8]}"
-                    else:
-                        date_s = f"{date_s[:4]}-{date_s[4:6]}-{date_s[6:8]} {date_s[8:10]}:{date_s[10:12]}:{date_s[12:14]}"
-                ch.command(f"ALTER TABLE {ch.database}.technical_indicator DELETE WHERE code='{code}' AND period='{period}' AND date='{date_s}'")
         ch.insert_batch("technical_indicator", rows)
+
+    def delete_indicators_for_code(self, code: str) -> None:
+        """Delete all indicators for one stock across all periods — one mutation per period instead of one per row."""
+        ch = get_clickhouse()
+        for period in ("daily", "30m", "5m"):
+            try:
+                ch.command(f"ALTER TABLE {ch.database}.technical_indicator DELETE WHERE code='{code}' AND period='{period}'")
+            except Exception:
+                pass  # Some periods may not have data for this stock
 
     def insert_batch(self, batch: dict) -> None:
         ensure_analysis_batch_columns(self.db)
