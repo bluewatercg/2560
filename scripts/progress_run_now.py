@@ -31,6 +31,7 @@ import requests
 from sqlalchemy import create_engine, text
 
 from app.core.market_scope import market_sql_where
+from app.db.clickhouse import get_clickhouse
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -82,6 +83,21 @@ def load_codes(en) -> list[str]:
     sql = f"SELECT code FROM stock_info s WHERE {market_where('s', MARKET)} ORDER BY code"
     with en.connect() as conn:
         codes = [r[0] for r in conn.execute(text(sql)).all()]
+
+    # fallback：如果 stock_info 为空，从 ClickHouse daily_kline 兜底取
+    if not codes:
+        log(f"[parallel] stock_info empty, falling back to ClickHouse daily_kline for market={MARKET}")
+        try:
+            where = market_where("code", MARKET)
+            rows = get_clickhouse().query(
+                f"SELECT DISTINCT code FROM daily_kline WHERE {where} ORDER BY code"
+            )
+            codes = [r["code"] for r in rows]
+            log(f"[parallel] fallback loaded {len(codes)} codes from daily_kline")
+        except Exception as e:
+            log(f"[parallel] fallback also failed: {e}")
+            return []
+
     return codes[:LIMIT_CODES] if LIMIT_CODES > 0 else codes
 
 
