@@ -157,6 +157,8 @@
     return btns;
   }
 
+  let activeJobsPollTimer = null;
+
   function renderStepDetail() {
     const container = $("workflowStepDetail");
     if (!container) return;
@@ -168,8 +170,103 @@
     if (step.jobId) html += `<p class="muted">任务 #${step.jobId} | <a href="#" onclick="window._wfViewJob(${step.jobId});return false">查看进度</a></p>`;
     if (step.status === "running" && step.log) html += `<pre class="wf-log">${step.log}</pre>`;
     if (step.status === "done" && step.summary) html += `<p style="color:var(--green)">${step.summary}</p>`;
+
+    // 正在运行时，显示所有活跃任务
+    if (step.status === "running") {
+      html += `<div style="margin-top:12px"><button class="ghost" id="wfActiveJobsBtn">查看所有运行中任务</button></div>`;
+      html += `<div id="wfActiveJobs" style="margin-top:8px"></div>`;
+    }
+
     html += `</div>`;
     container.innerHTML = html;
+
+    // 绑定按钮
+    if (step.status === "running") {
+      const btn = $("wfActiveJobsBtn");
+      if (btn) btn.onclick = () => loadActiveJobs(step);
+    }
+  }
+
+  async function loadActiveJobs(step) {
+    const container = $("wfActiveJobs");
+    if (!container) return;
+    container.innerHTML = `<p class="muted">正在加载...</p>`;
+
+    try {
+      const execs = await getJson("/api/jobs/executions?limit=200");
+      const runningJobs = (execs || []).filter(j => {
+        const s = (j.status || "").toLowerCase();
+        return s === "running" || s === "queued" || s === "pending";
+      });
+
+      if (!runningJobs.length) {
+        container.innerHTML = `<p class="muted">当前无运行中的任务</p>`;
+        return;
+      }
+
+      container.innerHTML = `<div class="table-wrap"><table>
+        <thead><tr><th>ID</th><th>类型</th><th>市场</th><th>进度</th><th>成功/失败</th><th>当前代码</th><th>消息</th><th>操作</th></tr></thead>
+        <tbody>${runningJobs.map(j => {
+          const pct = j.progress_total > 0 ? Math.round((j.progress_current / j.progress_total) * 100) : 0;
+          const typeLabel = {
+            import_vipdoc: "导入",
+            build_30m: "构建30m",
+            rebuild_indicator: "重算指标",
+            run_2560: "运行2560",
+          }[j.job_type] || j.job_type;
+          return `<tr>
+            <td>${j.id}</td>
+            <td>${typeLabel}</td>
+            <td>${j.market || "-"}</td>
+            <td><div style="min-width:100px"><div style="height:8px;background:#334155;border-radius:999px;overflow:hidden"><div style="height:100%;width:${pct}%;background:#3B82F6;border-radius:999px"></div></div><div style="font-size:11px;color:#94A3B8">${j.progress_current}/${j.progress_total} (${pct}%)</div></div></td>
+            <td style="color:var(--green)">${j.success_count || 0}</td><td style="color:#EF4444">${j.failed_count || 0}</td>
+            <td class="muted" style="font-size:12px">${j.current_code || "-"}</td>
+            <td class="muted" style="font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis">${j.message || "-"}</td>
+            <td><button class="ghost" style="font-size:12px;padding:2px 6px" onclick="window._wfViewJob(${j.id})">详情</button></td>
+          </tr>`;
+        }).join("")}</tbody>
+      </table></div>`;
+
+      // 自动刷新
+      if (activeJobsPollTimer) clearInterval(activeJobsPollTimer);
+      activeJobsPollTimer = setInterval(async () => {
+        const el = $("wfActiveJobs");
+        if (!el) { clearInterval(activeJobsPollTimer); return; }
+        try {
+          const updated = await getJson("/api/jobs/executions?limit=200");
+          const updatedJobs = (updated || []).filter(j => {
+            const s = (j.status || "").toLowerCase();
+            return s === "running" || s === "queued" || s === "pending";
+          });
+          if (!updatedJobs.length) {
+            el.innerHTML = `<p class="muted">所有任务已完成</p>`;
+            clearInterval(activeJobsPollTimer);
+            return;
+          }
+          // 更新表格内容（不重建整个 HTML，只更新进度数字）
+          el.querySelectorAll("tbody tr").forEach((tr, idx) => {
+            const j = updatedJobs[idx];
+            if (!j) return;
+            const pct = j.progress_total > 0 ? Math.round((j.progress_current / j.progress_total) * 100) : 0;
+            const bar = tr.querySelector("td:nth-child(4) .bar-fill, td:nth-child(4) div div");
+            if (bar) bar.style.width = pct + "%";
+            const text = tr.querySelector("td:nth-child(4) div div:last-child");
+            if (text) text.textContent = `${j.progress_current}/${j.progress_total} (${pct}%)`;
+            const succ = tr.querySelector("td:nth-child(5)");
+            if (succ) succ.textContent = j.success_count || 0;
+            const fail = tr.querySelector("td:nth-child(6)");
+            if (fail) fail.textContent = j.failed_count || 0;
+            const code = tr.querySelector("td:nth-child(7)");
+            if (code) code.textContent = j.current_code || "-";
+            const msg = tr.querySelector("td:nth-child(8)");
+            if (msg) msg.textContent = j.message || "-";
+          });
+        } catch { /* ignore poll errors */ }
+      }, 5000);
+
+    } catch (e) {
+      container.innerHTML = `<p class="muted" style="color:#EF4444">加载失败: ${e.message}</p>`;
+    }
   }
 
   // ====== 流程引擎 ======
