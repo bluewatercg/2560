@@ -28,6 +28,7 @@ from dotenv import load_dotenv
 from typing import Iterable
 
 import requests
+import urllib3.exceptions
 from sqlalchemy import create_engine, text
 
 from app.core.market_scope import market_sql_where
@@ -253,7 +254,7 @@ def run_batch(en, batch: list[str], shard_id: int, batch_no: int, total_batches:
             r = requests.post(f"{WEB_BASE_URL}/api/strategy/2560/run", json=payload, timeout=3600)
             ok = r.status_code < 400
             err = "" if ok else f"HTTP {r.status_code}: {r.text[:800]}"
-        except (requests.exceptions.ConnectionError, requests.exceptions.ChunkedEncodingError) as exc:
+        except (requests.exceptions.ConnectionError, requests.exceptions.ChunkedEncodingError, requests.exceptions.Timeout, urllib3.exceptions.RemoteDisconnected) as exc:
             ok = False
             err = str(exc)
             if attempt < 4:
