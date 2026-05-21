@@ -184,10 +184,6 @@ def mark_batch_running(en, batch: list[str], shard_id: int):
             """),
             [{"job_id": JOB_ID, "code": code, "shard_id": shard_id} for code in batch],
         )
-        conn.execute(
-            text("UPDATE job_execution SET current_code=:code, message=:msg, updated_at=NOW() WHERE id=:job_id"),
-            {"job_id": JOB_ID, "code": batch[0], "msg": f"running batch shard={shard_id}, size={len(batch)}, first={batch[0]}"},
-        )
 
 
 def mark_batch_done(en, batch: list[str], ok: bool, elapsed_ms: int, err: str | None = None):
@@ -201,7 +197,7 @@ def mark_batch_done(en, batch: list[str], ok: bool, elapsed_ms: int, err: str | 
             UPDATE job_task_item
             SET status=:status,
                 elapsed_ms=:elapsed_ms,
-                last_error=:err,
+                error_message=:err,
                 finished_at=NOW(),
                 updated_at=NOW()
             WHERE job_id=:job_id AND code=:code
@@ -272,7 +268,9 @@ def main():
                 info = fut.result()
                 ok_txt = "OK" if info["ok"] else "FAIL"
                 log(f"[batch {done_batches}/{total_batches}] shard={info['shard_id']} size={info['size']} {info['first']}..{info['last']} {ok_txt} {info['elapsed_ms']}ms {info['err'][:120] if info['err'] else ''}")
-                update_counts(en, info["last"], f"batch {done_batches}/{total_batches}, codes done by batch")
+                # 每 5 个 batch 才更新 job_execution，避免并发写冲突
+                if done_batches % 5 == 0 or done_batches == total_batches:
+                    update_counts(en, info["last"], f"batch {done_batches}/{total_batches}")
         with en.begin() as conn:
             failed = int(conn.execute(text("SELECT failed_count FROM job_execution WHERE id=:id"), {"id": JOB_ID}).scalar() or 0)
             conn.execute(
