@@ -114,7 +114,7 @@ class SignalEngine2560:
             row = {'signal_uid': self.uid(code, signal_time, '30m'), 'batch_id': batch_id, 'strategy_code': 'S2560', 'strategy_version': self.strategy_version, 'code': code, 'name': info.get('name'), 'signal_time': signal_time, 'signal_period': '30m', 'price': float(r['close']), 'source': source or r.get('source'), 'stock_status': 'NORMAL', 'has_2560_signal': 1, 'price_near_ma25': int(price_near), 'ma25_slope_ok': int(slope_ok), 'volume_structure_ok': int(volume_ok), 'abnormal_filter_ok': int(abnormal_ok), 'trend_price_ok': int(trend_price), 'trend_slope_ok': int(trend_slope), 'volatility_ok': int(volatility), 'breakout_ok': int(breakout), 'volume_ok': int(volume_ok), 'near_resistance': int(near), 'pullback_ok': int(pullback), 'bullish_confirm': int(bullish), 'data_quality_status': data_quality, 'is_duplicate_signal': 0, 'selected_signal': 1, 'structure_status': '', 'strength_score_raw': 0, 'missing_tags': '', 'missing_tag_count': 0, 'explain_text': ''}
             tags = build_tags(row)
             row['structure_status'] = structure_status(tags)
-            row['missing_tags'] = ' '.join(t['tag_name'] for t in tags)
+            row['missing_tags'] = json.dumps([t['tag_name'] for t in tags])
             row['missing_tag_count'] = len([t for t in tags if t.get('tag_type') == 'negative'])
             row['explain_text'] = explain_text(row, tags, row['structure_status'])
             row['strength_score_raw'] = max(0, 2.0 - row['missing_tag_count'] * 0.2)
