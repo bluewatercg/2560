@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-从 mootdx 同步 A 股股票列表到 stock_info 表。
+从 mootdx 同步 A 股股票列表到 stock_info 表（本地工具，不在 Docker 容器内运行）。
 
 覆盖 4 个市场：
 - sh60: 上证主板 (60xxxx)
@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 import argparse
-import json
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -25,9 +25,7 @@ from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-import sys
 sys.path.insert(0, str(PROJECT_ROOT))
-
 load_dotenv(PROJECT_ROOT / ".env")
 
 MARKET_PREFIXES = {
@@ -53,7 +51,6 @@ def db_url() -> str:
 
 
 def code_prefix(raw_code: str) -> str:
-    """从纯数字代码提取前缀，如 '600000' -> '60'"""
     s = raw_code.strip()
     if len(s) >= 2:
         return s[:2]
@@ -61,7 +58,6 @@ def code_prefix(raw_code: str) -> str:
 
 
 def to_full_code(raw_code: str) -> str:
-    """'600000' -> 'sh.600000', '000001' -> 'sz.000001'"""
     p = code_prefix(raw_code)
     if p in ("60", "68"):
         return f"sh.{raw_code}"
@@ -70,10 +66,19 @@ def to_full_code(raw_code: str) -> str:
     return ""
 
 
-def filter_our_stocks(df) -> list[dict]:
-    """过滤出 sh60/sh68/sz00/sz30 市场，转为 stock_info 行"""
+def fetch_all_stocks_from_mootdx() -> list[dict]:
+    """使用 mootdx 拉取全量 A 股列表"""
+    from mootdx.quotes import Quotes
+
+    client = Quotes.factory(market="std", timeout=15)
+    all_stocks = client.stock_all()
+    return all_stocks.to_dict("records")
+
+
+def filter_our_stocks(mootdx_rows: list[dict]) -> list[dict]:
+    """过滤出 sh60/sh68/sz00/sz30 市场"""
     rows = []
-    for _, r in df.iterrows():
+    for r in mootdx_rows:
         raw = str(r.get("code", "")).strip()
         if not raw.isdigit():
             continue
@@ -85,18 +90,9 @@ def filter_our_stocks(df) -> list[dict]:
             continue
 
         market = "sh60" if p == "60" else "sh68" if p == "68" else "sz00" if p == "00" else "sz30"
-        code_type = {
-            "60": "sh60",
-            "68": "sh68",
-            "00": "sz00",
-            "30": "sz30",
-        }[p]
-
         name = str(r.get("name", "")).strip()
-        # 剔除指数、基金等非个股
-        if "指数" in name or "基金" in name or "转债" in name:
+        if any(kw in name for kw in ["指数", "基金", "转债", "ETF", "LOF"]):
             continue
-        # 剔除名称为空
         if not name:
             continue
 
@@ -104,30 +100,21 @@ def filter_our_stocks(df) -> list[dict]:
             "code": full,
             "name": name,
             "market": market,
-            "code_type": code_type,
+            "code_type": {"60": "sh60", "68": "sh68", "00": "sz00", "30": "sz30"}[p],
             "source": "mootdx",
         })
     return rows
 
 
 def sync(dry_run: bool = False, markets: list[str] | None = None):
-    from mootdx.quotes import Quotes
+    print("[sync] fetching all stocks from mootdx ...")
+    tdx_rows = fetch_all_stocks_from_mootdx()
+    print(f"[sync] total from mootdx: {len(tdx_rows)}")
 
-    print(f"[sync] connecting mootdx server ...")
-    client = Quotes.factory(market="std", timeout=15)
-
-    print(f"[sync] fetching all stocks ...")
-    all_stocks = client.stock_all()
-    print(f"[sync] total from mootdx: {len(all_stocks)}")
-
-    rows = filter_our_stocks(all_stocks)
+    rows = filter_our_stocks(tdx_rows)
     print(f"[sync] filtered to our 4 markets: {len(rows)}")
 
-    # 按市场进一步过滤
     if markets:
-        allowed = set()
-        for m in markets:
-            allowed.update(MARKET_PREFIXES.get(m, ()))
         rows = [r for r in rows if r["market"] in markets]
         print(f"[sync] after market filter ({','.join(markets)}): {len(rows)}")
 
@@ -137,10 +124,8 @@ def sync(dry_run: bool = False, markets: list[str] | None = None):
             print(f"  {r['code']}  {r['name']}  ({r['market']})")
         return
 
-    # 连接 MySQL
     en = create_engine(db_url(), pool_pre_ping=True)
     with en.begin() as conn:
-        # 批量 upsert：新插入，已有则更新 name
         for r in rows:
             r["now"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
