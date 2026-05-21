@@ -21,6 +21,29 @@ async function api(url, opts) {
 function fmt(v) {
   return v === null || v === undefined ? "-" : v;
 }
+function fmtTime(v) {
+  if (v === null || v === undefined || v === "") return "-";
+  const s = String(v);
+  if (s.length >= 14) return `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)} ${s.slice(8, 10)}:${s.slice(10, 12)}:${s.slice(12, 14)}`;
+  if (s.length >= 8) return `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`;
+  return s;
+}
+function fmtTags(v) {
+  if (!v) return "-";
+  let tags = v;
+  if (typeof v === "string") {
+    try { tags = JSON.parse(v); } catch { return v; }
+  }
+  if (Array.isArray(tags)) {
+    if (!tags.length) return "-";
+    return tags.map(t => {
+      const neg = t.startsWith("#缺") || t.startsWith("#未") || t.startsWith("#不") || t.startsWith("#无") || t.startsWith("#高位") || t.startsWith("#低位");
+      const cls = neg ? "tag-neg" : "tag-pos";
+      return `<span class="mini-tag ${cls}">${t}</span>`;
+    }).join(" ");
+  }
+  return String(v);
+}
 function num(v) {
   return v === null || v === undefined ? "-" : Number(v).toFixed(3);
 }
@@ -697,13 +720,13 @@ async function loadSignals() {
   renderTable(
     $("signalsTable"),
     [
-      { label: "时间", key: "signal_time" },
+      { label: "时间", render: (r) => fmtTime(r.signal_time) },
       { label: "代码", key: "code" },
       { label: "名称", key: "name" },
       { label: "价格", key: "price" },
       { label: "行业", key: "industry_name" },
       { label: "结构状态", render: (r) => badgeStatus(r.structure_status) },
-      { label: "标签", key: "missing_tags" },
+      { label: "标签", render: (r) => fmtTags(r.missing_tags) },
       { label: "数据质量", key: "data_quality_status" },
       { label: "说明", key: "explain_text" },
     ],
@@ -743,7 +766,7 @@ async function loadStatistics() {
     $("statsTable"),
     [
       { label: "批次", key: "batch_id" },
-      { label: "日期", key: "stat_date" },
+      { label: "日期", render: (r) => fmtTime(r.stat_date) },
       { label: "类型", key: "stat_type" },
       { label: "分组", key: "group_key" },
       { label: "样本", key: "sample_count" },
@@ -760,7 +783,7 @@ async function loadBatches() {
       { label: "批次ID", key: "batch_id" },
       { label: "策略", key: "strategy_code" },
       { label: "版本", key: "strategy_version" },
-      { label: "运行时间", key: "run_time" },
+      { label: "运行时间", render: (r) => fmtTime(r.run_time) },
       { label: "状态", key: "status" },
       { label: "说明", key: "message" },
     ],
@@ -803,9 +826,9 @@ async function loadLatest() {
       { label: "名称", key: "name" },
       { label: "状态", key: "latest_status" },
       { label: "批次", key: "batch_id" },
-      { label: "信号时间", key: "signal_time" },
-      { label: "结构状态", key: "structure_status" },
-      { label: "缺失标签", key: "missing_tags" },
+      { label: "信号时间", render: (r) => fmtTime(r.signal_time) },
+      { label: "结构状态", render: (r) => badgeStatus(r.structure_status) },
+      { label: "缺失标签", render: (r) => fmtTags(r.missing_tags) },
       { label: "说明", key: "explain_text" },
     ],
     rows || [],
