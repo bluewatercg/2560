@@ -212,8 +212,8 @@ def execution_items(
     return (
         db.execute(
             text("""
-        SELECT id, job_id, shard_id, code, status, retry_count, elapsed_ms,
-               last_error, started_at, finished_at, updated_at
+        SELECT id, job_id, shard_id, code, status, attempt AS retry_count, elapsed_ms,
+               error_message AS last_error, started_at, finished_at, updated_at
         FROM job_task_item
         WHERE job_id=:job_id
         ORDER BY shard_id, status, code
