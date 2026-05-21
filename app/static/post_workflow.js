@@ -508,12 +508,57 @@
     renderSteps();
   };
 
-  window._wfViewJob = function(jobId) {
-    // 导航到任务队列页面并定位到该 job
-    if (window.navigateTo) window.navigateTo("jobs");
+  window._wfViewJob = async function(jobId) {
+    const container = $("wfActiveJobs");
+    if (!container) return;
+    container.innerHTML = `<p class="muted">正在加载任务 #${jobId}...</p>`;
+
+    try {
+      const execs = await getJson("/api/jobs/executions?limit=200");
+      const exec = (execs || []).find(j => String(j.id) === String(jobId));
+      if (!exec) { container.innerHTML = `<p class="muted" style="color:#EF4444">未找到任务 #${jobId}</p>`; return; }
+
+      const typeLabel = { import_vipdoc: "行情导入", build_30m: "构建30m", rebuild_indicator: "重算指标", run_2560: "运行2560" }[exec.job_type] || exec.job_type;
+      const pct = exec.progress_total > 0 ? Math.round((exec.progress_current / exec.progress_total) * 100) : 0;
+
+      let html = `<div style="padding:12px;border:1px solid var(--line);border-radius:8px;margin-bottom:8px">
+        <h4 style="margin:0 0 8px">任务 #${jobId} — ${typeLabel}</h4>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:13px">
+          <div><span class="muted">市场:</span> ${exec.market || "-"}</div>
+          <div><span class="muted">状态:</span> ${exec.status}</div>
+          <div><span class="muted">进度:</span> ${exec.progress_current}/${exec.progress_total} (${pct}%)</div>
+          <div><span class="muted">成功/失败:</span> <span style="color:var(--green)">${exec.success_count||0}</span> / <span style="color:#EF4444">${exec.failed_count||0}</span></div>
+          <div><span class="muted">并发数:</span> ${exec.shards||"-"}</div>
+          <div><span class="muted">当前代码:</span> ${exec.current_code||"-"}</div>
+          <div style="grid-column:span 2"><span class="muted">消息:</span> ${exec.message||"-"}</div>
+        </div>
+        <div style="margin-top:8px;height:12px;background:#334155;border-radius:999px;overflow:hidden"><div style="height:100%;width:${pct}%;background:#3B82F6;border-radius:999px;transition:width 0.5s"></div></div>
+      </div>`;
+
+      try {
+        const shards = await getJson(`/api/jobs/executions/${jobId}/shards`);
+        const items = shards.items || [];
+        if (items.length) {
+          html += `<div class="table-wrap"><table>
+            <thead><tr><th>Shard</th><th>进度</th><th>成功</th><th>失败</th><th>运行中</th><th>待执行</th><th>当前代码</th></tr></thead>
+            <tbody>${items.map(s => {
+              const t = s.total || 0, d = s.done || 0, sp = t > 0 ? Math.round((d / t) * 100) : 0;
+              return `<tr><td>${s.shard_id}</td><td><div style="height:8px;background:#334155;border-radius:999px;overflow:hidden;min-width:80px"><div style="height:100%;width:${sp}%;background:#3B82F6;border-radius:999px"></div></div><span style="font-size:11px;color:#94A3B8">${d}/${t}</span></td><td style="color:var(--green)">${s.success_count||0}</td><td style="color:#EF4444">${s.failed_count||0}</td><td>${s.running_count||0}</td><td>${s.pending_count||0}</td><td class="muted" style="font-size:12px">${s.current_code||"-"}</td></tr>`;
+            }).join("")}</tbody></table></div>`;
+        }
+      } catch { /* shard detail not critical */ }
+
+      html += `<div style="margin-top:8px"><button class="ghost" onclick="window._wfViewAllJobs()">返回任务列表</button></div>`;
+      container.innerHTML = html;
+    } catch (e) {
+      container.innerHTML = `<p class="muted" style="color:#EF4444">加载失败: ${e.message}</p>`;
+    }
   };
 
-  // ====== 公开入口 ======
+  window._wfViewAllJobs = function() {
+    const step = workflowState.steps[workflowState.currentStepIndex];
+    if (step) loadActiveJobs(step);
+  };
   window.startWorkflow = startWorkflow;
 
   // ====== 自动绑定按钮 ======
