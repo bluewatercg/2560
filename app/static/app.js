@@ -23,7 +23,10 @@ function fmt(v) {
 }
 function fmtTime(v) {
   if (v === null || v === undefined || v === "") return "-";
-  const s = String(v);
+  let s = String(v);
+  // Handle ISO datetime strings like "2026-05-18T15:00:00"
+  if (s.includes("T")) return s.replace("T", " ");
+  // Handle integer format YYYYMMDDHHMMSS
   if (s.length >= 14) return `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)} ${s.slice(8, 10)}:${s.slice(10, 12)}:${s.slice(12, 14)}`;
   if (s.length >= 8) return `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`;
   return s;
@@ -32,7 +35,9 @@ function fmtTags(v) {
   if (!v) return "-";
   let tags = v;
   if (typeof v === "string") {
-    try { tags = JSON.parse(v); } catch { return v; }
+    try { tags = JSON.parse(v); } catch {
+      try { tags = JSON.parse(v.replace(/'/g, '"')); } catch { return v; }
+    }
   }
   if (Array.isArray(tags)) {
     if (!tags.length) return "-";
