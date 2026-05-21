@@ -44,37 +44,39 @@
     const importEnd = targetDate;
     const importStart = dateMinusDays(latestExisting, 5);
 
+    const stepLabels = Object.fromEntries(STEPS.map(s => [s.id, s.label]));
+
     return [
       {
-        id: "check", status: "done",
+        id: "check", label: stepLabels["check"], status: "done",
         summary: anyMissingData ? "部分市场缺K线数据" : "四市场数据已最新",
         detail: mr.map(m => `${m.market}: ${m.status}`).join(" | "),
       },
       {
-        id: "import", status: anyMissingData ? "pending" : "skipped",
+        id: "import", label: stepLabels["import"], status: anyMissingData ? "pending" : "skipped",
         endpoint: "/api/import/run",
         reason: anyMissingData ? undefined : "行情数据已齐，无需导入",
         payload: anyMissingData ? { source_dir: "/data/vipdoc", start: importStart, end: importEnd, workers: 2 } : null,
       },
       {
-        id: "build30m", status: anyMissing30m ? "pending" : "skipped",
+        id: "build30m", label: stepLabels["build30m"], status: anyMissing30m ? "pending" : "skipped",
         endpoint: "/api/import/build-30m",
         reason: anyMissing30m ? undefined : "30m 已跟上",
         payload: anyMissing30m ? { market: "all", start: importStart, end: importEnd, workers: 2 } : null,
       },
       {
-        id: "indicators", status: anyIndicatorsStale ? "pending" : "skipped",
+        id: "indicators", label: stepLabels["indicators"], status: anyIndicatorsStale ? "pending" : "skipped",
         endpoint: "/api/import/rebuild-indicators",
         reason: anyIndicatorsStale ? undefined : "指标已是最新",
         payload: anyIndicatorsStale ? { market: "all", start: importStart, end: importEnd, periods: "daily,5m,30m", commit_every: 100 } : null,
       },
       {
-        id: "run2560", status: "pending",
+        id: "run2560", label: stepLabels["run2560"], status: "pending",
         endpoint: "/api/jobs/run-all-markets",
         payload: { shards: 1 },  // run-all-markets 自带 market lane 防重
       },
       {
-        id: "pool", status: "pending",
+        id: "pool", label: stepLabels["pool"], status: "pending",
         summary: "加载今日观察池 A/B 级股票",
       },
     ];
