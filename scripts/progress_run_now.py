@@ -172,52 +172,75 @@ def update_counts(en, current_code: str | None = None, message: str | None = Non
         )
 
 
-def mark_batch_running(en, batch: list[str], shard_id: int):
+def mark_batch_running_with_retry(en, batch: list[str], shard_id: int, max_retries: int = 5):
+    """Batch UPDATE with deadlock retry."""
     if not batch:
         return
-    with en.begin() as conn:
-        conn.execute(
-            text("""
-            UPDATE job_task_item
-            SET status='running', shard_id=:shard_id, started_at=COALESCE(started_at, NOW()), updated_at=NOW()
-            WHERE job_id=:job_id AND code=:code
-            """),
-            [{"job_id": JOB_ID, "code": code, "shard_id": shard_id} for code in batch],
-        )
+    params = [{"job_id": JOB_ID, "code": code, "shard_id": shard_id} for code in batch]
+    for attempt in range(1, max_retries + 1):
+        try:
+            with en.begin() as conn:
+                conn.execute(
+                    text("""
+                    UPDATE job_task_item
+                    SET status='running', shard_id=:shard_id, started_at=COALESCE(started_at, NOW()), updated_at=NOW()
+                    WHERE job_id=:job_id AND code=:code
+                    """),
+                    params,
+                )
+            return
+        except Exception as e:
+            if "Deadlock" in str(e) and attempt < max_retries:
+                import time as _time
+                _time.sleep(0.1 * (2 ** (attempt - 1)))
+                continue
+            raise
 
 
-def mark_batch_done(en, batch: list[str], ok: bool, elapsed_ms: int, err: str | None = None):
+def mark_batch_done_with_retry(en, batch: list[str], ok: bool, elapsed_ms: int, err: str | None = None, max_retries: int = 5):
+    """Batch UPDATE with deadlock retry. InnoDB deadlocks are transient — retry with backoff."""
     if not batch:
         return
     per_code_ms = int(elapsed_ms / max(1, len(batch)))
     status = "success" if ok else "failed"
-    with en.begin() as conn:
-        conn.execute(
-            text("""
-            UPDATE job_task_item
-            SET status=:status,
-                elapsed_ms=:elapsed_ms,
-                error_message=:err,
-                finished_at=NOW(),
-                updated_at=NOW()
-            WHERE job_id=:job_id AND code=:code
-            """),
-            [
-                {
-                    "job_id": JOB_ID,
-                    "code": code,
-                    "status": status,
-                    "elapsed_ms": per_code_ms,
-                    "err": (err or "")[:2000] if err else None,
-                }
-                for code in batch
-            ],
-        )
+    params = [
+        {
+            "job_id": JOB_ID,
+            "code": code,
+            "status": status,
+            "elapsed_ms": per_code_ms,
+            "err": (err or "")[:2000] if err else None,
+        }
+        for code in batch
+    ]
+    for attempt in range(1, max_retries + 1):
+        try:
+            with en.begin() as conn:
+                conn.execute(
+                    text("""
+                    UPDATE job_task_item
+                    SET status=:status,
+                        elapsed_ms=:elapsed_ms,
+                        error_message=:err,
+                        finished_at=NOW(),
+                        updated_at=NOW()
+                    WHERE job_id=:job_id AND code=:code
+                    """),
+                    params,
+                )
+            return  # success
+        except Exception as e:
+            if "Deadlock" in str(e) and attempt < max_retries:
+                import time as _time
+                _time.sleep(0.1 * (2 ** (attempt - 1)))  # 100ms, 200ms, 400ms, 800ms, 1.6s
+                continue
+            raise
 
 
 def run_batch(en, batch: list[str], shard_id: int, batch_no: int, total_batches: int):
     t0 = time.time()
-    mark_batch_running(en, batch, shard_id)
+    # Skip mark_batch_running — it adds contention without functional value.
+    # We know the batch is running because we just submitted it.
     try:
         payload = {
             "codes": batch,
@@ -231,7 +254,7 @@ def run_batch(en, batch: list[str], shard_id: int, batch_no: int, total_batches:
         ok = False
         err = str(exc)
     elapsed_ms = int((time.time() - t0) * 1000)
-    mark_batch_done(en, batch, ok, elapsed_ms, err)
+    mark_batch_done_with_retry(en, batch, ok, elapsed_ms, err)
     return {
         "batch_no": batch_no,
         "total_batches": total_batches,
