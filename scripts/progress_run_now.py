@@ -241,18 +241,29 @@ def run_batch(en, batch: list[str], shard_id: int, batch_no: int, total_batches:
     t0 = time.time()
     # Skip mark_batch_running — it adds contention without functional value.
     # We know the batch is running because we just submitted it.
-    try:
-        payload = {
-            "codes": batch,
-            "market_type": MARKET,
-            "rebuild_statistics": False,
-        }
-        r = requests.post(f"{WEB_BASE_URL}/api/strategy/2560/run", json=payload, timeout=3600)
-        ok = r.status_code < 400
-        err = "" if ok else f"HTTP {r.status_code}: {r.text[:800]}"
-    except Exception as exc:
-        ok = False
-        err = str(exc)
+    ok = False
+    err = ""
+    for attempt in range(1, 5):
+        try:
+            payload = {
+                "codes": batch,
+                "market_type": MARKET,
+                "rebuild_statistics": False,
+            }
+            r = requests.post(f"{WEB_BASE_URL}/api/strategy/2560/run", json=payload, timeout=3600)
+            ok = r.status_code < 400
+            err = "" if ok else f"HTTP {r.status_code}: {r.text[:800]}"
+        except (requests.exceptions.ConnectionError, requests.exceptions.ChunkedEncodingError) as exc:
+            ok = False
+            err = str(exc)
+            if attempt < 4:
+                _time.sleep(5 * attempt)  # 5s, 10s, 15s backoff
+                continue
+        except Exception as exc:
+            ok = False
+            err = str(exc)
+            break  # non-retryable (timeout, etc.)
+        break
     elapsed_ms = int((time.time() - t0) * 1000)
     mark_batch_done_with_retry(en, batch, ok, elapsed_ms, err)
     return {
