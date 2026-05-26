@@ -189,8 +189,8 @@ def make_records_for_clickhouse(code: str, period: str, ind: pd.DataFrame) -> li
     for _, r in ind.iterrows():
         date_val = r['date']
         if period == 'daily':
-            date_str = str(date_val)  # YYYYMMDD -> ClickHouse parses as date
-            date_str = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+            date_str = str(date_val)  # YYYYMMDD -> ClickHouse needs "YYYY-MM-DD HH:MM:SS"
+            date_str = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]} 00:00:00"
         else:
             date_str = str(date_val)  # YYYYMMDDHHMMSS -> YYYY-MM-DD HH:MM:SS
             date_str = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]} {date_str[8:10]}:{date_str[10:12]}:{date_str[12:14]}"
