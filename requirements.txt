@@ -43,5 +43,5 @@ openpyxl==3.1.5
 # HTTP / utility
 # =========================
 requests==2.32.3
-urllib3==2.2.3
-charset-normalizer==3.4.0
+urllib3>=1.21.1,<2.0
+charset-normalizer>=3.1.0,<4.0

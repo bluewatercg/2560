@@ -86,7 +86,9 @@
       "Bash(PYTHONPATH=/mnt/d/Project/Miller/strategy2560_project_v2_engine python3 *)",
       "mcp__memory__read_graph",
       "Bash(git *)",
-      "Bash(docker exec strategy2560-web-1 sh -c 'PYTHONPATH=/app python -c \" *)"
+      "Bash(docker exec strategy2560-web-1 sh -c 'PYTHONPATH=/app python -c \" *)",
+      "Bash(bash *)",
+      "Bash(node *)"
     ]
   }
 }

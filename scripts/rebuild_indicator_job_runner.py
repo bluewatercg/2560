@@ -37,6 +37,9 @@ def parse_args():
     return p.parse_args()
 
 
+# Match "=== Rebuild daily technical_indicator: ... ===" header to set current period
+_RE_HEADER = re.compile(r"^=== Rebuild (daily|5m|30m) ")
+
 # Match lines like: "daily: processed 50/1704, inserted=1949"
 _RE_PROGRESS = re.compile(r"^(daily|5m|30m):\s+processed\s+(\d+)/(\d+),\s+inserted=(\d+)")
 
@@ -113,13 +116,17 @@ def main():
                 except Exception:
                     continue
 
+                m = _RE_HEADER.match(text_line)
+                if m:
+                    _current_period = m.group(1)
+                    continue
+
                 m = _RE_CODES.match(text_line)
                 if m:
                     count = int(m.group(1))
                     with _lock:
                         if _current_period:
                             _period_codes[_current_period] = count
-                        # Don't overwrite if we just finished this period
                     continue
 
                 m = _RE_PROGRESS.match(text_line)

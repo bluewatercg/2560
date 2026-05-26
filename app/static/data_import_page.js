@@ -3,6 +3,7 @@
   function $(id){ return document.getElementById(id); }
   function all(sel, root=document){ return Array.from(root.querySelectorAll(sel)); }
   let importWatchTimer = null;
+  let importFallbackTimer = null;  // slow poll when lanes exist but all terminal
   let activeImportLanes = {};  // { sh60: {batchId, jobId, progressUrl, label, detail, job}, ... }
   let activeImportMode = 'check';
 
@@ -353,16 +354,10 @@
               job: {},
             };
           } else {
-            // Existing market — upgrade to newer active batch if current is stale/terminal
-            const curStatus = String(
-              (existing.detail && existing.detail.status) ||
-              (existing.job && existing.job.status) || ''
-            ).toLowerCase();
-            const curIsTerminal = ['success','failed','cancelled'].includes(curStatus);
-            const newIsActive   = ['running','queued','pending'].includes(String(r.status||'').toLowerCase());
-            const newIsNewer    = Number(r.id) > Number(existing.batchId);
-            if(newIsNewer && (curIsTerminal || newIsActive)){
-              // Upgrade: current lane was stuck on a terminal/stale batch; switch to newer one
+            // Existing market — always upgrade to newer batch id.
+            // Rows come DESC, so `latest` already has the newest per market.
+            const newIsNewer = Number(r.id) > Number(existing.batchId);
+            if(newIsNewer){
               existing.batchId    = r.id;
               existing.jobId      = r.job_id;
               existing.progressUrl = r.progress_url || null;
@@ -387,6 +382,11 @@
             importWatchTimer = setInterval(function(){
               refreshMultiLaneWatch().catch(() => {});
             }, 5000);
+            // Cancel fallback — main timer is active
+            stopFallbackPoll();
+          } else {
+            // All lanes terminal — start slow fallback poll to pick up retried batches
+            startFallbackPoll();
           }
         }
       } else {
@@ -532,29 +532,13 @@
   }
 
   async function refreshMultiLaneWatch(){
-    const laneKeys = Object.keys(activeImportLanes);
-    if(laneKeys.length === 0) return;
-
-    for(const market of laneKeys){
-      const lane = activeImportLanes[market];
-      if(!lane.batchId) continue;
-
-      try{
-        const d = await getJson('/api/import/batches/' + encodeURIComponent(lane.batchId));
-        lane.detail = d || {};
-
-        if(lane.progressUrl){
-          const job = await getJson(lane.progressUrl);
-          lane.job = job || {};
-        }
-      }catch(e){
-        // ignore individual lane errors
-      }
-    }
-
-    renderMultiLaneCards();
+    // Re-query the full batch list every cycle — this picks up retried
+    // batches (newer id for same market) automatically via the upgrade
+    // logic in loadImportBatches, and already includes job progress data.
+    await loadImportBatches();
 
     // Fetch and render per-worker shard detail for each lane
+    const laneKeys = Object.keys(activeImportLanes);
     for(const market of laneKeys){
       const lane = activeImportLanes[market];
       if(!lane.jobId) continue;
@@ -564,19 +548,6 @@
       }catch(e){
         // ignore
       }
-    }
-
-    // Keep completed lanes visible — don't auto-remove them.
-    // Users need to see final state of all markets, not just active ones.
-    // Only stop the polling timer when all lanes reach terminal state.
-    const allTerminal = laneKeys.every(k => {
-      const lane = activeImportLanes[k];
-      const s = ((lane.job && lane.job.status) || (lane.detail && lane.detail.status) || '').toLowerCase();
-      return ['success', 'failed', 'cancelled'].includes(s);
-    });
-    if(allTerminal && laneKeys.length > 0){
-      stopImportWatch();
-      loadImportBatches().catch(() => {});
     }
   }
 
@@ -675,8 +646,20 @@
     }
   }
 
+  function stopFallbackPoll(){
+    if(importFallbackTimer){ clearInterval(importFallbackTimer); importFallbackTimer = null; }
+  }
+
+  function startFallbackPoll(){
+    stopFallbackPoll();
+    importFallbackTimer = setInterval(function(){
+      loadImportBatches().catch(() => {});
+    }, 30000);
+  }
+
   function stopImportWatch(){
     if(importWatchTimer){ clearInterval(importWatchTimer); importWatchTimer = null; }
+    stopFallbackPoll();
     // Clear in-place to keep object reference valid (window.activeImportLanes points here)
     Object.keys(activeImportLanes).forEach(k => delete activeImportLanes[k]);
   }
