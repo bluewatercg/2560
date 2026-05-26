@@ -426,7 +426,10 @@
                     <div class="panel">
                         <div class="panel-head split">
                             <h3>任务队列（job_queue）</h3>
-                            <button id="jobsLoadBtn">刷新任务</button>
+                            <div class="filters" style="gap:8px">
+                                <button id="jobsLoadBtn">刷新任务</button>
+                                <button id="cleanupStuckBtn" style="border-color:var(--red, #f87171);color:var(--red, #f87171)">清理僵尸任务</button>
+                            </div>
                         </div>
                         <div class="table-wrap">
                             <table id="jobQueueTable"></table>

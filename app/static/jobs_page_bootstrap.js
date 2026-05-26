@@ -76,7 +76,10 @@
         <div class="panel">
           <div class="panel-head split">
             <h3>当前/待执行任务（running / queued）</h3>
-            <button id="refreshExecutionsBtn">刷新执行记录</button>
+            <div class="filters" style="gap:8px">
+              <button id="refreshExecutionsBtn">刷新执行记录</button>
+              <button id="cleanupStuckBtn" style="border-color:var(--red, #f87171);color:var(--red, #f87171)">清理僵尸任务</button>
+            </div>
           </div>
           <div class="table-wrap">
             <table id="jobActiveExecutionsTable"></table>
@@ -122,6 +125,12 @@
     if (refreshExecutionsBtn && !refreshExecutionsBtn.dataset.bound) {
       refreshExecutionsBtn.dataset.bound = '1';
       refreshExecutionsBtn.onclick = loadExecutions;
+    }
+
+    const cleanupStuckBtn = $('cleanupStuckBtn');
+    if (cleanupStuckBtn && !cleanupStuckBtn.dataset.bound) {
+      cleanupStuckBtn.dataset.bound = '1';
+      cleanupStuckBtn.onclick = cleanupStuckJobs;
     }
 
     const refreshItemsBtn = $('refreshItemsBtn');
@@ -184,6 +193,21 @@
       body: JSON.stringify({reason})
     });
     if ($('jobActionResult')) $('jobActionResult').textContent = JSON.stringify(data, null, 2);
+    await loadJobs();
+  }
+
+  async function cleanupStuckJobs(){
+    const mins = prompt('超过多少分钟没更新的任务算作僵尸任务？', '30');
+    if (mins === null) return;
+    const staleMinutes = parseInt(mins, 10) || 30;
+    const confirmed = confirm(`确认清理超过 ${staleMinutes} 分钟未更新的僵尸任务？`);
+    if (!confirmed) return;
+    const data = await apiJson(`/api/jobs/admin/cleanup-stuck?stale_minutes=${staleMinutes}&dry_run=false`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'}
+    });
+    if ($('jobActionResult')) $('jobActionResult').textContent = JSON.stringify(data, null, 2);
+    alert(data.message || `清理完成，共 ${data.cleaned || 0} 个僵尸任务已标记为 failed`);
     await loadJobs();
   }
 
