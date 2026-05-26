@@ -59,20 +59,24 @@ def ch_command(query: str) -> str:
         return r.text.strip()
 
 
-def ch_insert(table: str, rows: list[dict]) -> int:
-    """Batch insert via JSONEachRow format."""
+def ch_insert(table: str, rows: list[dict], chunk_size: int = 100_000) -> int:
+    """Batch insert via JSONEachRow format, chunked to avoid memory/timeout issues."""
     if not rows:
         return 0
-    body = "\n".join(json.dumps(row, default=str) for row in rows)
-    query = f"INSERT INTO {CH_DATABASE}.{table} FORMAT JSONEachRow"
-    params = {"database": CH_DATABASE, "user": CH_USER, "query": query}
-    if CH_PASSWORD:
-        params["password"] = CH_PASSWORD
-    with httpx.Client(timeout=120) as client:
-        r = client.post(CH_URL, params=params, content=body.encode("utf-8"),
-                       headers={"Content-Type": "application/x-ndjson"})
-        r.raise_for_status()
-    return len(rows)
+    total = 0
+    with httpx.Client(timeout=300) as client:
+        for i in range(0, len(rows), chunk_size):
+            batch = rows[i:i + chunk_size]
+            body = "\n".join(json.dumps(row, default=str) for row in batch)
+            query = f"INSERT INTO {CH_DATABASE}.{table} FORMAT JSONEachRow"
+            params = {"database": CH_DATABASE, "user": CH_USER, "query": query}
+            if CH_PASSWORD:
+                params["password"] = CH_PASSWORD
+            r = client.post(CH_URL, params=params, content=body.encode("utf-8"),
+                           headers={"Content-Type": "application/x-ndjson"})
+            r.raise_for_status()
+            total += len(batch)
+    return total
 
 
 def ch_ping() -> bool:

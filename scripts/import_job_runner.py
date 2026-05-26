@@ -126,12 +126,16 @@ def main():
     # Background reporter: single thread writes MySQL every 2s (zero contention)
     _stop_report = threading.Event()
     _reported_ids = set()  # file_ids already updated in MySQL
+    _phase = [1]  # 1=reading, 2=inserting
 
     def _reporter():
         while not _stop_report.wait(2):
             with _lock:
                 d, s, f, r = _done[0], _success[0], _failed[0], _rows[0]
                 pending_updates = {fp: st for fp, st in _file_results.items() if fp not in _reported_ids}
+                phase = _phase[0]
+
+            msg = f"reading {d}/{total}" if phase == 1 else f"inserting rows to ClickHouse"
 
             try:
                 with SessionLocal() as db:
@@ -162,7 +166,7 @@ def main():
                         db, a.job_id, status="running",
                         progress_current=d, progress_total=total,
                         success_count=s, failed_count=f,
-                        message=f"inserting rows to ClickHouse",
+                        message=msg,
                     )
                     db.commit()
             except Exception as e:
@@ -192,7 +196,7 @@ def main():
     print(f"[import_job_runner] Phase 1 done: {d} files read, {daily_count} daily rows, {minute_count} minute rows, {f} failed", flush=True)
 
     # ── Phase 2: batch INSERT ──
-    # Restart reporter for phase 2 progress (shows "inserting rows to ClickHouse")
+    _phase[0] = 2  # switch reporter message
     _stop_report.clear()
     reporter_thread = threading.Thread(target=_reporter, daemon=True)
     reporter_thread.start()

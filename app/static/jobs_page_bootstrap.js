@@ -364,4 +364,15 @@
 
   document.addEventListener('DOMContentLoaded', ensureJobsPage);
   setInterval(ensureJobsPage, 1000);
+
+  // Auto-refresh executions every 3s when any job is running
+  setInterval(async function(){
+    try {
+      const rows = await apiJson(JOB_EXECUTIONS_LIST_URL);
+      const hasRunning = rows && rows.some(r => isActiveExecution(r));
+      if (hasRunning) {
+        await loadExecutions();
+      }
+    } catch(e) { /* silent */ }
+  }, 3000);
 })();
