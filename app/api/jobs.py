@@ -683,3 +683,73 @@ def _tail_lines(path: Path, n: int) -> list[str]:
             f.seek(end)
             data = f.read(step) + data
         return data.decode("utf-8", errors="replace").splitlines()[-n:]
+
+
+@router.post("/admin/cleanup-stuck")
+def cleanup_stuck_jobs(
+    stale_minutes: int = Query(30, ge=5, le=1440),
+    dry_run: bool = Query(False),
+    db: Session = Depends(get_db),
+):
+    """Mark job executions that are 'running' but haven't updated in N minutes as failed.
+
+    This handles the case where the worker process died without cleaning up.
+    """
+    _ensure_tables(db)
+    cutoff = db.execute(text(
+        "SELECT DATE_SUB(NOW(), INTERVAL :mins MINUTE)"
+    ), {"mins": stale_minutes}).scalar()
+
+    stuck = db.execute(text("""
+        SELECT id, job_type, market, pid, updated_at, message
+        FROM job_execution
+        WHERE status = 'running'
+          AND updated_at < :cutoff
+        ORDER BY updated_at ASC
+    """), {"cutoff": cutoff}).mappings().all()
+
+    if not stuck:
+        return {"ok": True, "cleaned": 0, "message": "no stuck jobs found"}
+
+    job_ids = [int(r["id"]) for r in stuck]
+    summary = []
+    for r in stuck:
+        summary.append({
+            "job_id": int(r["id"]),
+            "job_type": r["job_type"],
+            "market": r.get("market"),
+            "last_update": str(r["updated_at"]),
+            "pid": r.get("pid"),
+        })
+
+    if not dry_run:
+        message = f"Auto-cleaned: worker stale after {stale_minutes}m"
+        db.execute(text("""
+            UPDATE job_execution
+            SET status='failed',
+                message=:message,
+                finished_at=NOW(),
+                updated_at=NOW()
+            WHERE id IN :ids
+        """), {"message": message[:1000], "ids": tuple(job_ids)})
+
+        # Also mark corresponding job_queue rows
+        placeholders = ",".join([f"'{i}'" for i in job_ids])
+        db.execute(text(f"""
+            UPDATE job_queue
+            SET status='failed',
+                finished_at=NOW(),
+                updated_at=NOW()
+            WHERE status = 'running'
+              AND JSON_UNQUOTE(JSON_EXTRACT(payload, '$.job_execution_id')) IN ({placeholders})
+        """))
+
+        db.commit()
+
+    return {
+        "ok": True,
+        "dry_run": dry_run,
+        "cleaned": len(stuck),
+        "stale_threshold_minutes": stale_minutes,
+        "jobs": summary,
+    }
