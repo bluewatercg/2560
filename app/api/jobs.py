@@ -691,65 +691,89 @@ def cleanup_stuck_jobs(
     dry_run: bool = Query(False),
     db: Session = Depends(get_db),
 ):
-    """Mark job executions that are 'running' but haven't updated in N minutes as failed.
-
-    This handles the case where the worker process died without cleaning up.
+    """Mark job executions and import batches that are 'running' but haven't
+    updated in N minutes as failed.  Handles worker death / container restart.
     """
     _ensure_tables(db)
     cutoff = db.execute(text(
         "SELECT DATE_SUB(NOW(), INTERVAL :mins MINUTE)"
     ), {"mins": stale_minutes}).scalar()
 
-    stuck = db.execute(text("""
-        SELECT id, job_type, market, pid, updated_at, message
+    # --- 1. job_execution (strategy jobs) ---
+    stuck_exec = db.execute(text("""
+        SELECT id, job_type, market, pid, updated_at
         FROM job_execution
         WHERE status = 'running'
           AND updated_at < :cutoff
         ORDER BY updated_at ASC
     """), {"cutoff": cutoff}).mappings().all()
 
-    if not stuck:
-        return {"ok": True, "cleaned": 0, "message": "no stuck jobs found"}
+    exec_ids = [int(r["id"]) for r in stuck_exec]
+    exec_summary = [
+        {"source": "job_execution", "id": int(r["id"]), "job_type": r["job_type"],
+         "market": r.get("market"), "last_update": str(r["updated_at"]), "pid": r.get("pid")}
+        for r in stuck_exec
+    ]
 
-    job_ids = [int(r["id"]) for r in stuck]
-    summary = []
-    for r in stuck:
-        summary.append({
-            "job_id": int(r["id"]),
-            "job_type": r["job_type"],
-            "market": r.get("market"),
-            "last_update": str(r["updated_at"]),
-            "pid": r.get("pid"),
-        })
-
-    if not dry_run:
+    if not dry_run and exec_ids:
         message = f"Auto-cleaned: worker stale after {stale_minutes}m"
+        placeholders = ",".join([f"'{i}'" for i in exec_ids])
         db.execute(text("""
             UPDATE job_execution
-            SET status='failed',
-                message=:message,
-                finished_at=NOW(),
-                updated_at=NOW()
+            SET status='failed', message=:message, finished_at=NOW(), updated_at=NOW()
             WHERE id IN :ids
-        """), {"message": message[:1000], "ids": tuple(job_ids)})
-
-        # Also mark corresponding job_queue rows
-        placeholders = ",".join([f"'{i}'" for i in job_ids])
+        """), {"message": message[:1000], "ids": tuple(exec_ids)})
         db.execute(text(f"""
             UPDATE job_queue
-            SET status='failed',
-                finished_at=NOW(),
-                updated_at=NOW()
+            SET status='failed', finished_at=NOW(), updated_at=NOW()
             WHERE status = 'running'
               AND JSON_UNQUOTE(JSON_EXTRACT(payload, '$.job_execution_id')) IN ({placeholders})
         """))
 
-        db.commit()
+    # --- 2. data_import_batch (import lanes) ---
+    stuck_import = db.execute(text("""
+        SELECT id, import_type, market, status, updated_at
+        FROM data_import_batch
+        WHERE status = 'running'
+          AND updated_at < :cutoff
+        ORDER BY updated_at ASC
+    """), {"cutoff": cutoff}).mappings().all()
+
+    import_ids = [int(r["id"]) for r in stuck_import]
+    import_summary = [
+        {"source": "data_import_batch", "id": int(r["id"]), "job_type": r["import_type"],
+         "market": r.get("market"), "last_update": str(r["updated_at"])}
+        for r in stuck_import
+    ]
+
+    if not dry_run and import_ids:
+        message = f"Auto-cleaned: import stale after {stale_minutes}m"
+        db.execute(text("""
+            UPDATE data_import_batch
+            SET status='failed', message=:message, finished_at=NOW(), updated_at=NOW()
+            WHERE id IN :ids
+        """), {"message": message[:1000], "ids": tuple(import_ids)})
+
+    # --- 3. Also fix data_import_file rows for those batches ---
+    if not dry_run and import_ids:
+        db.execute(text("""
+            UPDATE data_import_file
+            SET status='failed', finished_at=NOW(), updated_at=NOW()
+            WHERE status IN ('pending','running')
+              AND import_batch_id IN :ids
+        """), {"ids": tuple(import_ids)})
+
+    db.commit()
+
+    total = len(exec_ids) + len(import_ids)
+    if not stuck_exec and not stuck_import:
+        return {"ok": True, "cleaned": 0, "message": "no stuck jobs found"}
 
     return {
         "ok": True,
         "dry_run": dry_run,
-        "cleaned": len(stuck),
+        "cleaned": total,
         "stale_threshold_minutes": stale_minutes,
-        "jobs": summary,
+        "job_execution": exec_summary,
+        "data_import_batch": import_summary,
     }
