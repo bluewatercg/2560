@@ -26,6 +26,10 @@ function fmtTime(v) {
   let s = String(v);
   // Handle ISO datetime strings like "2026-05-18T15:00:00"
   if (s.includes("T")) return s.replace("T", " ");
+  // Handle ISO date strings like "2026-05-18" (no slicing needed)
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) {
+    return s.length >= 19 ? s : s.slice(0, 10) + (s.length > 10 ? " " + s.slice(11) : "");
+  }
   // Handle integer format YYYYMMDDHHMMSS
   if (s.length >= 14) return `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)} ${s.slice(8, 10)}:${s.slice(10, 12)}:${s.slice(12, 14)}`;
   if (s.length >= 8) return `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`;

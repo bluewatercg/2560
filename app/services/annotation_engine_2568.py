@@ -297,17 +297,37 @@ class AnnotationEngine2568:
         return row
 
     @staticmethod
+    def _to_int_date(v) -> int | None:
+        """Convert date value (int, date string, datetime string) to YYYYMMDD int."""
+        if v is None:
+            return None
+        if isinstance(v, (int, float)):
+            return int(v)
+        s = str(v).strip()
+        if not s:
+            return None
+        # Handle datetime strings like '1970-01-01 05:37:40.519' or '2026-05-18T15:00:00'
+        try:
+            return int(pd.to_datetime(s).strftime("%Y%m%d"))
+        except Exception:
+            pass
+        # Handle pure numeric strings like '20260518'
+        if s.isdigit():
+            return int(s[:8])
+        return None
+
+    @staticmethod
     def _freshness_fields(
         indicator: dict[str, Any] | None,
         latest_indicator_date: int | None,
         latest_signal: dict[str, Any] | None,
         latest_batch: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        indicator_date = indicator.get("date") if indicator else None
+        indicator_date = AnnotationEngine2568._to_int_date(indicator.get("date") if indicator else None)
         indicator_updated_at = indicator.get("updated_at") if indicator else None
         if indicator_date is None:
             indicator_status = "缺指标"
-        elif latest_indicator_date is not None and int(indicator_date) >= int(latest_indicator_date):
+        elif latest_indicator_date is not None and indicator_date >= latest_indicator_date:
             indicator_status = "已重算"
         else:
             indicator_status = "未更新到最新"

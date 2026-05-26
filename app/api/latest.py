@@ -26,7 +26,7 @@ def latest_by_stock(
     where_sql = " AND ".join(where)
     sql = f"""
     WITH latest_batch AS (
-        SELECT batch_id
+        SELECT CAST(batch_id AS CHAR) AS batch_id
         FROM analysis_batch
         WHERE strategy_code='S2560' AND status='success'
         ORDER BY run_time DESC
