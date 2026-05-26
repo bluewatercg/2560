@@ -25,17 +25,6 @@ def latest_by_stock(
         params["kw"] = f"%{q.strip()}%"
     where_sql = " AND ".join(where)
     sql = f"""
-    WITH latest_batch AS (
-        SELECT CAST(batch_id AS CHAR) AS batch_id
-        FROM analysis_batch
-        WHERE strategy_code='S2560' AND status='success'
-        ORDER BY run_time DESC
-        LIMIT 1
-    ), latest_signal AS (
-        SELECT a.*
-        FROM structure_2560_analysis a
-        JOIN latest_batch b ON a.batch_id=b.batch_id
-    )
     SELECT
         s.code,
         s.name,
@@ -49,7 +38,14 @@ def latest_by_stock(
         a.missing_tag_count,
         a.explain_text
     FROM stock_info s
-    LEFT JOIN latest_signal a ON a.code=s.code
+    LEFT JOIN structure_2560_analysis a ON a.code=s.code
+        AND a.batch_id = (
+            SELECT CAST(batch_id AS CHAR)
+            FROM analysis_batch
+            WHERE strategy_code='S2560' AND status='success'
+            ORDER BY run_time DESC
+            LIMIT 1
+        )
     WHERE {where_sql}
     ORDER BY s.code
     LIMIT :limit
