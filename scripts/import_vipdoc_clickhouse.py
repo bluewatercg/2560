@@ -242,6 +242,72 @@ def _read_lc5(path: Path) -> pd.DataFrame:
     return df.reset_index() if not isinstance(df.index, pd.RangeIndex) else df.copy()
 
 
+# ── Read-only functions (no ClickHouse write) ──────────────────────
+
+def read_daily_rows(path: str, market: str, start: Optional[str] = None, end: Optional[str] = None) -> dict:
+    """读取日线文件，返回 rows 列表但不写 ClickHouse。"""
+    p = Path(path)
+    try:
+        code = code_from_filename(p, market)
+        start_s = _start_day_s(start)
+        end_s = _end_day_s(end)
+
+        df = _read_daily(p)
+        rows = []
+        for _, row in df.iterrows():
+            d = _date_str(row.get("date") if "date" in row else row.iloc[0])
+            rows.append({
+                "code": code,
+                "date": d,
+                "open": float(row.get("open", 0) or 0),
+                "high": float(row.get("high", 0) or 0),
+                "low": float(row.get("low", 0) or 0),
+                "close": float(row.get("close", 0) or 0),
+                "volume": float(_volume(row)),
+                "amount": float(_amount(row)),
+                "source": SOURCE,
+            })
+        rows = _filter_rows_by_date(rows, start_s, end_s, "date")
+        return {"ok": True, "file": str(p), "code": code, "rows": rows, "type": "lday"}
+
+    except Exception as exc:
+        return {"ok": False, "file": str(p), "code": code if "code" in dir() else "<unknown>",
+                "rows": [], "type": "lday", "error": str(exc)}
+
+
+def read_5m_rows(path: str, market: str, start: Optional[str] = None, end: Optional[str] = None) -> dict:
+    """读取5分钟线文件，返回 rows 列表但不写 ClickHouse。"""
+    p = Path(path)
+    try:
+        code = code_from_filename(p, market)
+        start_s = _start_min_s(start)
+        end_s = _end_min_s(end)
+
+        df = _read_lc5(p)
+        rows = []
+        for _, row in df.iterrows():
+            dt_col = row.get("date") if "date" in row else row.iloc[0]
+            d = _datetime_str(dt_col)
+            rows.append({
+                "code": code,
+                "date": d,
+                "period": "5m",
+                "open": float(row.get("open", 0) or 0),
+                "high": float(row.get("high", 0) or 0),
+                "low": float(row.get("low", 0) or 0),
+                "close": float(row.get("close", 0) or 0),
+                "volume": float(_volume(row)),
+                "amount": float(_amount(row)),
+                "source": SOURCE,
+            })
+        rows = _filter_rows_by_date(rows, start_s, end_s, "date")
+        return {"ok": True, "file": str(p), "code": code, "rows": rows, "type": "5m"}
+
+    except Exception as exc:
+        return {"ok": False, "file": str(p), "code": code if "code" in dir() else "<unknown>",
+                "rows": [], "type": "5m", "error": str(exc)}
+
+
 # ── Import functions ──────────────────────────────────────────────
 
 def import_daily_clickhouse(path: str, market: str, start: Optional[str] = None, end: Optional[str] = None) -> dict:

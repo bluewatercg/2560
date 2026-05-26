@@ -20,8 +20,9 @@ from app.services.job_orchestrator import (
     update_job_execution,
 )
 from scripts.import_vipdoc_clickhouse import (
-    import_daily_clickhouse,
-    import_5m_clickhouse,
+    read_daily_rows,
+    read_5m_rows,
+    ch_insert,
     ch_ping,
 )
 
@@ -94,19 +95,30 @@ def main():
     _rows = [0]
     _file_results = {}  # filepath -> ('success'|'failed', error_msg)
 
-    def do_import(filepath: str) -> dict:
-        if filepath.endswith(".day"):
-            return import_daily_clickhouse(filepath, market, a.start, a.end)
-        else:
-            return import_5m_clickhouse(filepath, market, a.start, a.end)
+    # Phase 1: parallel read — accumulate rows in memory
+    _daily_rows: list[dict] = []
+    _minute_rows: list[dict] = []
 
-    def on_done(filepath: str, result: dict):
+    def do_read(filepath: str) -> dict:
+        """Read file into rows dict (no ClickHouse write)."""
+        if filepath.endswith(".day"):
+            return read_daily_rows(filepath, market, a.start, a.end)
+        else:
+            return read_5m_rows(filepath, market, a.start, a.end)
+
+    def on_read_done(filepath: str, result: dict):
         with _lock:
             _done[0] += 1
             if result["ok"]:
                 _success[0] += 1
-                _rows[0] += result["rows"]
+                rows = result.get("rows", [])
+                _rows[0] += len(rows)
                 _file_results[filepath] = ("success", None)
+                rtype = result.get("type", "")
+                if rtype == "lday":
+                    _daily_rows.extend(rows)
+                elif rtype == "5m":
+                    _minute_rows.extend(rows)
             else:
                 _failed[0] += 1
                 _file_results[filepath] = ("failed", str(result.get("error", ""))[:500])
@@ -121,12 +133,8 @@ def main():
                 d, s, f, r = _done[0], _success[0], _failed[0], _rows[0]
                 pending_updates = {fp: st for fp, st in _file_results.items() if fp not in _reported_ids}
 
-            # Always update job_execution so frontend shows "running" immediately;
-            # file status updates are skipped when there's nothing pending.
-
             try:
                 with SessionLocal() as db:
-                    # Batch update file statuses
                     if pending_updates:
                         for filepath, (status, err) in pending_updates.items():
                             fid = file_id_map.get(filepath)
@@ -147,47 +155,82 @@ def main():
                                 "err": err,
                             })
                         db.commit()
-
-                        # Only mark as reported AFTER commit succeeds
                         with _lock:
                             _reported_ids.update(pending_updates.keys())
 
-                    # Update job_execution progress (every cycle, even at 0/total)
                     update_job_execution(
                         db, a.job_id, status="running",
                         progress_current=d, progress_total=total,
                         success_count=s, failed_count=f,
-                        message=f"import {d}/{total}",
+                        message=f"inserting rows to ClickHouse",
                     )
                     db.commit()
             except Exception as e:
                 print(f"[reporter] MySQL update failed: {e}", flush=True)
-                # Don't update _reported_ids — retry on next cycle
 
     t0 = time.time()
     reporter_thread = threading.Thread(target=_reporter, daemon=True)
     reporter_thread.start()
 
+    # ── Phase 1: parallel read ──
+    print(f"[import_job_runner] Phase 1: reading {total} files with {a.workers} workers", flush=True)
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=a.workers) as pool:
-            futures = {pool.submit(do_import, f): f for f in all_files}
+            futures = {pool.submit(do_read, f): f for f in all_files}
             for fut in concurrent.futures.as_completed(futures):
                 filepath = futures[fut]
-                on_done(filepath, fut.result())
+                on_read_done(filepath, fut.result())
     finally:
         _stop_report.set()
         reporter_thread.join(timeout=3)
 
-    # Final flush
+    with _lock:
+        daily_count = len(_daily_rows)
+        minute_count = len(_minute_rows)
+        d, s, f = _done[0], _success[0], _failed[0]
+
+    print(f"[import_job_runner] Phase 1 done: {d} files read, {daily_count} daily rows, {minute_count} minute rows, {f} failed", flush=True)
+
+    # ── Phase 2: batch INSERT ──
+    # Restart reporter for phase 2 progress (shows "inserting rows to ClickHouse")
+    _stop_report.clear()
+    reporter_thread = threading.Thread(target=_reporter, daemon=True)
+    reporter_thread.start()
+
+    phase2_ok = True
+    try:
+        if daily_count > 0:
+            t_ins = time.time()
+            print(f"[import_job_runner] Phase 2: inserting {daily_count} daily rows", flush=True)
+            inserted = ch_insert("daily_kline", _daily_rows)
+            print(f"[import_job_runner] daily insert done: {inserted} rows in {time.time()-t_ins:.1f}s", flush=True)
+
+        if minute_count > 0:
+            t_ins = time.time()
+            print(f"[import_job_runner] Phase 2: inserting {minute_count} minute rows", flush=True)
+            inserted = ch_insert("minute_kline_period", _minute_rows)
+            print(f"[import_job_runner] minute insert done: {inserted} rows in {time.time()-t_ins:.1f}s", flush=True)
+    except Exception as e:
+        phase2_ok = False
+        print(f"[import_job_runner] Phase 2 INSERT failed: {e}", flush=True)
+        with _lock:
+            _failed[0] += 1
+            _file_results["__batch_insert__"] = ("failed", str(e)[:500])
+    finally:
+        _stop_report.set()
+        reporter_thread.join(timeout=3)
+
     with _lock:
         d, s, f, r = _done[0], _success[0], _failed[0], _rows[0]
 
     elapsed = time.time() - t0
     print(f"[import_job_runner] done: ok={s} failed={f} rows={r} in {elapsed:.1f}s", flush=True)
 
-    status = "success" if f == 0 else "failed"
-    batch_message = f"finished to ClickHouse, workers={a.workers}"
-    if f:
+    status = "success" if f == 0 and phase2_ok else "failed"
+    batch_message = f"finished to ClickHouse (batch insert), workers={a.workers}"
+    if not phase2_ok:
+        batch_message = f"finished with ClickHouse batch insert error"
+    elif f:
         batch_message = f"finished with {f} failed files"
 
     with SessionLocal() as db:
