@@ -1,8 +1,9 @@
 
 (function(){
   function $(id){ return document.getElementById(id); }
-  const JOB_EXECUTIONS_LIST_URL = '/api/jobs/executions?job_type=run_2560&job_type=run_2560_now&limit=50';
-  const JOB_EXECUTIONS_LATEST_URL = '/api/jobs/executions?job_type=run_2560&job_type=run_2560_now&limit=1';
+  // Show all job types (build_30m, rebuild_indicator, import_vipdoc, run_2560, etc.)
+  const JOB_EXECUTIONS_LIST_URL = '/api/jobs/executions?limit=100';
+  const JOB_EXECUTIONS_LATEST_URL = '/api/jobs/executions?limit=5';
   const APP_LOAD_JOBS = window.loadJobs;
 
   function ensureJobsPage(){
