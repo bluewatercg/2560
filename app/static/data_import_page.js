@@ -285,10 +285,10 @@
     all('.import-field-source').forEach(el => {
       el.style.display = step <= 2 ? '' : 'none';
     });
-    // 并发线程：只在步骤2显示（步骤3/4用后端默认并发数）
+    // 并发线程：步骤2/3/4都显示（单股计算需要控制并发数）
     all('#importWorkers').forEach(el => {
       const label = el.closest('label');
-      if(label) label.style.display = step === 2 ? '' : 'none';
+      if(label) label.style.display = step >= 2 ? '' : 'none';
     });
     // 导入内容：只在步骤2显示
     all('#importType').forEach(el => {
