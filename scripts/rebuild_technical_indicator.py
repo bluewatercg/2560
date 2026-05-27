@@ -300,6 +300,7 @@ def rebuild_period(
                 print(f"{period}: processed {idx}/{len(codes)}, inserted={total}")
 
     print(f"[OK] {period} inserted: {total}")
+    return {"ok": True, "period": period, "total_inserted": total, "total_codes": len(codes)}
 
 
 def main():
