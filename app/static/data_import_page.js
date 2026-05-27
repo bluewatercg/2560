@@ -512,7 +512,7 @@
         </div>
         <div id="laneWorker-${market}" style="margin-top:12px"></div>
         <div style="margin-top:10px;display:flex;gap:8px;align-items:center">
-          ${status === 'running' ? '<span style="color:#64748B;font-size:11px">每5秒自动刷新…</span>' : ''}
+          ${status === 'running' ? `<span style="color:#64748B;font-size:11px">每5秒自动刷新…</span><button class="cancel-import-btn" data-market="${market}" data-job-id="${jobId || ''}" style="padding:4px 10px;border:1px solid #EF4444;border-radius:4px;background:transparent;color:#EF4444;cursor:pointer;font-size:11px">取消</button>` : ''}
           ${status === 'success' || status === 'failed' ? `<button onclick="window.viewLaneFiles('${market}')" style="padding:4px 10px;border:1px solid #334155;border-radius:4px;background:#1E293B;color:#F8FAFC;cursor:pointer;font-size:11px">查看文件</button>` : ''}
         </div>
       </div>`;
@@ -769,6 +769,32 @@
     bindButtons();
     setActiveImportStep(1);
     updateImportMode(false);
+
+    // Event delegation: cancel buttons on import live cards (cards re-render on each poll)
+    const cardsContainer = $('importLiveCards');
+    if(cardsContainer){
+      cardsContainer.addEventListener('click', async function(ev){
+        const btn = ev.target.closest('.cancel-import-btn');
+        if(!btn) return;
+        ev.stopPropagation();
+        const market = btn.dataset.market;
+        const jobId = btn.dataset.jobId;
+        const lane = activeImportLanes[market];
+        if(!jobId){ alert('任务 job_id 为空，无法取消'); return; }
+        if(!confirm(`确认取消 ${market}（#${lane && lane.batchId}）的导入任务？`)) return;
+        btn.disabled = true;
+        btn.textContent = '取消中…';
+        try{
+          const data = await postJson(`/api/jobs/executions/${jobId}/cancel`, {
+            reason: '用户从数据导入页面取消'
+          });
+          alert(data.message || `已取消 ${market}`);
+          await loadImportBatches();
+        }catch(e){
+          alert('取消失败：' + (e && e.message ? e.message : String(e)));
+        }
+      });
+    }
 
     // Step→import_type filter
     const stepTypeMap = {
