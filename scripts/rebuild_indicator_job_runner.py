@@ -15,7 +15,7 @@ from sqlalchemy import text
 
 from app.db.session import SessionLocal
 from app.services.job_orchestrator import update_job_execution
-from scripts.rebuild_technical_indicator import rebuild_period_parallel
+from scripts.rebuild_technical_indicator import rebuild_period
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -112,9 +112,9 @@ def main():
     # Execute rebuild for each period (periods run sequentially, codes within each period run in parallel)
     results = {}
     for p in periods:
-        r = rebuild_period_parallel(
-            p, a.start, a.end, a.market, limit_codes, a.commit_every, a.workers,
-            on_result=on_result,
+        r = rebuild_period(
+            p, a.start, a.end, a.market, limit_codes, a.commit_every,
+            workers=a.workers, on_result=on_result,
         )
         results[p] = r
 
