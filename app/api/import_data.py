@@ -335,33 +335,24 @@ def _cancel_import_batch(db: Session, batch_id: int, reason: str) -> dict:
                 WHERE id=:id
             """), {"id": job_id, "message": message})
         elif job_status == "running":
+            # Always cancel immediately — don't wait for stale timeout
             result = db.execute(text("""
                 UPDATE job_execution
-                SET status=CASE
-                        WHEN updated_at < DATE_SUB(NOW(), INTERVAL 5 MINUTE) THEN 'cancelled'
-                        ELSE status
-                    END,
+                SET status='cancelled',
                     cancel_requested_at=NOW(),
                     message=:message,
-                    finished_at=CASE
-                        WHEN updated_at < DATE_SUB(NOW(), INTERVAL 5 MINUTE) THEN NOW()
-                        ELSE finished_at
-                    END,
+                    finished_at=NOW(),
                     updated_at=NOW()
                 WHERE id=:id
-            """), {"id": job_id, "message": "cancel requested: " + message})
+            """), {"id": job_id, "message": message})
         else:
             result = None
         job_rows = int(result.rowcount) if result is not None else 0
 
     batch_status = str(batch.get("status") or "").lower()
-    if batch_status in ("queued", "pending"):
+    if batch_status in ("queued", "pending", "running", "cancelling"):
         target_status = "cancelled"
         finished_sql = "finished_at=NOW(),"
-    elif batch_status == "running":
-        stale = bool(job and job.get("updated_at") and job["updated_at"] < db.execute(text("SELECT DATE_SUB(NOW(), INTERVAL 5 MINUTE)")).scalar())
-        target_status = "cancelled" if stale else "cancelling"
-        finished_sql = "finished_at=NOW()," if stale else ""
     else:
         target_status = batch_status or "cancelled"
         finished_sql = ""
