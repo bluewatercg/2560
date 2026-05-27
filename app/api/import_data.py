@@ -861,6 +861,85 @@ def cancel_import_batch(batch_id: int, payload: CancelBatchRequest | None = None
     return _cancel_import_batch(db, batch_id, reason)
 
 
+@router.post("/admin/cleanup-stuck")
+def cleanup_stuck_import_batches(
+    stale_minutes: int = Query(30, ge=5, le=1440),
+    dry_run: bool = Query(False),
+    db: Session = Depends(get_db),
+):
+    """Force-cancel import batches that are stuck in running/queued/pending/cancelling
+    for longer than `stale_minutes` without any progress update.
+
+    This handles cases where the subprocess crashed but the job_worker didn't update
+    the batch status, or when job_worker itself is down/stuck.
+    """
+    if not _table_exists(db, "data_import_batch"):
+        return {"ok": False, "message": "data_import_batch table not found"}
+
+    # Find stuck batches
+    rows = db.execute(text("""
+        SELECT id, import_type, market, status, updated_at, message
+        FROM data_import_batch
+        WHERE status IN ('running', 'queued', 'pending', 'cancelling')
+          AND updated_at < DATE_SUB(NOW(), INTERVAL :mins MINUTE)
+        ORDER BY id DESC
+    """), {"mins": stale_minutes}).mappings().all()
+
+    if not rows:
+        return {"ok": True, "message": "No stuck batches found", "cleaned": 0}
+
+    cleaned = 0
+    for r in rows:
+        batch_id = int(r["id"])
+        if dry_run:
+            cleaned += 1
+            continue
+
+        # Force-cancel the batch
+        db.execute(text("""
+            UPDATE data_import_batch
+            SET status='cancelled',
+                message=CONCAT(COALESCE(message, ''), ' | force-cancelled: stuck for >:mins min'),
+                finished_at=NOW(),
+                updated_at=NOW()
+            WHERE id=:id
+        """), {"id": batch_id, "mins": stale_minutes})
+
+        # Also cancel the linked job_execution if it exists
+        if _table_exists(db, "job_execution"):
+            db.execute(text("""
+                UPDATE job_execution
+                SET status='cancelled',
+                    message=CONCAT(COALESCE(message, ''), ' | batch force-cancelled'),
+                    finished_at=NOW(),
+                    updated_at=NOW()
+                WHERE batch_id = CAST(:batch_id AS CHAR)
+                  AND status IN ('running', 'queued', 'pending', 'cancelling')
+            """), {"batch_id": str(batch_id)})
+
+        # Also cancel any queued job_queue entries
+        if _table_exists(db, "job_queue"):
+            db.execute(text("""
+                UPDATE job_queue
+                SET status='cancelled',
+                    finished_at=NOW(),
+                    updated_at=NOW()
+                WHERE JSON_UNQUOTE(JSON_EXTRACT(payload, '$.import_batch_id'))=:batch_id
+                  AND status IN ('pending', 'queued')
+            """), {"batch_id": str(batch_id)})
+
+        cleaned += 1
+
+    db.commit()
+    return {
+        "ok": True,
+        "cleaned": cleaned,
+        "dry_run": dry_run,
+        "stale_minutes": stale_minutes,
+        "batches": [dict(r) for r in rows],
+    }
+
+
 @router.post("/batches/{batch_id}/redis-cleanup")
 def cleanup_batch_redis_keys(batch_id: int, db: Session = Depends(get_db)):
     """Delete leftover Redis keys for a batch (flush failure recovery)."""

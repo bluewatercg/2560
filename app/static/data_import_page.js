@@ -767,7 +767,7 @@
         const confirmed = confirm(`确认清理超过 ${staleMinutes} 分钟未更新的僵尸任务？`);
         if(!confirmed) return;
         try{
-          const data = await postJson(`/api/jobs/admin/cleanup-stuck?stale_minutes=${staleMinutes}&dry_run=false`, {});
+          const data = await postJson(`/api/import/admin/cleanup-stuck?stale_minutes=${staleMinutes}&dry_run=false`, {});
           alert(data.message || `清理完成，共 ${data.cleaned || 0} 个僵尸任务已标记为 failed`);
           await loadImportBatches();
         }catch(e){
