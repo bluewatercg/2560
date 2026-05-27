@@ -660,7 +660,7 @@
     stopFallbackPoll();
     importFallbackTimer = setInterval(function(){
       loadImportBatches().catch(() => {});
-    }, 30000);
+    }, 5000);  // was 30000 — 5s to catch new batches sooner after cancel
   }
 
   function stopImportWatch(){

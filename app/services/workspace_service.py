@@ -180,8 +180,14 @@ def refresh_market_from_db(db: Session, market: str, *, periods: list[str] | Non
             f"SELECT max(date) AS d FROM daily_kline WHERE {where}"
         )
         if row and row.get("d"):
-            d = pd.to_datetime(row["d"])
-            sets["daily"] = int(d.strftime("%Y%m%d"))
+            try:
+                d = pd.to_datetime(row["d"])
+                if d.year > 2100:
+                    sets["daily"] = None
+                else:
+                    sets["daily"] = int(d.strftime("%Y%m%d"))
+            except Exception:
+                sets["daily"] = None
         else:
             sets["daily"] = None
         replace_fields.add("daily")
@@ -194,8 +200,14 @@ def refresh_market_from_db(db: Session, market: str, *, periods: list[str] | Non
             f"SELECT max(date) AS d FROM minute_kline_period WHERE period='5m' AND {where}"
         )
         if row and row.get("d"):
-            d = pd.to_datetime(row["d"])
-            sets["k5m"] = int(d.strftime("%Y%m%d%H%M%S"))
+            try:
+                d = pd.to_datetime(row["d"])
+                if d.year > 2100:
+                    sets["k5m"] = None
+                else:
+                    sets["k5m"] = int(d.strftime("%Y%m%d%H%M%S"))
+            except Exception:
+                sets["k5m"] = None
         else:
             sets["k5m"] = None
         replace_fields.add("k5m")
@@ -206,8 +218,14 @@ def refresh_market_from_db(db: Session, market: str, *, periods: list[str] | Non
             f"SELECT max(date) AS d FROM minute_kline_period WHERE period='30m' AND {where}"
         )
         if row and row.get("d"):
-            d = pd.to_datetime(row["d"])
-            sets["k30m"] = int(d.strftime("%Y%m%d%H%M%S"))
+            try:
+                d = pd.to_datetime(row["d"])
+                if d.year > 2100:
+                    sets["k30m"] = None
+                else:
+                    sets["k30m"] = int(d.strftime("%Y%m%d%H%M%S"))
+            except Exception:
+                sets["k30m"] = None
         else:
             sets["k30m"] = None
         replace_fields.add("k30m")
@@ -218,8 +236,14 @@ def refresh_market_from_db(db: Session, market: str, *, periods: list[str] | Non
             f"SELECT max(date) AS d FROM technical_indicator WHERE period='daily' AND {market_sql_where('code', market)}"
         )
         if row and row.get("d"):
-            d = pd.to_datetime(row["d"])
-            sets["ind_daily"] = int(d.strftime("%Y%m%d"))
+            try:
+                d = pd.to_datetime(row["d"])
+                if d.year > 2100:
+                    sets["ind_daily"] = None
+                else:
+                    sets["ind_daily"] = int(d.strftime("%Y%m%d"))
+            except Exception:
+                sets["ind_daily"] = None
         else:
             sets["ind_daily"] = None
         replace_fields.add("ind_daily")
@@ -229,8 +253,14 @@ def refresh_market_from_db(db: Session, market: str, *, periods: list[str] | Non
             f"SELECT max(date) AS d FROM technical_indicator WHERE period='5m' AND {market_sql_where('code', market)}"
         )
         if row and row.get("d"):
-            d = pd.to_datetime(row["d"])
-            sets["ind_5m"] = int(d.strftime("%Y%m%d%H%M%S"))
+            try:
+                d = pd.to_datetime(row["d"])
+                if d.year > 2100:
+                    sets["ind_5m"] = None
+                else:
+                    sets["ind_5m"] = int(d.strftime("%Y%m%d%H%M%S"))
+            except Exception:
+                sets["ind_5m"] = None
         else:
             sets["ind_5m"] = None
         replace_fields.add("ind_5m")
@@ -240,8 +270,14 @@ def refresh_market_from_db(db: Session, market: str, *, periods: list[str] | Non
             f"SELECT max(date) AS d FROM technical_indicator WHERE period='30m' AND {market_sql_where('code', market)}"
         )
         if row and row.get("d"):
-            d = pd.to_datetime(row["d"])
-            sets["ind_30m"] = int(d.strftime("%Y%m%d%H%M%S"))
+            try:
+                d = pd.to_datetime(row["d"])
+                if d.year > 2100:
+                    sets["ind_30m"] = None
+                else:
+                    sets["ind_30m"] = int(d.strftime("%Y%m%d%H%M%S"))
+            except Exception:
+                sets["ind_30m"] = None
         else:
             sets["ind_30m"] = None
         replace_fields.add("ind_30m")
