@@ -103,6 +103,7 @@
           <button id="runImportBtn" class="primary">开始导入</button>
           <button id="build30mBtn">从5m生成30m</button>
           <button id="rebuildIndicatorsBtn">重算指标</button>
+          <button id="cleanupStuckImportBtn" style="border-color:var(--red, #f87171);color:var(--red, #f87171)">清理僵尸任务</button>
           <button id="refreshImportBtn">刷新导入记录</button>
         </div>
 
@@ -739,6 +740,25 @@
       refreshBtn.onclick = async function(){
         await loadImportBatches();
         if(window._addonLoadImportBatches) window._addonLoadImportBatches().catch(() => {});
+      };
+    }
+
+    const cleanupBtn = $('cleanupStuckImportBtn');
+    if(cleanupBtn && !cleanupBtn.dataset.bound){
+      cleanupBtn.dataset.bound = '1';
+      cleanupBtn.onclick = async function(){
+        const mins = prompt('超过多少分钟没更新的任务算作僵尸任务？', '30');
+        if(mins === null) return;
+        const staleMinutes = parseInt(mins, 10) || 30;
+        const confirmed = confirm(`确认清理超过 ${staleMinutes} 分钟未更新的僵尸任务？`);
+        if(!confirmed) return;
+        try{
+          const data = await postJson(`/api/jobs/admin/cleanup-stuck?stale_minutes=${staleMinutes}&dry_run=false`, {});
+          alert(data.message || `清理完成，共 ${data.cleaned || 0} 个僵尸任务已标记为 failed`);
+          await loadImportBatches();
+        }catch(e){
+          alert('清理失败：' + (e && e.message ? e.message : String(e)));
+        }
       };
     }
 
