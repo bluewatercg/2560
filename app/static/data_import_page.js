@@ -363,6 +363,11 @@
               existing.progressUrl = r.progress_url || null;
               existing.detail     = r;
               existing.job        = {};
+            } else if(Number(r.id) === Number(existing.batchId)) {
+              // Same batch: always refresh detail/job data so progress numbers update.
+              // Without this, the timer re-query would skip because batchId hasn't changed.
+              existing.detail = r;
+              existing.job    = {};
             }
           }
         }
