@@ -67,6 +67,8 @@ def main():
         "current_period": "",
     }
 
+    _flush_every = 10  # flush MySQL progress every N codes (avoid per-code writes bottleneck)
+
     def on_result(result: dict, done: int, total: int):
         """Called after each code completes (from worker threads)."""
         with _lock:
@@ -77,6 +79,10 @@ def main():
                 _state["failed"] += 1
             _state["total_codes_done"] += 1
             _state["current_period"] = result.get("period", "")
+
+            # Throttle MySQL writes: only flush every _flush_every codes or at completion
+            if _state["total_codes_done"] % _flush_every != 0 and done < total:
+                return
 
             try:
                 with SessionLocal() as db:
