@@ -18,7 +18,8 @@ from __future__ import annotations
 
 import argparse
 import math
-from typing import Any
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any, Callable, Optional
 
 import numpy as np
 import pandas as pd
@@ -210,7 +211,50 @@ def make_records_for_clickhouse(code: str, period: str, ind: pd.DataFrame) -> li
     return records
 
 
-def rebuild_period(period: str, start: str, end: str, market_type: str, limit_codes: int | None, commit_every: int):
+def rebuild_for_code(
+    code: str,
+    period: str,
+    start: str,
+    end: str,
+    market_type: str,
+    start_i: int,
+    end_i: int,
+    start_s: str,
+    end_s: str,
+) -> dict:
+    """Rebuild indicators for a single code. Thread-safe: each call gets its own CH client."""
+    try:
+        df = load_one_code(period, code, start_i, end_i)
+        if df.empty:
+            return {"ok": True, "code": code, "rows": 0, "period": period}
+
+        ind = compute_indicators(df)
+        records = make_records_for_clickhouse(code, period, ind)
+
+        ch = get_clickhouse()
+        del_q = f"ALTER TABLE {ch.database}.technical_indicator DELETE WHERE code='{code}' AND period='{period}' AND date >= '{start_s}' AND date <= '{end_s}'"
+        ch.command(del_q)
+
+        total = 0
+        if records:
+            ch.insert_batch("technical_indicator", records)
+            total = len(records)
+
+        return {"ok": True, "code": code, "rows": total, "period": period}
+    except Exception as exc:
+        return {"ok": False, "code": code, "rows": 0, "period": period, "error": str(exc)}
+
+
+def rebuild_period(
+    period: str,
+    start: str,
+    end: str,
+    market_type: str,
+    limit_codes: int | None,
+    commit_every: int,
+    workers: int = 0,
+    on_result: Optional[Callable[[dict, int, int], None]] = None,
+):
     ch = get_clickhouse()
     start_i, end_i = get_period_range(period, start, end)
     print(f"\n=== Rebuild {period} technical_indicator: {start_i} ~ {end_i}, market={market_type} ===")
@@ -218,31 +262,42 @@ def rebuild_period(period: str, start: str, end: str, market_type: str, limit_co
     codes = get_codes(period, start_i, end_i, market_type, limit_codes)
     print(f"codes={len(codes)}")
 
-    # ClickHouse date strings for queries
     start_s = str(start_i)[:4] + '-' + str(start_i)[4:6] + '-' + str(start_i)[6:8]
     end_s = str(end_i)[:4] + '-' + str(end_i)[4:6] + '-' + str(end_i)[6:8]
     if period != 'daily':
         start_s += ' 00:00:00'
         end_s += ' 23:59:59'
 
-    for idx, code in enumerate(codes, 1):
-        df = load_one_code(period, code, start_i, end_i)
-        if df.empty:
-            continue
-        ind = compute_indicators(df)
-        records = make_records_for_clickhouse(code, period, ind)
-
-        # Delete existing rows in ClickHouse for this code + period + date range
-        del_q = f"ALTER TABLE {ch.database}.technical_indicator DELETE WHERE code='{code}' AND period='{period}' AND date >= '{start_s}' AND date <= '{end_s}'"
-        ch.command(del_q)
-
-        # Insert new rows
-        if records:
-            ch.insert_batch("technical_indicator", records)
-            total += len(records)
-
-        if idx % commit_every == 0:
-            print(f"{period}: processed {idx}/{len(codes)}, inserted={total}")
+    if workers > 0 and len(codes) > 1:
+        # Parallel mode
+        completed = 0
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futs = {
+                pool.submit(
+                    rebuild_for_code, code, period, start, end, market_type,
+                    start_i, end_i, start_s, end_s,
+                ): code
+                for code in codes
+            }
+            for fut in as_completed(futs):
+                r = fut.result()
+                if r["ok"]:
+                    total += r["rows"]
+                completed += 1
+                if on_result:
+                    on_result(r, completed, len(codes))
+                if completed % commit_every == 0:
+                    print(f"{period}: processed {completed}/{len(codes)}, inserted={total}")
+    else:
+        # Sequential mode (original)
+        for idx, code in enumerate(codes, 1):
+            r = rebuild_for_code(code, period, start, end, market_type, start_i, end_i, start_s, end_s)
+            if r["ok"]:
+                total += r["rows"]
+            if on_result:
+                on_result(r, idx, len(codes))
+            if idx % commit_every == 0:
+                print(f"{period}: processed {idx}/{len(codes)}, inserted={total}")
 
     print(f"[OK] {period} inserted: {total}")
 
@@ -253,7 +308,7 @@ def main():
     for p in periods:
         if p not in {'daily', '5m', '30m'}:
             raise SystemExit(f"不支持 period={p}，只能 daily/5m/30m")
-        rebuild_period(p, args.start, args.end, args.market_type, args.limit_codes, args.commit_every)
+        rebuild_period(p, args.start, args.end, args.market_type, args.limit_codes, args.commit_every, workers=args.workers)
     print("\nDONE")
 
 
