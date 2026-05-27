@@ -276,10 +276,24 @@
     const importFilePanel = $('importFilePanel');
     if(importFilePanel) importFilePanel.style.display = 'none';
 
-    // 日期/线程等控件：步骤2/3/4显示
+    // 日期/线程等控件：步骤2显示全部，步骤3/4隐藏导入目录和并发线程
     all('#importType,#importStartDate,#importEndDate,#importWorkers').forEach(el => {
       const label = el.closest('label');
       if(label) label.style.display = step >= 2 ? '' : 'none';
+    });
+    // 导入目录：只在步骤1/2显示
+    all('.import-field-source').forEach(el => {
+      el.style.display = step <= 2 ? '' : 'none';
+    });
+    // 并发线程：只在步骤2显示（步骤3/4用后端默认并发数）
+    all('#importWorkers').forEach(el => {
+      const label = el.closest('label');
+      if(label) label.style.display = step === 2 ? '' : 'none';
+    });
+    // 导入内容：只在步骤2显示
+    all('#importType').forEach(el => {
+      const label = el.closest('label');
+      if(label) label.style.display = step === 2 ? '' : 'none';
     });
 
     activeImportMode = step === 1 ? 'check' : step === 4 ? 'batches' : 'run';
