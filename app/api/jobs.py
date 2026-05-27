@@ -121,12 +121,32 @@ def _cancel_job_execution(db: Session, job_id: int, reason: str) -> dict[str, An
                 updated_at=NOW()
             WHERE id=:id
         """), {"id": job_id, "message": message})
+
+        # Also cancel the corresponding data_import_batch row
+        if _table_exists(db, "data_import_batch"):
+            batch_row = db.execute(text("""
+                SELECT batch_id FROM job_execution WHERE id=:id
+            """), {"id": job_id}).mappings().first()
+            if batch_row and batch_row.get("batch_id"):
+                try:
+                    db.execute(text("""
+                        UPDATE data_import_batch
+                        SET status='cancelled',
+                            message=CONCAT(COALESCE(message, ''), ' | job cancelled'),
+                            finished_at=NOW(),
+                            updated_at=NOW()
+                        WHERE id=:batch_id AND status IN ('running','queued','pending')
+                    """), {"batch_id": int(batch_row["batch_id"])})
+                except Exception:
+                    pass  # non-fatal
+
         db.commit()
         return {"ok": True, "job_id": job_id, "status": "cancelled", "cancelled_queue_rows": int(queue_result.rowcount or 0)}
 
     if status == "running":
         stale_cutoff = db.execute(text("SELECT DATE_SUB(NOW(), INTERVAL 5 MINUTE)")).scalar()
         stale = bool(row.get("updated_at") and row["updated_at"] < stale_cutoff)
+        final_status = "cancelled" if stale else "running"
         db.execute(text("""
             UPDATE job_execution
             SET status=:status,
@@ -135,9 +155,28 @@ def _cancel_job_execution(db: Session, job_id: int, reason: str) -> dict[str, An
                 finished_at=CASE WHEN :status='cancelled' THEN NOW() ELSE finished_at END,
                 updated_at=NOW()
             WHERE id=:id
-        """), {"id": job_id, "status": "cancelled" if stale else "running", "message": "cancel requested: " + message})
+        """), {"id": job_id, "status": final_status, "message": "cancel requested: " + message})
+
+        # Also cancel the corresponding data_import_batch row
+        if _table_exists(db, "data_import_batch"):
+            batch_row = db.execute(text("""
+                SELECT batch_id FROM job_execution WHERE id=:id
+            """), {"id": job_id}).mappings().first()
+            if batch_row and batch_row.get("batch_id"):
+                try:
+                    db.execute(text("""
+                        UPDATE data_import_batch
+                        SET status=:batch_status,
+                            message=CONCAT(COALESCE(message, ''), ' | job cancelled'),
+                            finished_at=NOW(),
+                            updated_at=NOW()
+                        WHERE id=:batch_id AND status IN ('running','queued','pending')
+                    """), {"batch_id": int(batch_row["batch_id"]), "batch_status": final_status})
+                except Exception:
+                    pass  # non-fatal
+
         db.commit()
-        return {"ok": True, "job_id": job_id, "status": "cancelled" if stale else "cancelling", "cancelled_queue_rows": int(queue_result.rowcount or 0)}
+        return {"ok": True, "job_id": job_id, "status": final_status, "cancelled_queue_rows": int(queue_result.rowcount or 0)}
 
     db.commit()
     return {"ok": True, "job_id": job_id, "status": status, "message": "job is already finished"}

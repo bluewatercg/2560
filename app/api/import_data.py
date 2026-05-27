@@ -122,6 +122,42 @@ def _ensure_import_tables(db: Session) -> None:
     db.commit()
 
 
+def _sync_stale_batch_statuses(db: Session) -> None:
+    """Auto-sync data_import_batch status when the linked job is terminal but batch still says running/queued/pending."""
+    if not _table_exists(db, "job_execution"):
+        return
+    # Find batches where status is active but their latest job is terminal
+    rows = db.execute(text("""
+        SELECT dib.id AS batch_id, dib.status AS batch_status,
+               je.id AS job_id, je.status AS job_status, je.finished_at
+        FROM data_import_batch dib
+        INNER JOIN job_execution je ON je.batch_id = CAST(dib.id AS CHAR)
+        WHERE dib.status IN ('running', 'queued', 'pending')
+          AND je.status IN ('cancelled', 'failed', 'success')
+          AND je.id = (
+              SELECT MAX(je2.id) FROM job_execution je2
+              WHERE je2.batch_id = CAST(dib.id AS CHAR)
+          )
+    """)).mappings().all()
+    for r in rows:
+        target = "cancelled" if r["job_status"] == "cancelled" else r["job_status"]
+        db.execute(text("""
+            UPDATE data_import_batch
+            SET status=:status,
+                message=CONCAT(COALESCE(message, ''), ' | auto-synced from job #', :job_id),
+                finished_at=COALESCE(finished_at, :finished_at),
+                updated_at=NOW()
+            WHERE id=:id
+        """), {
+            "id": int(r["batch_id"]),
+            "status": target,
+            "job_id": int(r["job_id"]),
+            "finished_at": r.get("finished_at"),
+        })
+    if rows:
+        db.commit()
+
+
 def _merge_job_progress(batch: dict, job: dict | None) -> dict:
     d = dict(batch)
     total = int(d.get("total_files") or 0)
@@ -797,6 +833,7 @@ def _enqueue_single_rebuild(db, payload: RebuildIndicatorRequest, market: str) -
 def import_batches(limit: int = Query(50, ge=1, le=500), db: Session = Depends(get_db)):
     if not _table_exists(db, "data_import_batch"):
         return []
+    _sync_stale_batch_statuses(db)
     rows = db.execute(text("""
         SELECT id, import_type, source_dir, market, status, total_files, success_files, failed_files,
                total_rows, started_at, finished_at, message, updated_at
