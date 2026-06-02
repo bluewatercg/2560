@@ -44,6 +44,7 @@ SHARDS = int(os.getenv("SHARDS", "1"))
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", "30"))
 LIMIT_CODES = int(os.getenv("LIMIT_CODES", "0") or 0)
 WEB_BASE_URL = os.getenv("WEB_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
+RUN_MODE = os.getenv("RUN_2560_MODE", "fast").lower()
 
 
 def log(msg: str):
@@ -284,6 +285,69 @@ def main():
     if not JOB_ID:
         raise RuntimeError("JOB_ID is required")
     en = engine()
+    if RUN_MODE == "fast":
+        from app.db.session import SessionLocal
+        from app.services.signal_engine_2560_fast import SignalEngine2560Fast
+
+        with en.begin() as conn:
+            conn.execute(
+                text("""
+                UPDATE job_execution
+                SET status='running',
+                    progress_current=0,
+                    progress_total=1,
+                    success_count=0,
+                    failed_count=0,
+                    message=:msg,
+                    updated_at=NOW()
+                WHERE id=:id
+                """),
+                {"id": JOB_ID, "msg": f"fast ClickHouse 2560 started market={MARKET}"},
+            )
+        t0 = time.time()
+        try:
+            with SessionLocal() as db:
+                result = SignalEngine2560Fast(db).run(
+                    market=MARKET,
+                    trade_date=os.getenv("TRADE_DATE") or None,
+                    limit_codes=LIMIT_CODES if LIMIT_CODES > 0 else None,
+                )
+            status = "success" if result.get("ok") else "failed"
+            with en.begin() as conn:
+                conn.execute(
+                    text("""
+                    UPDATE job_execution
+                    SET status=:status,
+                        batch_id=:batch_id,
+                        progress_current=1,
+                        progress_total=1,
+                        success_count=:success_count,
+                        failed_count=:failed_count,
+                        message=:msg,
+                        finished_at=NOW(),
+                        updated_at=NOW()
+                    WHERE id=:id
+                    """),
+                    {
+                        "id": JOB_ID,
+                        "status": status,
+                        "batch_id": str(result.get("batch_id", "")),
+                        "success_count": int(result.get("signals", 0) or 0),
+                        "failed_count": 0 if status == "success" else 1,
+                        "msg": f"fast finished market={MARKET}, trade_date={result.get('trade_date')}, signals={result.get('signals')}, elapsed={time.time()-t0:.1f}s",
+                    },
+                )
+            log(f"[fast] {result}")
+            return
+        except Exception as exc:
+            log(traceback.format_exc())
+            with en.begin() as conn:
+                conn.execute(
+                    text("UPDATE job_execution SET status='failed', failed_count=1, message=:msg, finished_at=NOW(), updated_at=NOW() WHERE id=:id"),
+                    {"id": JOB_ID, "msg": str(exc)[:1000]},
+                )
+            raise
+
     codes = load_codes(en)
     total = len(codes)
     batch_list = list(chunks(codes, BATCH_SIZE))

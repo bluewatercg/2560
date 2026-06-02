@@ -267,9 +267,15 @@ function renderWorkspace(data) {
   const sugEl = $("workspaceSuggestions");
   if (sg.length) {
     const viewLabels = {
-      "data-update": "数据导入",
-      "data-import-batches": "批次/日志",
-      jobs: "计算任务",
+      "data-update": "行情导入与日志",
+      "data-import-batches": "数据构建与维护",
+      "data-import": "行情导入与日志",
+      "data-maintenance": "数据构建与维护",
+      jobs: "任务进度",
+    };
+    const viewRedirects = {
+      "data-update": "data-import",
+      "data-import-batches": "data-maintenance",
     };
     sugEl.innerHTML = `
       <div class="panel">
@@ -278,7 +284,7 @@ function renderWorkspace(data) {
           ${sg
             .map(
               (s) =>
-                `<li>${s.market} → ${s.action}（${s.reason}） <button class="ghost" onclick="navigateTo('${s.view}')" style="font-size:12px;padding:2px 8px">去${viewLabels[s.view] || s.view}</button></li>`,
+                `<li>${s.market} → ${s.action}（${s.reason}） <button class="ghost" onclick="navigateTo('${viewRedirects[s.view] || s.view}')" style="font-size:12px;padding:2px 8px">去${viewLabels[s.view] || s.view}</button></li>`,
             )
             .join("")}
         </ol>
@@ -748,22 +754,6 @@ async function showDetail(id) {
   $("detailContent").textContent = JSON.stringify(d, null, 2);
   $("detailDrawer").classList.remove("hidden");
 }
-async function loadComplete() {
-  const d = await api("/api/strategy/2560/complete-cases?limit=20");
-  renderTable(
-    $("completeTable"),
-    [
-      { label: "时间", key: "signal_time" },
-      { label: "代码", key: "code" },
-      { label: "名称", key: "name" },
-      { label: "价格", key: "price" },
-      { label: "1日", render: (r) => pct(r.future_return_1d) },
-      { label: "3日", render: (r) => pct(r.future_return_3d) },
-      { label: "5日", render: (r) => pct(r.future_return_5d) },
-    ],
-    d || [],
-  );
-}
 async function loadStatistics() {
   const type = $("statType").value;
   const d = await api(
@@ -804,14 +794,27 @@ async function loadQuality() {
   renderTable(
     $("qualityTable"),
     [
-      { label: "日期", key: "check_date" },
+      { label: "最新日期", key: "check_date" },
+      { label: "数据最新", key: "data_latest_date" },
+      { label: "市场", key: "market" },
       { label: "周期", key: "period" },
-      { label: "数据源", key: "source" },
       { label: "应有标的", key: "total_symbols" },
       { label: "可用标的", key: "available_symbols" },
-      { label: "缺失", key: "missing_symbols" },
+      { label: "缺标的", key: "missing_symbols" },
+      { label: "行数", key: "row_count" },
+      { label: "预期行数", key: "expected_rows" },
+      { label: "重复key", key: "duplicate_keys" },
+      { label: "重复行", key: "duplicate_rows" },
+      { label: "条数异常标的", key: "bar_count_bad_symbols" },
       { label: "异常K线", key: "abnormal_bar_count" },
-      { label: "状态", key: "status" },
+      {
+        label: "状态",
+        render: (r) => {
+          const s = r.status || "-";
+          const cls = s === "ok" ? "ok" : s === "missing" ? "bad" : "mid";
+          return `<span class="badge ${cls}">${fmt(s)}</span>`;
+        },
+      },
     ],
     d || [],
   );
@@ -835,6 +838,7 @@ async function loadLatest() {
       { label: "名称", key: "name" },
       { label: "状态", key: "latest_status" },
       { label: "批次", key: "batch_id" },
+      { label: "计算时间", render: (r) => fmtTime(r.batch_run_time) },
       { label: "信号时间", render: (r) => fmtTime(r.signal_time) },
       { label: "结构状态", render: (r) => badgeStatus(r.structure_status) },
       { label: "缺失标签", render: (r) => fmtTags(r.missing_tags) },
@@ -966,11 +970,9 @@ async function refresh() {
   if (state.view === "workspace") await loadWorkspace();
   if (state.view === "overview") await loadOverview();
   if (state.view === "run") await loadStocks();
-  if (state.view === "diagnostics") await loadDiagnostics();
   if (state.view === "signals") await loadSignals();
   if (state.view === "latest") await loadLatest();
   if (state.view === "jobs") await loadJobs();
-  if (state.view === "complete") await loadComplete();
   if (state.view === "statistics") await loadStatistics();
   if (state.view === "batches") await loadBatches();
   if (state.view === "quality") await loadQuality();
@@ -1059,25 +1061,28 @@ window.run2560 = function(market) {
 const titles = {
   workspace: ["今日工作台", "今天数据齐了吗、缺什么、点哪里、2560跑完了吗、最后看哪几只"],
   overview: ["总览", "查看最新批次、结构完整率、标签分布与系统状态"],
-  workflow: ["工作流指导", "说明系统每天怎么用、各页面分别负责什么"],
+  workflow: ["一键盘后流程", "日常盘后入口：导入、重建30m、fast 2560、观察池"],
   run: ["入库计算", "支持选择股票、全选、四类股票范围摸底计算"],
-  diagnostics: [
-    "摸底指标",
-    "查看2560各项指标、未命中原因统计，以及接近满足条件的股票",
-  ],
   signals: ["信号列表", "逐条查看2560结构条件、标签与解释"],
   latest: ["最新分析结果", "每只股票在最近一次分析中的最终状态"],
-  jobs: ["创建批量任务", "后台调度与执行情况"],
-  complete: ["完整结构", "查看最近结构完整案例及后续表现"],
-  statistics: ["结构统计", "按结构状态、标签、行业、板块、概念统计"],
-  batches: ["批次管理", "查看分析批次、版本、运行状态"],
+  jobs: ["任务进度", "后台调度、执行状态和分组进度"],
+  statistics: ["结果统计", "按结构状态、标签、行业、板块、概念统计"],
+  batches: ["分析批次", "查看分析批次、版本、运行状态"],
   quality: ["数据质量", "查看日线/分钟线完整性与异常情况"],
+  "data-import": ["行情导入与日志", "扫描源文件、导入日线/5m，并查看批次和失败文件"],
+  "data-maintenance": ["数据构建与维护", "重建30m；周末维护或历史修复时重算指标"],
   "observation-pool": ["今日观察池", "看什么、为什么看、持有怎么办、没持有怎么买、什么情况跑"],
 };
 
 // 唯一导航入口：app.js 管理所有 view 切换、标题更新、active 高亮
 function navigateTo(view) {
+  if (view === "complete") view = "signals";
+  if (view === "diagnostics" || view === "diagnostic-indicators") view = "quality";
   if (!view || !titles[view]) return;
+  if ((view === "data-import" || view === "data-maintenance") && typeof window.showDataImportView === "function") {
+    window.showDataImportView(view);
+    return;
+  }
   state.view = view;
   state.page = 1;
 
@@ -1139,6 +1144,9 @@ function navigateTo(view) {
   }
 
   refresh();
+  if (view === "observation-pool" && typeof window.loadObservationPool === "function") {
+    window.loadObservationPool();
+  }
 }
 
 // 原始 HTML 按钮的 click 绑定（nested_menu_reorg.js 重建菜单前生效）

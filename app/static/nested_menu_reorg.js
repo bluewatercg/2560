@@ -1,68 +1,63 @@
 (function(){
   const DATA_PREP_VIEWS = new Set([
-    'data-update',
-    'data-import-run',
-    'data-import-batches',
-    'data-import-logs'
+    'data-import',
+    'data-maintenance'
   ]);
 
   const VIRTUAL_VIEWS = new Set([
-    'data-update',
-    'data-import-run',
-    'data-import-batches'
+    'workspace',
+    'data-import',
+    'data-maintenance',
+    'observation-pool',
+    'annotation2568'
+  ]);
+
+  const DEPRECATED_VIEWS = new Set([
+    'diagnostics',
+    'diagnostic-indicators',
+    'annotation-2568',
+    'strategy-2568',
+    'complete',
+    'run',
+    'overview'
   ]);
 
   const MENU_GROUPS = [
     {
-      title: '数据导入',
+      title: '盘后日常',
       items: [
-        ['data-update', '导入前检查'],
-        ['data-import-run', '发起导入'],
-        ['data-import-batches', '批次/日志']
+        ['workspace', '今日工作台'],
+        ['workflow', '一键盘后流程'],
+        ['quality', '数据质量'],
+        ['jobs', '任务进度']
       ]
     },
     {
-      title: '计算任务',
+      title: '数据管理',
       items: [
-        ['jobs', '创建批量任务'],
-        ['job-progress', '当前执行进度'],
-        ['job-history', '历史任务'],
-        ['job-items', '任务明细'],
-        ['batches', '批次管理']
+        ['data-import', '行情导入与日志'],
+        ['data-maintenance', '数据构建与维护']
       ]
     },
     {
-      title: '分析结果',
+      title: '结果中心',
       items: [
-        ['observation-pool', '今日观察池'],
         ['latest', '最新结果'],
         ['signals', '信号中心'],
-        ['complete', '结构详情'],
-        ['statistics', '市场统计'],
-        ['diagnostic-indicators', '摸底指标'],
+        ['observation-pool', '今日观察池'],
         ['annotation2568', '2568 标注'],
-        ['annotation-2568', '2568 标注'],
-        ['strategy-2568', '2568 标注']
+        ['statistics', '结果统计']
       ]
     },
     {
-      title: '系统诊断',
+      title: '系统运维',
       items: [
-        ['quality', '数据健康'],
-        ['diagnostics', '系统诊断'],
-        ['db-check', '数据库连接'],
-        ['path-check', '行情目录检查'],
-        ['table-check', '表结构检查'],
-        ['env-check', '运行环境']
+        ['batches', '分析批次']
       ]
     }
   ];
 
-  const TOP_LEVEL = [
-    ['workspace', '今日工作台'],
-    ['workflow', '工作流说明'],
-    ['run', '自选股计算']
-  ];
+  const TOP_LEVEL = [];
 
   function $(sel, root=document){
     return root.querySelector(sel);
@@ -81,9 +76,7 @@
       ['查询分析', '分析结果'],
       ['最新分析结果', '最新结果'],
       ['信号列表', '信号中心'],
-      ['完整结构', '结构详情'],
       ['结构统计', '市场统计'],
-      ['摸底指标', '数据健康'],
       ['并行分片数（shards）', '同时跑几组（并发数）'],
       ['任务优先级（priority）', '优先级（数字越小越先跑）'],
       ['立即执行并行脚本', '立即执行并看进度'],
@@ -149,14 +142,17 @@
     // Capture which view was active before rebuild
     const activeView = (() => {
       for(const btn of oldButtons){
-        if(btn.classList.contains('active')) return btn.dataset.view;
+        if(btn.classList.contains('active')){
+          return DEPRECATED_VIEWS.has(btn.dataset.view) ? 'workspace' : btn.dataset.view;
+        }
       }
-      return null;
+      return 'workspace';
     })();
 
     const byView = new Map();
     oldButtons.forEach(btn => {
       const view = btn.dataset.view;
+      if(DEPRECATED_VIEWS.has(view)) return;
       if(view && !byView.has(view)) byView.set(view, btn);
     });
 
@@ -273,11 +269,10 @@
     if(section) section.classList.add('active');
 
     const titleMap = {
-      'data-update': ['导入前检查', '扫描 /data/vipdoc 源文件范围，不写数据库。'],
-      'data-import-run': ['发起导入', '选择市场、日线/5m/all、日期范围和并发线程，提交后台导入任务。'],
-      'data-import-batches': ['批次/日志', '查看导入批次，点选后追踪 job_execution 与 Shard 汇总。']
+      'data-import': ['行情导入与日志', '扫描源文件、导入日线/5m，并查看导入批次和失败文件。'],
+      'data-maintenance': ['数据构建与维护', '重建 30m、每周指标重算、查看派生任务批次。']
     };
-    const [title, subtitle] = titleMap[view] || titleMap['data-update'];
+    const [title, subtitle] = titleMap[view] || titleMap['data-import'];
     if($('#pageTitle')) $('#pageTitle').textContent = title;
     if($('#pageSubtitle')) $('#pageSubtitle').textContent = subtitle;
   }

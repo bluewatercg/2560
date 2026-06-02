@@ -90,6 +90,7 @@ def main():
     )
 
     status = "success" if result.get("ok") else "failed"
+    batch_message = result.get("error") or f"build_30m finished, {state['success']} codes, {result.get('inserted_30m_rows', 0)} rows"
     with SessionLocal() as db:
         db.execute(text("""
             UPDATE data_import_batch
@@ -109,7 +110,7 @@ def main():
             "success_files": state["success"],
             "failed_files": state["failed"],
             "rows": result["inserted_30m_rows"],
-            "message": "finished build_30m",
+            "message": batch_message,
         })
         update_job_execution(
             db,
@@ -119,7 +120,7 @@ def main():
             progress_total=result["codes"],
             success_count=state["success"],
             failed_count=state["failed"],
-            message=f"build_30m finished codes={result['codes']}",
+            message=batch_message,
             finished=True,
         )
         db.commit()

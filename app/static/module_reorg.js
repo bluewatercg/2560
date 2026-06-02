@@ -5,15 +5,9 @@
     let n; const nodes=[]; while(n=walker.nextNode()) nodes.push(n);
     nodes.forEach(x=>{x.nodeValue=x.nodeValue
       .replace('入库计算','自选股计算')
-      .replace('数据更新','数据准备')
-      .replace('数据导入','数据准备')
       .replace('数据查询','分析结果')
       .replace('查询分析','分析结果')
-      .replace('摸底指标','数据健康')
       .replace('最新分析结果','最新结果')
-      .replace('完整结构','结构详情')
-      .replace('结构统计','市场统计')
-      .replace('工作流指导','工作流说明')
       .replace('立即执行并行脚本','立即执行并看进度')
       .replace('入队执行','加入队列后台跑')
       .replace('并行分片数（shards）','同时跑几组（并发数）');});

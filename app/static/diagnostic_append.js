@@ -1,6 +1,7 @@
 
 // Minimal additive diagnostic helper. It keeps existing UI behavior and injects a diagnostic panel on the run page.
 (function(){
+  return;
   function $(id){return document.getElementById(id)}
   async function api(url,opts){const r=await fetch(url,opts);const d=await r.json();if(!r.ok||d.success===false)throw new Error(d.message||r.statusText);return d.data??d}
   function renderDiagTable(items){

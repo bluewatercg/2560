@@ -15,7 +15,6 @@ import os
 import struct
 import time
 import traceback
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -36,7 +35,7 @@ logger = logging.getLogger(__name__)
 SOURCE = "vipdoc"
 
 # ── ClickHouse config ──────────────────────────────────────────────
-CH_HOST = os.getenv("CLICKHOUSE_HOST", "192.168.1.18")
+CH_HOST = os.getenv("CLICKHOUSE_HOST", "192.168.1.30")
 CH_PORT = int(os.getenv("CLICKHOUSE_PORT", "8123"))
 CH_USER = os.getenv("CLICKHOUSE_USER", "default")
 CH_PASSWORD = os.getenv("CLICKHOUSE_PASSWORD", "")
@@ -76,6 +75,52 @@ def ch_insert(table: str, rows: list[dict], chunk_size: int = 100_000) -> int:
                            headers={"Content-Type": "application/x-ndjson"})
             r.raise_for_status()
             total += len(batch)
+    return total
+
+
+def _quote(value: str) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def ch_replace_rows(table: str, rows: list[dict], chunk_size: int = 100_000) -> int:
+    """Idempotent ClickHouse write for kline rows.
+
+    MergeTree does not enforce uniqueness. For each chunk, delete existing rows
+    for the same table key scope, then insert de-duplicated rows.
+    """
+    if not rows:
+        return 0
+    total = 0
+    for i in range(0, len(rows), chunk_size):
+        batch = rows[i:i + chunk_size]
+        unique = list({tuple(sorted(row.items())): row for row in batch}.values())
+        codes = sorted({row["code"] for row in unique})
+        dates = sorted({str(row["date"]) for row in unique})
+        code_csv = ",".join(_quote(c) for c in codes)
+        min_date, max_date = dates[0], dates[-1]
+        if table == "daily_kline":
+            delete_q = (
+                f"ALTER TABLE {CH_DATABASE}.{table} DELETE "
+                f"WHERE code IN ({code_csv}) "
+                f"AND date >= toDate({_quote(min_date[:10])}) "
+                f"AND date <= toDate({_quote(max_date[:10])}) "
+                "SETTINGS mutations_sync=2"
+            )
+        elif table == "minute_kline_period":
+            periods = sorted({row.get("period", "5m") for row in unique})
+            period_csv = ",".join(_quote(p) for p in periods)
+            delete_q = (
+                f"ALTER TABLE {CH_DATABASE}.{table} DELETE "
+                f"WHERE code IN ({code_csv}) "
+                f"AND period IN ({period_csv}) "
+                f"AND date >= toDateTime({_quote(min_date[:19])}) "
+                f"AND date <= toDateTime({_quote(max_date[:19])}) "
+                "SETTINGS mutations_sync=2"
+            )
+        else:
+            raise ValueError(f"ch_replace_rows does not support table={table}")
+        ch_command(delete_q)
+        total += ch_insert(table, unique, chunk_size=chunk_size)
     return total
 
 
@@ -339,7 +384,7 @@ def import_daily_clickhouse(path: str, market: str, start: Optional[str] = None,
             })
         rows = _filter_rows_by_date(rows, start_s, end_s, "date")
 
-        inserted = ch_insert("daily_kline", rows)
+        inserted = ch_replace_rows("daily_kline", rows)
         return {"ok": True, "file": str(p), "code": code, "rows": inserted, "type": "lday"}
 
     except Exception as exc:
@@ -374,7 +419,7 @@ def import_5m_clickhouse(path: str, market: str, start: Optional[str] = None, en
             })
         rows = _filter_rows_by_date(rows, start_s, end_s, "date")
 
-        inserted = ch_insert("minute_kline_period", rows)
+        inserted = ch_replace_rows("minute_kline_period", rows)
         return {"ok": True, "file": str(p), "code": code, "rows": inserted, "type": "5m"}
 
     except Exception as exc:
@@ -443,7 +488,7 @@ def _day_file_edge_dates(path: Path) -> tuple[int | None, int | None]:
 def run_import(source_dir: str, market: str, import_type: str = "all",
                start: Optional[str] = None, end: Optional[str] = None,
                workers: int = 4, dry_run: bool = False):
-    """主入口：扫描 + 导入到 ClickHouse。"""
+    """主入口：两阶段导入 — 先逐文件读到内存，再批量写 ClickHouse。"""
 
     print(f"ClickHouse: {CH_URL} database={CH_DATABASE}")
     print(f"Ping: {'OK' if ch_ping() else 'FAIL'}")
@@ -463,39 +508,79 @@ def run_import(source_dir: str, market: str, import_type: str = "all",
     lday_files = [f for f in scan["files"] if f.endswith(".day")]
     lc5_files = [f for f in scan["files"] if f.endswith(".lc5")]
 
+    if import_type in ("lday", "daily"):
+        lc5_files = []
+    elif import_type in ("5m", "lc5", "fzline"):
+        lday_files = []
+
+    all_files = lday_files + lc5_files
+    total = len(all_files)
     t0 = time.time()
-    total_rows = 0
+
+    flush_rows = int(os.getenv("IMPORT_FLUSH_ROWS", "100000"))
+    daily_buffer: list[dict] = []
+    minute_buffer: list[dict] = []
     ok_count = 0
     fail_count = 0
+    total_rows = 0
 
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {}
+    def flush_buffer(table: str, rows: list[dict]) -> int:
+        if not rows:
+            return 0
+        inserted = ch_replace_rows(table, rows)
+        rows.clear()
+        return inserted
 
-        for f in lday_files:
-            fut = pool.submit(import_daily_clickhouse, f, market, start, end)
-            futures[fut] = f
+    print(f"Phase 1: reading {total} files sequentially, flush_rows={flush_rows}", flush=True)
+    for i, f in enumerate(all_files, 1):
+        if f.endswith(".day"):
+            result = read_daily_rows(f, market, start, end)
+        else:
+            result = read_5m_rows(f, market, start, end)
 
-        for f in lc5_files:
-            fut = pool.submit(import_5m_clickhouse, f, market, start, end)
-            futures[fut] = f
+        if result["ok"]:
+            ok_count += 1
+            rows = result.get("rows", [])
+            if result.get("type") == "lday":
+                daily_buffer.extend(rows)
+                if len(daily_buffer) >= flush_rows:
+                    total_rows += flush_buffer("daily_kline", daily_buffer)
+            elif result.get("type") == "5m":
+                minute_buffer.extend(rows)
+                if len(minute_buffer) >= flush_rows:
+                    total_rows += flush_buffer("minute_kline_period", minute_buffer)
+        else:
+            fail_count += 1
+            logger.error("FAILED: %s -> %s", result.get("file", "?"), result.get("error", ""))
 
-        for i, fut in enumerate(as_completed(futures), 1):
-            result = fut.result()
-            if result["ok"]:
-                total_rows += result["rows"]
-                ok_count += 1
-            else:
-                fail_count += 1
-                logger.error("FAILED: %s -> %s", result.get("file", "?"), result.get("error", ""))
+        if i % 100 == 0 or i == total:
+            elapsed = time.time() - t0
+            speed = i / elapsed if elapsed > 0 else 0
+            print(f"  [{i}/{total}] ok={ok_count} fail={fail_count} inserted={total_rows} daily_buffer={len(daily_buffer)} minute_buffer={len(minute_buffer)} speed={speed:.1f} files/s")
 
-            if i % 100 == 0 or i == len(futures):
-                elapsed = time.time() - t0
-                speed = i / elapsed if elapsed > 0 else 0
-                print(f"  [{i}/{len(futures)}] ok={ok_count} fail={fail_count} rows={total_rows} speed={speed:.1f} files/s")
+    print(f"Phase 1 done: {ok_count} ok, {fail_count} failed, {len(daily_buffer)} daily buffered rows, {len(minute_buffer)} minute buffered rows", flush=True)
+
+    try:
+        if daily_buffer:
+            t_ins = time.time()
+            print(f"Phase 2: inserting {len(daily_buffer)} daily rows", flush=True)
+            inserted = flush_buffer("daily_kline", daily_buffer)
+            total_rows += inserted
+            print(f"daily insert done: {inserted} rows in {time.time()-t_ins:.1f}s", flush=True)
+
+        if minute_buffer:
+            t_ins = time.time()
+            print(f"Phase 2: inserting {len(minute_buffer)} minute rows", flush=True)
+            inserted = flush_buffer("minute_kline_period", minute_buffer)
+            total_rows += inserted
+            print(f"minute insert done: {inserted} rows in {time.time()-t_ins:.1f}s", flush=True)
+    except Exception as e:
+        fail_count += 1
+        print(f"Phase 2 INSERT failed: {e}", flush=True)
 
     elapsed = time.time() - t0
-    print(f"\nDone: {ok_count} ok, {fail_count} failed, {total_rows} rows in {elapsed:.1f}s ({total_rows/elapsed:.0f} rows/s)")
-    return {"ok": ok_count, "failed": fail_count, "rows": total_rows, "elapsed": elapsed}
+    print(f"\nDone: {ok_count} ok, {fail_count} failed in {elapsed:.1f}s", flush=True)
+    return {"ok": ok_count if fail_count == 0 else False, "failed": fail_count, "rows": total_rows, "elapsed": elapsed}
 
 
 if __name__ == "__main__":

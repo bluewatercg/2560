@@ -28,9 +28,6 @@
                         工作流指导
                     </button>
                     <button class="nav-item" data-view="run">入库计算</button>
-                    <button class="nav-item" data-view="diagnostics">
-                        摸底指标
-                    </button>
                     <button class="nav-item" data-view="signals">
                         信号列表
                     </button>
@@ -38,9 +35,6 @@
                         最新分析结果
                     </button>
                     <button class="nav-item" data-view="jobs">任务队列</button>
-                    <button class="nav-item" data-view="complete">
-                        完整结构
-                    </button>
                     <button class="nav-item" data-view="statistics">
                         结构统计
                     </button>
@@ -60,11 +54,11 @@
                 <header class="topbar">
                     <div>
                         <div style="display:flex;align-items:baseline;gap:12px">
-                            <h2 id="pageTitle">总览</h2>
+                            <h2 id="pageTitle">今日工作台</h2>
                             <span id="pagePhase" class="phase-badge"></span>
                         </div>
                         <p id="pageSubtitle">
-                            查看最新批次、结构完整率、标签分布与系统状态
+                            今天数据齐了吗、缺什么、点哪里、2560跑完了吗、最后看哪几只
                         </p>
                     </div>
                     <div class="actions">
@@ -86,7 +80,7 @@
                                 <div class="workflow-kicker">DISC WORKFLOW</div>
                                 <h2>一键盘后流程</h2>
                                 <p>
-                                    按 readiness 自动串联：检查 &rarr; 导入 &rarr; 30m &rarr; 指标 &rarr; 2560 &rarr; 观察池。
+                                    按 readiness 自动串联：检查 &rarr; 导入日线/5m &rarr; 重建30m &rarr; fast 2560 &rarr; 观察池。
                                     每步可跳过、重试、查看原因。
                                 </p>
                             </div>
@@ -105,7 +99,7 @@
                             <div style="margin-top:16px" class="workflow-line">
                                 <div class="wf-node active"><span>1</span><b>数据准备</b><small>下载 / 导入 / 聚合</small></div>
                                 <div class="wf-arrow">&rarr;</div>
-                                <div class="wf-node active"><span>2</span><b>指标计算</b><small>technical_indicator</small></div>
+                                <div class="wf-node active"><span>2</span><b>30m构建</b><small>5m 聚合</small></div>
                                 <div class="wf-arrow">&rarr;</div>
                                 <div class="wf-node active"><span>3</span><b>任务执行</b><small>手动 / 队列</small></div>
                                 <div class="wf-arrow">&rarr;</div>
@@ -119,16 +113,16 @@
                                     <div class="wf-tag">Job Queue / 盘后数据更新</div>
                                 </div>
                                 <div class="workflow-card green">
-                                    <div class="wf-card-head"><span class="wf-icon">&#9313;</span><h3>指标计算</h3></div>
-                                    <p>统一生成 MA、ATR、VOL、偏离度等技术指标。</p>
-                                    <ul><li><b>脚本：</b><code>rebuild_technical_indicator.py</code></li><li>2560 扫描阶段只读取指标，不重复计算。</li><li>这是后续信号质量的基础。</li></ul>
-                                    <div class="wf-tag">technical_indicator</div>
+                                    <div class="wf-card-head"><span class="wf-icon">&#9313;</span><h3>30m 构建</h3></div>
+                                    <p>日常盘后只需要从已导入 5m 幂等重建同范围 30m。</p>
+                                    <ul><li><b>日常：</b>导入 5m 后立即重建 30m。</li><li><b>fast 2560：</b>直接用 ClickHouse K线窗口计算。</li><li><b>指标重算：</b>放到每周运维或历史修复，不阻塞日常盘后。</li></ul>
+                                    <div class="wf-tag">build_30m / ClickHouse</div>
                                 </div>
                                 <div class="workflow-card orange">
                                     <div class="wf-card-head"><span class="wf-icon">&#9314;</span><h3>任务执行</h3></div>
-                                    <p>这里最容易混淆，记住一句话：小任务用手动，大任务用队列。</p>
-                                    <ul><li><b>手动计算：</b>只用于单只或少量股票测试。</li><li><b>任务队列：</b>用于 all / sh / sz 正式批量任务。</li><li><b>shards：</b>并行分片数，例如 4 表示拆成 4 份。</li></ul>
-                                    <div class="wf-tag">正式任务入口：任务队列</div>
+                                    <p>正式盘后只跑一个 all-market fast 任务，避免四路并发写 MySQL 死锁。</p>
+                                    <ul><li><b>日常入口：</b>一键盘后流程。</li><li><b>2560：</b><code>market=all</code>、<code>shards=1</code>。</li><li><b>手动任务：</b>只用于排查或小范围验证。</li></ul>
+                                    <div class="wf-tag">fast 2560 / all-market</div>
                                 </div>
                                 <div class="workflow-card purple">
                                     <div class="wf-card-head"><span class="wf-icon">&#9315;</span><h3>结果查看</h3></div>
@@ -303,60 +297,6 @@
                     </div>
                 </section>
 
-                <section id="view-diagnostics" class="view">
-                    <div class="panel">
-                        <div class="panel-head split">
-                            <h3>2560 摸底指标明细</h3>
-                            <button id="diagLoadBtn" class="primary">
-                                加载指标
-                            </button>
-                        </div>
-                        <div class="diag-controls">
-                            <select id="diagMarket">
-                                <option value="all">全部四类</option>
-                                <option value="sh60">sh 60 沪市</option>
-                                <option value="sh68">sh 68 科创板</option>
-                                <option value="sz00">sz 00 深市</option>
-                                <option value="sz30">sz 30 创业板</option>
-                            </select>
-                            <input
-                                id="diagLimit"
-                                type="number"
-                                min="1"
-                                max="5000"
-                                value="500"
-                            />
-                            <input
-                                id="diagQ"
-                                placeholder="代码/名称过滤，可空"
-                            />
-                            <label class="check-line"
-                                ><input id="diagNearOnly" type="checkbox" />
-                                只看接近满足条件</label
-                            >
-                        </div>
-                        <div
-                            id="diagSummaryCards"
-                            class="cards diag-cards"
-                        ></div>
-                        <div class="grid two">
-                            <div class="panel inner">
-                                <h3>未命中原因柱状图</h3>
-                                <div id="diagBar" class="diag-bar"></div>
-                            </div>
-                            <div class="panel inner">
-                                <h3>未命中原因饼图</h3>
-                                <div id="diagPie" class="diag-pie"></div>
-                                <div id="diagLegend" class="diag-legend"></div>
-                            </div>
-                        </div>
-                        <div class="panel inner">
-                            <h3>指标明细表</h3>
-                            <div id="diagTable"></div>
-                        </div>
-                    </div>
-                </section>
-
                 <section id="view-signals" class="view">
                     <div class="panel">
                         <div class="panel-head split">
@@ -449,14 +389,6 @@
                     </div>
                 </section>
 
-                <section id="view-complete" class="view">
-                    <div class="panel">
-                        <h3>最近20条完整结构案例</h3>
-                        <div class="table-wrap">
-                            <table id="completeTable"></table>
-                        </div>
-                    </div>
-                </section>
                 <section id="view-statistics" class="view">
                     <div class="panel">
                         <div class="panel-head split">
@@ -507,7 +439,7 @@
                 </section>
             </main>
         </div>
-        <script src="/static/app.js"></script>
+        <script src="/static/app.js?v=menu-clean-1"></script>
         <script src="/static/annotation2568_report.js?v=pdf1"></script>
         <script src="/static/annotation2568.js?v=abcd-final"></script>
 
@@ -515,11 +447,11 @@
         <script src="/static/jobs_page_bootstrap.js?v=jobs-page-1"></script>
         <script src="/static/job_progress_monitor.js?v=parallel-ui-1"></script>
 
-        <script src="/static/module_reorg.js?v=final-reorg-1"></script>
-        <script src="/static/nested_menu_reorg.js?v=2"></script>
-        <script src="/static/data_import_page.js?v=8"></script>
-        <script src="/static/post_workflow.js?v=1"></script>
+        <script src="/static/module_reorg.js?v=final-reorg-2"></script>
+        <script src="/static/nested_menu_reorg.js?v=4"></script>
+        <script src="/static/data_import_page.js?v=9"></script>
+        <script src="/static/post_workflow.js?v=2"></script>
       <script src="/static/data_import_type_addon.js?v=8"></script>
-        <script src="/static/observation_pool.js?v=1"></script>
+        <script src="/static/observation_pool.js?v=2"></script>
 </body>
 </html>

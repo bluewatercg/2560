@@ -1,7 +1,7 @@
 param(
   [string]$LocalRoot = "E:\zd_ciccwm\vipdoc",
   [string]$RemoteUser = "user",
-  [string]$RemoteHost = "192.168.1.18",
+  [string]$RemoteHost = "192.168.1.30",
   [string]$RemoteRoot = "/data1/2560/zd_ciccwm/vipdoc"
 )
 

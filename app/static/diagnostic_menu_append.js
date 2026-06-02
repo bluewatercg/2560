@@ -1,5 +1,6 @@
 
 (function(){
+  return;
   if(window.__strategy2560DiagnosticMenuInstalled)return;window.__strategy2560DiagnosticMenuInstalled=true;
   function $(id){return document.getElementById(id)}
   async function api(url,opts){const r=await fetch(url,opts);const d=await r.json();if(!r.ok||d.success===false)throw new Error(d.message||r.statusText);return d.data??d}

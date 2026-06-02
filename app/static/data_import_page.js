@@ -6,6 +6,7 @@
   let importFallbackTimer = null;  // slow poll when lanes exist but all terminal
   let activeImportLanes = {};  // { sh60: {batchId, jobId, progressUrl, label, detail, job}, ... }
   let activeImportMode = 'check';
+  const DATA_MANAGEMENT_VIEWS = ['data-import', 'data-maintenance'];
 
   async function getJson(url){
     const r = await fetch(url);
@@ -23,10 +24,8 @@
 
   function switchView(viewName){
     const stepByView = {
-      'data-update': 1,
-      'data-import-run': 2,
-      'data-import-batches': 4,
-      'data-import-logs': 4
+      'data-import': 2,
+      'data-maintenance': 3
     };
     const step = stepByView[viewName] || 1;
     setActiveImportStep(step);
@@ -50,27 +49,22 @@
     section.className = 'view';
 
     section.innerHTML = `
-      <!-- 四步流程导航 -->
+      <!-- 数据管理入口 -->
       <div class="import-steps" style="display:flex;gap:4px;margin-bottom:16px;flex-wrap:wrap">
         <button class="import-step-btn" data-step="1" style="flex:1;min-width:160px;padding:12px 16px;border:1px solid #334155;border-radius:8px;background:#0F172A;color:#F8FAFC;cursor:pointer;text-align:left">
-          <div style="font-size:12px;color:#94A3B8">步骤 1</div>
+          <div style="font-size:12px;color:#94A3B8">检查</div>
           <div style="font-weight:600;margin-top:2px">扫描检查</div>
           <div style="font-size:11px;color:#64748B;margin-top:2px">确认源文件数据范围</div>
         </button>
         <button class="import-step-btn" data-step="2" style="flex:1;min-width:160px;padding:12px 16px;border:1px solid #334155;border-radius:8px;background:#0F172A;color:#F8FAFC;cursor:pointer;text-align:left">
-          <div style="font-size:12px;color:#94A3B8">步骤 2</div>
-          <div style="font-weight:600;margin-top:2px">发起导入</div>
-          <div style="font-size:11px;color:#64748B;margin-top:2px">日线/5m 写入数据库</div>
+          <div style="font-size:12px;color:#94A3B8">数据管理</div>
+          <div style="font-weight:600;margin-top:2px">行情导入与日志</div>
+          <div style="font-size:11px;color:#64748B;margin-top:2px">日线/5m 导入、批次和失败文件</div>
         </button>
         <button class="import-step-btn" data-step="3" style="flex:1;min-width:160px;padding:12px 16px;border:1px solid #334155;border-radius:8px;background:#0F172A;color:#F8FAFC;cursor:pointer;text-align:left">
-          <div style="font-size:12px;color:#94A3B8">步骤 3</div>
-          <div style="font-weight:600;margin-top:2px">构建30m</div>
-          <div style="font-size:11px;color:#64748B;margin-top:2px">从5m聚合生成30m</div>
-        </button>
-        <button class="import-step-btn" data-step="4" style="flex:1;min-width:160px;padding:12px 16px;border:1px solid #334155;border-radius:8px;background:#0F172A;color:#F8FAFC;cursor:pointer;text-align:left">
-          <div style="font-size:12px;color:#94A3B8">步骤 4</div>
-          <div style="font-weight:600;margin-top:2px">重算指标</div>
-          <div style="font-size:11px;color:#64748B;margin-top:2px">计算 technical_indicator</div>
+          <div style="font-size:12px;color:#94A3B8">维护</div>
+          <div style="font-weight:600;margin-top:2px">数据构建与维护</div>
+          <div style="font-size:11px;color:#64748B;margin-top:2px">30m 重建、每周指标重算</div>
         </button>
       </div>
 
@@ -102,7 +96,7 @@
           <button id="scanImportDirBtn">扫描导入目录</button>
           <button id="runImportBtn" class="primary">开始导入</button>
           <button id="build30mBtn">从5m生成30m</button>
-          <button id="rebuildIndicatorsBtn">重算指标</button>
+          <button id="rebuildIndicatorsBtn">每周运维：重算指标</button>
           <button id="cleanupStuckImportBtn" style="border-color:var(--red, #f87171);color:var(--red, #f87171)">清理僵尸任务</button>
           <button id="refreshImportBtn">刷新导入记录</button>
         </div>
@@ -156,7 +150,7 @@
               <option value="all">全部类型</option>
               <option value="vipdoc">行情导入</option>
               <option value="build_30m">30m 构建</option>
-              <option value="rebuild_indicator">指标重算</option>
+              <option value="rebuild_indicator">每周指标重算</option>
             </select>
             <button id="refreshImportBatchesBtn" type="button">刷新批次</button>
           </div>
@@ -219,10 +213,9 @@
 
     // 更新面板标题
     const titles = {
-      1: ['步骤 1：扫描检查', '扫描 /data/vipdoc 源文件范围，确认数据范围，不写数据库。'],
-      2: ['步骤 2：发起导入', '选择市场、日线/5m、日期范围和并发线程，提交后台导入任务。'],
-      3: ['步骤 3：构建30m', '从 5m 聚合生成 30m K线数据。'],
-      4: ['步骤 4：重算指标', '重算 technical_indicator（daily/5m/30m）。']
+      1: ['扫描检查', '扫描 /data/vipdoc 源文件范围，确认数据范围，不写数据库。'],
+      2: ['行情导入与日志', '导入日线/5m 到 ClickHouse，并查看导入批次、失败文件和任务进度。'],
+      3: ['数据构建与维护', '重建 30m；需要周末维护或历史修复时，再重算 technical_indicator。']
     };
     const [title, subtitle] = titles[step] || titles[1];
     if($('importPanelTitle')) $('importPanelTitle').textContent = title;
@@ -241,8 +234,8 @@
     if(scanBtn) scanBtn.style.display = step === 1 ? '' : 'none';
     if(runBtn) runBtn.style.display = step === 2 ? '' : 'none';
     if(buildBtn) buildBtn.style.display = step === 3 ? '' : 'none';
-    if(rebuildBtn) rebuildBtn.style.display = step === 4 ? '' : 'none';
-    if(refreshBtn) refreshBtn.style.display = step === 4 ? '' : 'none';
+    if(rebuildBtn) rebuildBtn.style.display = step === 3 ? '' : 'none';
+    if(refreshBtn) refreshBtn.style.display = step >= 2 ? '' : 'none';
     if(fullGuard) fullGuard.style.display = step === 2 ? '' : 'none';
 
     // 步骤1显示扫描结果区，其他步骤隐藏
@@ -268,7 +261,6 @@
     if(batchTypeFilter){
       if(step === 2) batchTypeFilter.value = 'vipdoc';
       else if(step === 3) batchTypeFilter.value = 'build_30m';
-      else if(step === 4) batchTypeFilter.value = 'rebuild_indicator';
       else batchTypeFilter.value = 'all';
     }
 
@@ -296,7 +288,7 @@
       if(label) label.style.display = step === 2 ? '' : 'none';
     });
 
-    activeImportMode = step === 1 ? 'check' : step === 4 ? 'batches' : 'run';
+    activeImportMode = step === 1 ? 'check' : 'run';
 
     // Switching step: clear old lanes and reload for current step type.
     // Filter sync (importBatchTypeFilter) must happen BEFORE calling addon's
@@ -318,7 +310,7 @@
   function isDataImportActive(){
     const active = document.querySelector('.nav-item.active[data-view]');
     const activeView = active ? active.dataset.view || '' : '';
-    return ['data-update','data-import-run','data-import-batches','data-import-logs'].includes(activeView)
+    return DATA_MANAGEMENT_VIEWS.includes(activeView)
       || Boolean($('view-data-update') && $('view-data-update').classList.contains('active'));
   }
 
@@ -334,8 +326,7 @@
       // Step 2 stores import_type as 'all'/'lday'/'5m', step 3/4 as 'build_30m'/'rebuild_indicator'
       const stepTypeMap = {
         2: ['all', 'lday', '5m', 'vipdoc'],
-        3: ['build_30m'],
-        4: ['rebuild_indicator']
+        3: ['build_30m', 'rebuild_indicator']
       };
       const allowed = stepTypeMap[activeImportStep] || null;
 

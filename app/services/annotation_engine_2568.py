@@ -79,13 +79,71 @@ class AnnotationEngine2568:
         """
         out: dict[str, list[dict[str, Any]]] = {}
         for r in ch.query(sql):
-            out.setdefault(r["code"], []).append(dict(r))
+            d = self._to_int_date(r.get("date"))
+            if d and d >= 19900101:
+                out.setdefault(r["code"], []).append(dict(r))
+        return out
+
+    def build_daily_indicators_from_kline(self, codes: list[str], days: int = 80) -> dict[str, list[dict[str, Any]]]:
+        if not codes:
+            return {}
+        out: dict[str, list[dict[str, Any]]] = {}
+        ch = get_clickhouse()
+        for code in codes:
+            rows = ch.query(
+                f"""
+                SELECT code,date,open,high,low,close,volume,amount,source
+                FROM daily_kline
+                WHERE code='{code}'
+                ORDER BY date DESC
+                LIMIT {days}
+                """
+            )
+            if not rows:
+                continue
+            df = pd.DataFrame(rows)
+            df["date"] = pd.to_datetime(df["date"])
+            for c in ["open", "high", "low", "close", "volume", "amount"]:
+                df[c] = pd.to_numeric(df[c], errors="coerce")
+            df = df.sort_values("date").reset_index(drop=True)
+            df["ma25"] = df["close"].rolling(25, min_periods=1).mean()
+            df["ma60"] = df["close"].rolling(60, min_periods=1).mean()
+            df["ma25_slope_3"] = (df["ma25"] - df["ma25"].shift(3)) / df["ma25"].shift(3).replace(0, pd.NA) * 100
+            df["ma60_slope_3"] = (df["ma60"] - df["ma60"].shift(3)) / df["ma60"].shift(3).replace(0, pd.NA) * 100
+            df["vol_ma5"] = df["volume"].rolling(5, min_periods=1).mean()
+            df["vol_ma60"] = df["volume"].rolling(60, min_periods=1).mean()
+            df["vol_ratio"] = df["vol_ma5"] / df["vol_ma60"].replace(0, pd.NA)
+            latest = df.tail(2).iloc[::-1]
+            out[code] = [
+                {
+                    "code": code,
+                    "period": "daily",
+                    "date": row["date"].strftime("%Y-%m-%d"),
+                    "close": None if pd.isna(row["close"]) else float(row["close"]),
+                    "ma25": None if pd.isna(row["ma25"]) else float(row["ma25"]),
+                    "ma60": None if pd.isna(row["ma60"]) else float(row["ma60"]),
+                    "ma25_slope_3": None if pd.isna(row["ma25_slope_3"]) else float(row["ma25_slope_3"]),
+                    "ma60_slope_3": None if pd.isna(row["ma60_slope_3"]) else float(row["ma60_slope_3"]),
+                    "vol_ma5": None if pd.isna(row["vol_ma5"]) else float(row["vol_ma5"]),
+                    "vol_ma60": None if pd.isna(row["vol_ma60"]) else float(row["vol_ma60"]),
+                    "vol_ratio": None if pd.isna(row["vol_ratio"]) else float(row["vol_ratio"]),
+                    "source": "daily_kline_dynamic",
+                    "updated_at": None,
+                }
+                for _, row in latest.iterrows()
+            ]
         return out
 
     def latest_daily_indicator_date(self, market_type: str) -> int | None:
         where = market_sql_where("code", market_type)
         row = get_clickhouse().query_one(
-            f"SELECT max(date) AS latest_date FROM technical_indicator WHERE period='daily' AND {where}"
+            f"SELECT max(date) AS latest_date FROM technical_indicator WHERE period='daily' AND {where} AND date >= toDate('1990-01-01')"
+        )
+        if row and row.get("latest_date"):
+            d = pd.to_datetime(row["latest_date"])
+            return int(d.strftime("%Y%m%d"))
+        row = get_clickhouse().query_one(
+            f"SELECT max(date) AS latest_date FROM daily_kline WHERE {where}"
         )
         if row and row.get("latest_date"):
             d = pd.to_datetime(row["latest_date"])
@@ -156,6 +214,9 @@ class AnnotationEngine2568:
         stocks = self.list_stocks(market_type, limit, q)
         codes = [s["code"] for s in stocks]
         ind_map = self.read_latest_indicators(codes)
+        missing_indicator_codes = [c for c in codes if not ind_map.get(c)]
+        if missing_indicator_codes:
+            ind_map.update(self.build_daily_indicators_from_kline(missing_indicator_codes))
         recent_map = self.read_recent_daily(codes, days=max(self.cfg.pullback_days + 1, 8))
         latest_indicator_date = self.latest_daily_indicator_date(market_type)
         latest_batch = self.latest_2560_batch()
@@ -325,6 +386,9 @@ class AnnotationEngine2568:
     ) -> dict[str, Any]:
         indicator_date = AnnotationEngine2568._to_int_date(indicator.get("date") if indicator else None)
         indicator_updated_at = indicator.get("updated_at") if indicator else None
+        updated_at_date = AnnotationEngine2568._to_int_date(indicator_updated_at)
+        if updated_at_date is not None and updated_at_date < 19900101:
+            indicator_updated_at = None
         if indicator_date is None:
             indicator_status = "缺指标"
         elif latest_indicator_date is not None and indicator_date >= latest_indicator_date:

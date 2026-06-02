@@ -11,20 +11,31 @@ import json
 import os
 import threading
 import time
+from functools import partial
 
 from sqlalchemy import text
+from pymysql.err import OperationalError
 
 from app.db.session import SessionLocal
 from app.services.job_orchestrator import (
     finalize_data_import_batch,
     update_job_execution,
 )
+
 from scripts.import_vipdoc_clickhouse import (
     read_daily_rows,
     read_5m_rows,
-    ch_insert,
+    ch_replace_rows,
     ch_ping,
 )
+
+
+def _read_file_to_rows(filepath: str, market: str, start: str | None, end: str | None) -> dict:
+    """Read one vipdoc file into rows dict (no ClickHouse write). Top-level for multiprocessing."""
+    if filepath.endswith(".day"):
+        return read_daily_rows(filepath, market, start, end)
+    else:
+        return read_5m_rows(filepath, market, start, end)
 
 
 def parse_args():
@@ -48,6 +59,7 @@ def main():
     if not ch_ping():
         raise RuntimeError("ClickHouse not reachable")
 
+    # Read batch metadata and file list
     with SessionLocal() as db:
         batch = db.execute(text("""
             SELECT id, source_dir, market, status, message
@@ -63,15 +75,24 @@ def main():
             ORDER BY id
         """), {"id": a.batch_id}).mappings().all()
         files = [r["file_path"] for r in file_rows]
-        # Build path->file_id map for status updates
         file_id_map = {r["file_path"]: r["id"] for r in file_rows}
 
-        db.execute(text("""
-            UPDATE data_import_batch
-            SET status='running', message=:msg, updated_at=NOW()
-            WHERE id=:id
-        """), {"id": a.batch_id, "msg": f"running import job #{a.job_id} (ClickHouse)"})
-        db.commit()
+    # Mark batch as running — retry on deadlock (concurrent workers may compete)
+    for _attempt in range(3):
+        try:
+            with SessionLocal() as db:
+                db.execute(text("""
+                    UPDATE data_import_batch
+                    SET status='running', message=:msg, updated_at=NOW()
+                    WHERE id=:id
+                """), {"id": a.batch_id, "msg": f"running import job #{a.job_id} (ClickHouse)"})
+                db.commit()
+            break
+        except OperationalError as exc:
+            if exc.args and exc.args[0] == 1213:
+                time.sleep(0.5 * (_attempt + 1))
+                continue
+            raise
 
     market = a.market or batch["market"] or "sh60"
     import_type = a.import_type or "all"
@@ -95,18 +116,20 @@ def main():
     _rows = [0]
     _file_results = {}  # filepath -> ('success'|'failed', error_msg)
 
-    # Phase 1: parallel read — accumulate rows in memory
-    _daily_rows: list[dict] = []
-    _minute_rows: list[dict] = []
+    flush_rows = int(os.getenv("IMPORT_FLUSH_ROWS", "100000"))
+    _inserted_rows = [0]
 
-    def do_read(filepath: str) -> dict:
-        """Read file into rows dict (no ClickHouse write)."""
-        if filepath.endswith(".day"):
-            return read_daily_rows(filepath, market, a.start, a.end)
-        else:
-            return read_5m_rows(filepath, market, a.start, a.end)
+    do_read = partial(_read_file_to_rows, market=market, start=a.start, end=a.end)
 
-    def on_read_done(filepath: str, result: dict):
+    def flush_buffer(table: str, rows: list[dict]) -> None:
+        if not rows:
+            return
+        inserted = ch_replace_rows(table, rows)
+        with _lock:
+            _inserted_rows[0] += inserted
+        rows.clear()
+
+    def on_read_done(filepath: str, result: dict) -> tuple[str, list[dict]]:
         with _lock:
             _done[0] += 1
             if result["ok"]:
@@ -115,13 +138,11 @@ def main():
                 _rows[0] += len(rows)
                 _file_results[filepath] = ("success", None)
                 rtype = result.get("type", "")
-                if rtype == "lday":
-                    _daily_rows.extend(rows)
-                elif rtype == "5m":
-                    _minute_rows.extend(rows)
+                return rtype, rows
             else:
                 _failed[0] += 1
                 _file_results[filepath] = ("failed", str(result.get("error", ""))[:500])
+                return "", []
 
     # Background reporter: single thread writes MySQL every 2s (zero contention)
     _stop_report = threading.Event()
@@ -176,24 +197,53 @@ def main():
     reporter_thread = threading.Thread(target=_reporter, daemon=True)
     reporter_thread.start()
 
-    # ── Phase 1: parallel read ──
-    print(f"[import_job_runner] Phase 1: reading {total} files with {a.workers} workers", flush=True)
+    # ── Phase 1: parallel read, main process streams batches into ClickHouse ──
+    daily_buffer: list[dict] = []
+    minute_buffer: list[dict] = []
+    phase1_ok = True
+    print(f"[import_job_runner] Phase 1: reading {total} files with {a.workers} processes", flush=True)
     try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=a.workers) as pool:
+        with concurrent.futures.ProcessPoolExecutor(max_workers=a.workers) as pool:
             futures = {pool.submit(do_read, f): f for f in all_files}
             for fut in concurrent.futures.as_completed(futures):
                 filepath = futures[fut]
-                on_read_done(filepath, fut.result())
+                try:
+                    result = fut.result()
+                except Exception as exc:
+                    result = {"ok": False, "file": filepath, "code": "<unknown>", "rows": [], "type": "unknown", "error": str(exc)}
+                rtype, rows = on_read_done(filepath, result)
+                try:
+                    if rtype == "lday":
+                        daily_buffer.extend(rows)
+                        if len(daily_buffer) >= flush_rows:
+                            flush_buffer("daily_kline", daily_buffer)
+                    elif rtype == "5m":
+                        minute_buffer.extend(rows)
+                        if len(minute_buffer) >= flush_rows:
+                            flush_buffer("minute_kline_period", minute_buffer)
+                except Exception as exc:
+                    phase1_ok = False
+                    with _lock:
+                        _failed[0] += 1
+                        _file_results["__batch_insert__"] = ("failed", str(exc)[:500])
+                    print(f"[import_job_runner] streaming INSERT failed: {exc}", flush=True)
+                    break
+    except Exception as exc:
+        phase1_ok = False
+        with _lock:
+            _failed[0] += 1
+            _file_results["__phase1_crash__"] = ("failed", str(exc)[:500])
+        print(f"[import_job_runner] Phase 1 CRASH: {exc}", flush=True)
     finally:
         _stop_report.set()
         reporter_thread.join(timeout=3)
 
     with _lock:
-        daily_count = len(_daily_rows)
-        minute_count = len(_minute_rows)
+        daily_count = len(daily_buffer)
+        minute_count = len(minute_buffer)
         d, s, f = _done[0], _success[0], _failed[0]
 
-    print(f"[import_job_runner] Phase 1 done: {d} files read, {daily_count} daily rows, {minute_count} minute rows, {f} failed", flush=True)
+    print(f"[import_job_runner] Phase 1 done: {d} files read, {daily_count} daily rows buffered, {minute_count} minute rows buffered, {f} failed", flush=True)
 
     # ── Phase 2: batch INSERT ──
     _phase[0] = 2  # switch reporter message
@@ -206,14 +256,14 @@ def main():
         if daily_count > 0:
             t_ins = time.time()
             print(f"[import_job_runner] Phase 2: inserting {daily_count} daily rows", flush=True)
-            inserted = ch_insert("daily_kline", _daily_rows)
-            print(f"[import_job_runner] daily insert done: {inserted} rows in {time.time()-t_ins:.1f}s", flush=True)
+            flush_buffer("daily_kline", daily_buffer)
+            print(f"[import_job_runner] daily insert done in {time.time()-t_ins:.1f}s", flush=True)
 
         if minute_count > 0:
             t_ins = time.time()
             print(f"[import_job_runner] Phase 2: inserting {minute_count} minute rows", flush=True)
-            inserted = ch_insert("minute_kline_period", _minute_rows)
-            print(f"[import_job_runner] minute insert done: {inserted} rows in {time.time()-t_ins:.1f}s", flush=True)
+            flush_buffer("minute_kline_period", minute_buffer)
+            print(f"[import_job_runner] minute insert done in {time.time()-t_ins:.1f}s", flush=True)
     except Exception as e:
         phase2_ok = False
         print(f"[import_job_runner] Phase 2 INSERT failed: {e}", flush=True)
@@ -230,9 +280,11 @@ def main():
     elapsed = time.time() - t0
     print(f"[import_job_runner] done: ok={s} failed={f} rows={r} in {elapsed:.1f}s", flush=True)
 
-    status = "success" if f == 0 and phase2_ok else "failed"
-    batch_message = f"finished to ClickHouse (batch insert), workers={a.workers}"
-    if not phase2_ok:
+    status = "success" if f == 0 and phase1_ok and phase2_ok else "failed"
+    batch_message = f"finished to ClickHouse (streaming insert), workers={a.workers}, flush_rows={flush_rows}"
+    if not phase1_ok:
+        batch_message = "finished with read/streaming insert error"
+    elif not phase2_ok:
         batch_message = f"finished with ClickHouse batch insert error"
     elif f:
         batch_message = f"finished with {f} failed files"

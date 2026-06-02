@@ -28,8 +28,6 @@
   function computePlan(ws) {
     const mr = ws.market_readiness || [];
     const anyMissingData = mr.some(m => (m.missing || []).length > 0);
-    const anyIndicatorsStale = mr.some(m => !m.indicators_fresh);
-    const anyMissing30m = mr.some(m => (m.missing || []).includes("30m"));
     const targetDate = ws.target_date;
 
     // 推导 import 的 start（取最新已有数据向前推5天，end 始终用 targetDate）
@@ -53,27 +51,27 @@
         detail: mr.map(m => `${m.market}: ${m.status}`).join(" | "),
       },
       {
-        id: "import", label: stepLabels["import"], status: anyMissingData ? "pending" : "skipped",
+        id: "import", label: stepLabels["import"], status: "pending",
         endpoint: "/api/import/run",
-        reason: anyMissingData ? undefined : "行情数据已齐，无需导入",
-        payload: anyMissingData ? { source_dir: "/data/vipdoc", start: importStart, end: importEnd, workers: 2 } : null,
+        reason: anyMissingData ? undefined : "按最近区间幂等刷新日线和5m",
+        payload: { source_dir: "/data/vipdoc", start: importStart, end: importEnd, workers: 2 },
       },
       {
-        id: "build30m", label: stepLabels["build30m"], status: anyMissing30m ? "pending" : "skipped",
+        id: "build30m", label: stepLabels["build30m"], status: "pending",
         endpoint: "/api/import/build-30m",
-        reason: anyMissing30m ? undefined : "30m 已跟上",
-        payload: anyMissing30m ? { market: "all", start: importStart, end: importEnd, workers: 2 } : null,
+        reason: "5m 导入后必须幂等重建同范围 30m",
+        payload: { market: "all", start: importStart, end: importEnd, workers: 2 },
       },
       {
-        id: "indicators", label: stepLabels["indicators"], status: anyIndicatorsStale ? "pending" : "skipped",
+        id: "indicators", label: stepLabels["indicators"], status: "skipped",
         endpoint: "/api/import/rebuild-indicators",
-        reason: anyIndicatorsStale ? undefined : "指标已是最新",
-        payload: anyIndicatorsStale ? { market: "all", start: importStart, end: importEnd, periods: "daily,5m,30m", commit_every: 100 } : null,
+        reason: "fast 2560 直接用 ClickHouse 窗口计算，不需要预重算 technical_indicator",
+        payload: null,
       },
       {
         id: "run2560", label: stepLabels["run2560"], status: "pending",
-        endpoint: "/api/jobs/run-all-markets",
-        payload: { shards: 1 },  // run-all-markets 自带 market lane 防重
+        endpoint: "/api/jobs/enqueue",
+        payload: { job_type: "run_2560", market: "all", shards: 1 },
       },
       {
         id: "pool", label: stepLabels["pool"], status: "pending",
@@ -317,8 +315,8 @@
           const ann = await getJson("/api/strategy/2568/annotations?market_type=all&limit=20&min_a=0&min_b=2");
           const total = (ann.summary && ann.summary.total) || 0;
           step.summary = `观察池共 ${total} 只`;
-        } catch {
-          step.summary = "观察池加载失败";
+        } catch (e) {
+          step.summary = `观察池加载失败：${e.message || "接口异常"}`;
         }
       }
       return;
@@ -337,56 +335,31 @@
         const payload = step.payload || {};
         for (const itype of ["lday", "5m"]) {
           result = await postJson(step.endpoint, { ...payload, market: "all", import_type: itype });
-          step.jobId = result.job_id;
-          step.progressUrl = result.progress_url;
-          await pollJobProgress(step);
+          await pollImportLanes(step, result, itype);
           if (step.status === "failed") return;
         }
         step.status = "done";
         step.summary = `导入完成 (lday + 5m)`;
         await refreshPlanAfter("import");
       } else if (step.id === "run2560") {
-        // 一键运行四类（并行创建4个market任务）
+        // fast 2560：单个 all-market job，避免四路并发写 MySQL 死锁。
         result = await postJson(step.endpoint, step.payload);
-        const created = (result.created || []);
-        const skipped = (result.skipped || []).map(s => `${s.market}(${s.reason})`).join(", ");
-
-        if (created.length === 0) {
-          if (skipped) {
-            step.status = "failed";
-            step.error = `四市场已有活跃 2560 任务，未创建新任务：${skipped}`;
-          } else {
-            step.status = "done";
-            step.summary = "无新任务";
-          }
-          return;
-        } else {
-          // 等待所有 market lane 完成
-          step.summary = `已创建 ${created.length} 个任务，等待完成...`;
-          const laneResults = await Promise.allSettled(
-            created.map(c => {
-              const execId = c.execution_id;
-              const market = c.market;
-              const progressUrl = `/api/jobs/executions/${execId}/progress`;
-              return pollJobProgressForLane(progressUrl, market);
-            })
-          );
-          const failed = laneResults.filter(r => r.status === "rejected" || (r.value && r.value.failed));
-          const succeeded = laneResults.filter(r => r.status === "fulfilled" && !r.value?.failed);
-          step.status = failed.length > 0 ? "failed" : "done";
-          const markets = created.map(c => c.market).join(", ");
-          step.summary = `${markets}: ${succeeded.length} 成功, ${failed.length} 失败`;
-          if (skipped) step.summary += ` | 跳过: ${skipped}`;
-          if (failed.length > 0) {
-            step.error = `${failed.length} 个 market lane 失败`;
-          }
-        }
+        step.jobId = result.payload && result.payload.job_execution_id;
+        step.progressUrl = step.jobId ? `/api/jobs/executions/${step.jobId}/progress` : null;
+        await pollJobProgress(step);
+        if (step.status === "failed") return;
+        step.status = "done";
+        step.summary = "2560 fast 完成";
       } else {
         // build30m / indicators
         result = await postJson(step.endpoint, step.payload);
-        step.jobId = result.job_id;
-        step.progressUrl = result.progress_url;
-        await pollJobProgress(step);
+        if (result && Array.isArray(result.lanes)) {
+          await pollImportLanes(step, result, step.id);
+        } else {
+          step.jobId = result.job_id;
+          step.progressUrl = result.progress_url;
+          await pollJobProgress(step);
+        }
         if (step.status === "failed") return;
         step.status = "done";
         step.summary = step.label + " 完成";
@@ -397,6 +370,27 @@
     } catch (e) {
       step.status = "failed";
       step.error = e.message;
+    }
+  }
+
+  async function pollImportLanes(step, result, label) {
+    const lanes = (result && result.lanes) ? result.lanes.filter(l => !l.skipped && l.progress_url) : [];
+    const skipped = (result && result.lanes) ? result.lanes.filter(l => l.skipped) : [];
+    if (!lanes.length) {
+      if (skipped.length) {
+        step.log = `${label}: 全部 lane 被跳过：${skipped.map(l => `${l.market}:${l.reason}`).join(" | ")}`;
+      }
+      return;
+    }
+    step.summary = `${label}: 等待 ${lanes.length} 个市场 lane 完成...`;
+    renderSteps();
+    const laneResults = await Promise.allSettled(
+      lanes.map(l => pollJobProgressForLane(l.progress_url, l.market || "-"))
+    );
+    const failed = laneResults.filter(r => r.status === "rejected" || (r.value && r.value.failed));
+    if (failed.length > 0) {
+      step.status = "failed";
+      step.error = `${label}: ${failed.length} 个市场 lane 失败`;
     }
   }
 

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable, Optional
 
@@ -222,27 +223,18 @@ def rebuild_for_code(
     start_s: str,
     end_s: str,
 ) -> dict:
-    """Rebuild indicators for a single code. Thread-safe: each call gets its own CH client."""
+    """Rebuild indicators for a single code. Returns computed records (no CH write)."""
     try:
         df = load_one_code(period, code, start_i, end_i)
         if df.empty:
-            return {"ok": True, "code": code, "rows": 0, "period": period}
+            return {"ok": True, "code": code, "rows": 0, "records": [], "period": period}
 
         ind = compute_indicators(df)
         records = make_records_for_clickhouse(code, period, ind)
 
-        ch = get_clickhouse()
-        del_q = f"ALTER TABLE {ch.database}.technical_indicator DELETE WHERE code='{code}' AND period='{period}' AND date >= '{start_s}' AND date <= '{end_s}'"
-        ch.command(del_q)
-
-        total = 0
-        if records:
-            ch.insert_batch("technical_indicator", records)
-            total = len(records)
-
-        return {"ok": True, "code": code, "rows": total, "period": period}
+        return {"ok": True, "code": code, "rows": len(records), "records": records, "period": period}
     except Exception as exc:
-        return {"ok": False, "code": code, "rows": 0, "period": period, "error": str(exc)}
+        return {"ok": False, "code": code, "rows": 0, "records": [], "period": period, "error": str(exc)}
 
 
 def rebuild_period(
@@ -268,8 +260,47 @@ def rebuild_period(
         start_s += ' 00:00:00'
         end_s += ' 23:59:59'
 
+    flush_codes = int(os.getenv("INDICATOR_FLUSH_CODES", str(max(1, commit_every))))
+    print(f"Phase 1: computing indicators for {len(codes)} codes, flush_codes={flush_codes}", flush=True)
+    pending_records: list[dict] = []
+    pending_codes: list[str] = []
+    ok_count = 0
+    fail_count = 0
+    total = 0
+
+    def flush_successful_codes() -> None:
+        nonlocal total, pending_records, pending_codes
+        if not pending_records:
+            pending_codes = []
+            return
+        codes_csv = ", ".join(f"'{c}'" for c in pending_codes)
+        print(f"Phase 2: replacing {len(pending_records)} {period} records for {len(pending_codes)} successful codes", flush=True)
+        del_q = f"ALTER TABLE {ch.database}.technical_indicator DELETE WHERE period='{period}' AND date >= '{start_s}' AND date <= '{end_s}' AND code IN ({codes_csv})"
+        ch.command(del_q)
+        ch.insert_batch("technical_indicator", pending_records)
+        total += len(pending_records)
+        pending_records = []
+        pending_codes = []
+
+    def handle_result(r: dict, completed: int) -> None:
+        nonlocal ok_count, fail_count, pending_records, pending_codes
+        if r["ok"]:
+            ok_count += 1
+            records = r.get("records", [])
+            if records:
+                pending_codes.append(r["code"])
+                pending_records.extend(records)
+                if len(pending_codes) >= flush_codes:
+                    flush_successful_codes()
+        else:
+            fail_count += 1
+        if on_result:
+            on_result(r, completed, len(codes))
+        if completed % commit_every == 0:
+            print(f"{period}: computed {completed}/{len(codes)}, inserted={total}, pending={len(pending_records)} rows")
+
     if workers > 0 and len(codes) > 1:
-        # Parallel mode
+        # Parallel compute (read-only, no CH writes → thread-safe)
         completed = 0
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futs = {
@@ -281,26 +312,27 @@ def rebuild_period(
             }
             for fut in as_completed(futs):
                 r = fut.result()
-                if r["ok"]:
-                    total += r["rows"]
                 completed += 1
-                if on_result:
-                    on_result(r, completed, len(codes))
-                if completed % commit_every == 0:
-                    print(f"{period}: processed {completed}/{len(codes)}, inserted={total}")
+                handle_result(r, completed)
     else:
-        # Sequential mode (original)
+        # Sequential compute
         for idx, code in enumerate(codes, 1):
             r = rebuild_for_code(code, period, start, end, market_type, start_i, end_i, start_s, end_s)
-            if r["ok"]:
-                total += r["rows"]
-            if on_result:
-                on_result(r, idx, len(codes))
-            if idx % commit_every == 0:
-                print(f"{period}: processed {idx}/{len(codes)}, inserted={total}")
+            handle_result(r, idx)
 
-    print(f"[OK] {period} inserted: {total}")
-    return {"ok": True, "period": period, "total_inserted": total, "total_codes": len(codes)}
+    flush_successful_codes()
+
+    print(f"Phase 1 done: {ok_count} ok, {fail_count} failed, inserted={total}", flush=True)
+
+    print(f"[OK] {period} inserted: {total}", flush=True)
+    return {
+        "ok": fail_count == 0,
+        "period": period,
+        "total_inserted": total,
+        "total_codes": len(codes),
+        "success_codes": ok_count,
+        "failed_codes": fail_count,
+    }
 
 
 def main():

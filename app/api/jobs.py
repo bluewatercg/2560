@@ -540,11 +540,8 @@ class RunAllMarketsRequest(BaseModel):
 def enqueue_job(payload: EnqueueJobRequest, db: Session = Depends(get_db)):
     _ensure_tables(db)
 
-    if payload.job_type == "run_2560" and payload.market == "all":
-        return {"ok": False, "message": "market=all 不再被支持，请使用“一键运行四类”或选择具体市场（sh60/sh68/sz00/sz30）"}
-
     # 同 market + 同 job_type 只允许一个 active（running/queued/pending）
-    if payload.job_type == "run_2560" and payload.market in VALID_2560_MARKETS:
+    if payload.job_type == "run_2560" and (payload.market in VALID_2560_MARKETS or payload.market == "all"):
         existing = db.execute(text("""
             SELECT COUNT(*) FROM job_execution
             WHERE job_type = 'run_2560'

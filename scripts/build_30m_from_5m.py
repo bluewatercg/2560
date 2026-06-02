@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, Optional
 
@@ -56,6 +57,111 @@ def get_codes(market: str, start: Optional[str], end: Optional[str], limit_codes
     rows = ch.query(q)
     codes = [r["code"] for r in rows]
     return codes[:limit_codes] if limit_codes else codes
+
+
+def build_30m_clickhouse(
+    start: Optional[str],
+    end: Optional[str],
+    market: str = "all",
+    limit_codes: Optional[int] = None,
+    dry_run: bool = False,
+) -> dict:
+    """Build 30m bars with one ClickHouse INSERT SELECT for the normal daily path."""
+    if not start:
+        raise ValueError("start is required for ClickHouse 30m build")
+    ch = get_clickhouse()
+    start_s = pd.to_datetime(start).strftime("%Y-%m-%d")
+    end_s = pd.to_datetime(end or start).strftime("%Y-%m-%d")
+    where = code_where(market)
+    code_limit = ""
+    if limit_codes:
+        code_limit = f" AND code IN (SELECT code FROM (SELECT DISTINCT code FROM minute_kline_period WHERE period='5m' AND {where} ORDER BY code LIMIT {int(limit_codes)}))"
+    date_filter = f"date >= toDate('{start_s}') AND date < toDate('{end_s}') + INTERVAL 1 DAY"
+    count_q = f"SELECT count() AS rows, uniqExact(code) AS codes FROM minute_kline_period WHERE period='5m' AND {date_filter} AND {where}{code_limit}"
+    stats = ch.query_one(count_q) or {"rows": 0, "codes": 0}
+    if int(stats.get("rows") or 0) == 0:
+        return {
+            "ok": False,
+            "codes": 0,
+            "inserted_30m_rows": 0,
+            "dry_run": dry_run,
+            "error": f"no 5m data found in ClickHouse for market={market}, date_range={start_s}~{end_s}",
+            "results_sample": [],
+        }
+    if dry_run:
+        estimate_q = f"""
+        SELECT count() AS rows
+        FROM (
+            SELECT code, bucket
+            FROM (
+                SELECT
+                    code,
+                    multiIf(
+                        toHour(date)*60 + toMinute(date) <= 600, toDateTime(toDate(date)) + INTERVAL 10 HOUR,
+                        toHour(date)*60 + toMinute(date) <= 630, toDateTime(toDate(date)) + INTERVAL 10 HOUR + INTERVAL 30 MINUTE,
+                        toHour(date)*60 + toMinute(date) <= 660, toDateTime(toDate(date)) + INTERVAL 11 HOUR,
+                        toHour(date)*60 + toMinute(date) <= 690, toDateTime(toDate(date)) + INTERVAL 11 HOUR + INTERVAL 30 MINUTE,
+                        toHour(date)*60 + toMinute(date) <= 810, toDateTime(toDate(date)) + INTERVAL 13 HOUR + INTERVAL 30 MINUTE,
+                        toHour(date)*60 + toMinute(date) <= 840, toDateTime(toDate(date)) + INTERVAL 14 HOUR,
+                        toHour(date)*60 + toMinute(date) <= 870, toDateTime(toDate(date)) + INTERVAL 14 HOUR + INTERVAL 30 MINUTE,
+                        toHour(date)*60 + toMinute(date) <= 900, toDateTime(toDate(date)) + INTERVAL 15 HOUR,
+                        NULL
+                    ) AS bucket
+                FROM minute_kline_period
+                WHERE period='5m' AND {date_filter} AND {where}{code_limit}
+            )
+            WHERE bucket IS NOT NULL
+            GROUP BY code, bucket
+        )
+        """
+        est = ch.query_one(estimate_q) or {"rows": 0}
+        return {"ok": True, "codes": int(stats.get("codes") or 0), "inserted_30m_rows": int(est.get("rows") or 0), "dry_run": True, "results_sample": []}
+
+    del_q = f"ALTER TABLE {ch.database}.minute_kline_period DELETE WHERE period='30m' AND {date_filter} AND {where}{code_limit}"
+    ch.command(del_q)
+    insert_q = f"""
+    INSERT INTO {ch.database}.minute_kline_period
+        (code, date, period, source, open, high, low, close, volume, amount)
+    SELECT
+        code,
+        bucket AS date,
+        '30m' AS period,
+        '{SOURCE}' AS source,
+        argMin(open, date) AS open,
+        max(high) AS high,
+        min(low) AS low,
+        argMax(close, date) AS close,
+        sum(volume) AS volume,
+        sum(amount) AS amount
+    FROM (
+        SELECT
+            code, date, open, high, low, close, volume, amount,
+            multiIf(
+                toHour(date)*60 + toMinute(date) <= 600, toDateTime(toDate(date)) + INTERVAL 10 HOUR,
+                toHour(date)*60 + toMinute(date) <= 630, toDateTime(toDate(date)) + INTERVAL 10 HOUR + INTERVAL 30 MINUTE,
+                toHour(date)*60 + toMinute(date) <= 660, toDateTime(toDate(date)) + INTERVAL 11 HOUR,
+                toHour(date)*60 + toMinute(date) <= 690, toDateTime(toDate(date)) + INTERVAL 11 HOUR + INTERVAL 30 MINUTE,
+                toHour(date)*60 + toMinute(date) <= 810, toDateTime(toDate(date)) + INTERVAL 13 HOUR + INTERVAL 30 MINUTE,
+                toHour(date)*60 + toMinute(date) <= 840, toDateTime(toDate(date)) + INTERVAL 14 HOUR,
+                toHour(date)*60 + toMinute(date) <= 870, toDateTime(toDate(date)) + INTERVAL 14 HOUR + INTERVAL 30 MINUTE,
+                toHour(date)*60 + toMinute(date) <= 900, toDateTime(toDate(date)) + INTERVAL 15 HOUR,
+                NULL
+            ) AS bucket
+        FROM minute_kline_period
+        WHERE period='5m' AND {date_filter} AND {where}{code_limit}
+    )
+    WHERE bucket IS NOT NULL
+    GROUP BY code, bucket
+    """
+    ch.command(insert_q)
+    rows = ch.query_one(f"SELECT count() AS rows, uniqExact(code) AS codes FROM minute_kline_period WHERE period='30m' AND {date_filter} AND {where}{code_limit}") or {"rows": 0, "codes": 0}
+    return {
+        "ok": True,
+        "codes": int(rows.get("codes") or 0),
+        "inserted_30m_rows": int(rows.get("rows") or 0),
+        "dry_run": False,
+        "results_sample": [],
+    }
 
 
 def build_30m_for_code(code: str, start: Optional[str], end: Optional[str], dry_run: bool = False, batch_id: Optional[int] = None) -> dict:
@@ -154,7 +260,18 @@ def build_30m_parallel(
     batch_id: Optional[int] = None,
     on_result: Optional[Callable[[dict, int, int], None]] = None,
 ) -> dict:
+    if os.getenv("BUILD_30M_MODE", "clickhouse").lower() == "clickhouse":
+        return build_30m_clickhouse(start, end, market, limit_codes, dry_run)
     codes = get_codes(market, start, end, limit_codes)
+    if not codes:
+        return {
+            "ok": False,
+            "codes": 0,
+            "inserted_30m_rows": 0,
+            "dry_run": dry_run,
+            "error": f"no 5m data found in ClickHouse for market={market}, date_range={start}~{end or '∞'}. Please run import_vipdoc with import_type=all/5m first.",
+            "results_sample": [],
+        }
     results = []
     total_codes = len(codes)
     completed = 0

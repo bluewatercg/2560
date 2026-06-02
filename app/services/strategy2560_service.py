@@ -1,5 +1,8 @@
 from sqlalchemy import text
 
+from app.core.market_scope import SUPPORTED_MARKET_SCOPES, market_sql_where
+from app.db.clickhouse import get_clickhouse
+
 def rows(result):
     return [dict(r._mapping) for r in result]
 
@@ -42,5 +45,136 @@ class Strategy2560Service:
     def batch_detail(self, batch_id):
         r=self.db.execute(text('SELECT * FROM analysis_batch WHERE batch_id=:b'), {'b': batch_id}).mappings().first()
         return dict(r) if r else None
+
+    def _stock_count(self, market: str) -> int:
+        try:
+            return int(self.db.execute(text(f"SELECT COUNT(*) FROM stock_info s WHERE {market_sql_where('s.code', market)}")).scalar() or 0)
+        except Exception:
+            return 0
+
+    @staticmethod
+    def _quality_status(missing_symbols: int, duplicate_rows: int, abnormal_bar_count: int, bar_count_bad_symbols: int = 0) -> str:
+        if missing_symbols == 0 and duplicate_rows == 0 and abnormal_bar_count == 0 and bar_count_bad_symbols == 0:
+            return "ok"
+        if duplicate_rows > 0 or abnormal_bar_count > 0 or bar_count_bad_symbols > 0:
+            return "warn"
+        return "missing"
+
+    def _daily_quality_row(self, market: str, total_symbols: int) -> dict:
+        ch = get_clickhouse()
+        where = market_sql_where("code", market)
+        latest = ch.query_one(f"SELECT max(date) AS latest_day FROM daily_kline WHERE {where}") or {}
+        latest_day = latest.get("latest_day")
+        if not latest_day:
+            return {
+                "check_date": None, "data_latest_date": None, "market": market, "period": "daily", "source": "clickhouse",
+                "total_symbols": total_symbols, "available_symbols": 0, "missing_symbols": total_symbols,
+                "row_count": 0, "expected_rows": total_symbols, "duplicate_keys": 0, "duplicate_rows": 0,
+                "abnormal_bar_count": 0, "bar_count_bad_symbols": 0, "status": "missing",
+            }
+        base = ch.query_one(f"""
+            SELECT
+                count() AS row_count,
+                uniqExact(code) AS available_symbols,
+                countIf(open <= 0 OR high <= 0 OR low <= 0 OR close <= 0 OR high < greatest(open, close) OR low > least(open, close)) AS abnormal_bar_count
+            FROM daily_kline
+            WHERE {where} AND date = toDate('{latest_day}')
+        """) or {}
+        dup = ch.query_one(f"""
+            SELECT count() AS duplicate_keys, sum(cnt - 1) AS duplicate_rows
+            FROM (
+                SELECT code, date, count() AS cnt
+                FROM daily_kline
+                WHERE {where} AND date = toDate('{latest_day}')
+                GROUP BY code, date
+                HAVING cnt > 1
+            )
+        """) or {}
+        available = int(base.get("available_symbols") or 0)
+        duplicate_rows = int(dup.get("duplicate_rows") or 0)
+        abnormal = int(base.get("abnormal_bar_count") or 0)
+        missing = max(0, total_symbols - available) if total_symbols else 0
+        return {
+            "check_date": latest_day, "data_latest_date": latest_day, "market": market, "period": "daily", "source": "clickhouse",
+            "total_symbols": total_symbols, "available_symbols": available, "missing_symbols": missing,
+            "row_count": int(base.get("row_count") or 0), "expected_rows": total_symbols,
+            "duplicate_keys": int(dup.get("duplicate_keys") or 0), "duplicate_rows": duplicate_rows,
+            "abnormal_bar_count": abnormal, "bar_count_bad_symbols": 0,
+            "status": self._quality_status(missing, duplicate_rows, abnormal),
+        }
+
+    def _minute_quality_row(self, market: str, period: str, expected_bars: int, total_symbols: int, check_day: str | None) -> dict:
+        ch = get_clickhouse()
+        where = market_sql_where("code", market)
+        latest = ch.query_one(f"""
+            SELECT max(toDate(date)) AS latest_day
+            FROM minute_kline_period
+            WHERE period='{period}' AND {where}
+        """) or {}
+        latest_day = latest.get("latest_day")
+        check_day = check_day or latest_day
+        if not check_day:
+            return {
+                "check_date": None, "data_latest_date": latest_day, "market": market, "period": period, "source": "clickhouse",
+                "total_symbols": total_symbols, "available_symbols": 0, "missing_symbols": total_symbols,
+                "row_count": 0, "expected_rows": total_symbols * expected_bars,
+                "duplicate_keys": 0, "duplicate_rows": 0, "abnormal_bar_count": 0,
+                "bar_count_bad_symbols": total_symbols, "status": "missing",
+            }
+        base = ch.query_one(f"""
+            SELECT
+                count() AS row_count,
+                uniqExact(code) AS available_symbols,
+                countIf(open <= 0 OR high <= 0 OR low <= 0 OR close <= 0 OR high < greatest(open, close) OR low > least(open, close)) AS abnormal_bar_count
+            FROM minute_kline_period
+            WHERE period='{period}' AND {where} AND toDate(date) = toDate('{check_day}')
+        """) or {}
+        dup = ch.query_one(f"""
+            SELECT count() AS duplicate_keys, sum(cnt - 1) AS duplicate_rows
+            FROM (
+                SELECT code, date, period, count() AS cnt
+                FROM minute_kline_period
+                WHERE period='{period}' AND {where} AND toDate(date) = toDate('{check_day}')
+                GROUP BY code, date, period
+                HAVING cnt > 1
+            )
+        """) or {}
+        counts = ch.query_one(f"""
+            SELECT
+                countIf(bar_count != {expected_bars}) AS bar_count_bad_symbols,
+                countIf(bar_count < {expected_bars}) AS bar_count_under_symbols,
+                countIf(bar_count > {expected_bars}) AS bar_count_over_symbols
+            FROM (
+                SELECT code, count() AS bar_count
+                FROM minute_kline_period
+                WHERE period='{period}' AND {where} AND toDate(date) = toDate('{check_day}')
+                GROUP BY code
+            )
+        """) or {}
+        available = int(base.get("available_symbols") or 0)
+        duplicate_rows = int(dup.get("duplicate_rows") or 0)
+        abnormal = int(base.get("abnormal_bar_count") or 0)
+        bad_symbols = int(counts.get("bar_count_bad_symbols") or 0)
+        missing = max(0, total_symbols - available) if total_symbols else 0
+        return {
+            "check_date": check_day, "data_latest_date": latest_day, "market": market, "period": period, "source": "clickhouse",
+            "total_symbols": total_symbols, "available_symbols": available, "missing_symbols": missing,
+            "row_count": int(base.get("row_count") or 0), "expected_rows": total_symbols * expected_bars,
+            "duplicate_keys": int(dup.get("duplicate_keys") or 0), "duplicate_rows": duplicate_rows,
+            "abnormal_bar_count": abnormal, "bar_count_bad_symbols": bad_symbols,
+            "bar_count_under_symbols": int(counts.get("bar_count_under_symbols") or 0),
+            "bar_count_over_symbols": int(counts.get("bar_count_over_symbols") or 0),
+            "expected_bars_per_symbol": expected_bars,
+            "status": self._quality_status(missing, duplicate_rows, abnormal, bad_symbols),
+        }
+
     def data_quality_summary(self):
-        return rows(self.db.execute(text('SELECT * FROM data_quality_check ORDER BY check_date DESC,period LIMIT 100')))
+        result = []
+        for market in SUPPORTED_MARKET_SCOPES:
+            total_symbols = self._stock_count(market)
+            daily_row = self._daily_quality_row(market, total_symbols)
+            target_day = daily_row.get("check_date")
+            result.append(daily_row)
+            result.append(self._minute_quality_row(market, "5m", 48, total_symbols, target_day))
+            result.append(self._minute_quality_row(market, "30m", 8, total_symbols, target_day))
+        return result

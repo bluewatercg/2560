@@ -78,7 +78,7 @@
         <select id="importType">
           <option value="lday">日线 lday（sh/lday、sz/lday，*.day）</option>
           <option value="5m">5分钟线 5m（sh/fzline、sz/fzline，*.lc5）</option>
-          <option value="all">日线 + 5分钟线（不含1分钟线）</option>
+          <option value="all" selected>日线 + 5分钟线（不含1分钟线）</option>
         </select>
       `;
 
@@ -140,7 +140,7 @@
       help.id = 'importTypeHelp';
       help.style.cssText = 'margin-top:10px;color:#94A3B8;font-size:13px;line-height:1.7';
       help.innerHTML = `
-        <div><b>盘后前置</b>：先用 Windows 中金客户端“盘后数据下载”到 <code>E:\\zd_ciccwm\\vipdoc</code>，再执行“中金数据上传服务器”，把 VIPDOC 上传到 18 服务器。</div>
+        <div><b>盘后前置</b>：先用 Windows 中金客户端“盘后数据下载”到 <code>E:\\zd_ciccwm\\vipdoc</code>，再执行“中金数据上传服务器”，把 VIPDOC 上传到 30 服务器。</div>
         <div class="muted">本页面只处理服务器上的 <code>/data/vipdoc</code>，不负责下载行情。</div>
         <div><b>检查日期</b>：点“扫描导入目录”，确认“源文件数据范围”已到目标交易日；导入批次里的“数据范围”表示数据库已导入到哪天。</div>
         <div><b>导入内容</b>：<code>all</code> 只表示日线 + 5分钟线，不包含 1分钟线。</div>

@@ -12,8 +12,7 @@ from app.db.session import get_db
 from app.services.job_orchestrator import create_job_execution, enqueue_job, ensure_job_tables
 from scripts.import_vipdoc_clickhouse import scan_vipdoc_files
 from scripts.import_vipdoc_clickhouse import (
-    import_daily_clickhouse, import_5m_clickhouse,
-    CH_URL as _CH_URL, ch_ping as _ch_ping,
+    CH_URL as _CH_URL, ch_ping as _ch_ping, ch_replace_rows,
 )
 
 router = APIRouter(prefix="/api/import", tags=["import"])
@@ -1078,6 +1077,9 @@ def ch_import(
             "file_data_range": scan.get("file_data_range"),
         }
 
+    from scripts.import_vipdoc_clickhouse import read_daily_rows, read_5m_rows
+    import time
+
     # Filter files by type
     lday_files = [f for f in scan["files"] if f.endswith(".day")]
     lc5_files = [f for f in scan["files"] if f.endswith(".lc5")]
@@ -1087,40 +1089,85 @@ def ch_import(
     elif import_type in ("5m", "lc5", "fzline"):
         lday_files = []
 
-    import concurrent.futures
-    import time
-
+    all_files = lday_files + lc5_files
     t0 = time.time()
-    total_rows = 0
+
+    flush_rows = int(os.getenv("IMPORT_FLUSH_ROWS", "100000"))
+    daily_buffer: list[dict] = []
+    minute_buffer: list[dict] = []
     ok_count = 0
     fail_count = 0
+    total_rows = 0
     failed_files = []
 
-    all_files = lday_files + lc5_files
+    def flush_buffer(table: str, rows: list[dict]) -> int:
+        if not rows:
+            return 0
+        inserted = ch_replace_rows(table, rows)
+        rows.clear()
+        return inserted
 
-    def do_import(filepath: str) -> dict:
-        if filepath.endswith(".day"):
-            return import_daily_clickhouse(filepath, market, start, end)
+    for f in all_files:
+        if f.endswith(".day"):
+            result = read_daily_rows(f, market, start, end)
         else:
-            return import_5m_clickhouse(filepath, market, start, end)
+            result = read_5m_rows(f, market, start, end)
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(do_import, f): f for f in all_files}
-        for fut in concurrent.futures.as_completed(futures):
-            result = fut.result()
-            if result["ok"]:
-                total_rows += result["rows"]
-                ok_count += 1
-            else:
-                fail_count += 1
-                failed_files.append({
-                    "file": result.get("file", ""),
-                    "error": str(result.get("error", ""))[:200],
-                })
+        if result["ok"]:
+            ok_count += 1
+            rows = result.get("rows", [])
+            if result.get("type") == "lday":
+                daily_buffer.extend(rows)
+                if len(daily_buffer) >= flush_rows:
+                    try:
+                        total_rows += flush_buffer("daily_kline", daily_buffer)
+                    except Exception as e:
+                        return {
+                            "ok": False,
+                            "market": market,
+                            "total_files": len(all_files),
+                            "success": ok_count,
+                            "failed": fail_count + 1,
+                            "total_rows": total_rows,
+                            "elapsed_seconds": round(time.time() - t0, 1),
+                            "rows_per_second": round(total_rows / (time.time() - t0), 0) if time.time() > t0 else 0,
+                            "failed_files": [{"file": "__batch_insert__", "error": str(e)[:200]}],
+                        }
+            elif result.get("type") == "5m":
+                minute_buffer.extend(rows)
+                if len(minute_buffer) >= flush_rows:
+                    try:
+                        total_rows += flush_buffer("minute_kline_period", minute_buffer)
+                    except Exception as e:
+                        return {
+                            "ok": False,
+                            "market": market,
+                            "total_files": len(all_files),
+                            "success": ok_count,
+                            "failed": fail_count + 1,
+                            "total_rows": total_rows,
+                            "elapsed_seconds": round(time.time() - t0, 1),
+                            "rows_per_second": round(total_rows / (time.time() - t0), 0) if time.time() > t0 else 0,
+                            "failed_files": [{"file": "__batch_insert__", "error": str(e)[:200]}],
+                        }
+        else:
+            fail_count += 1
+            failed_files.append({
+                "file": result.get("file", ""),
+                "error": str(result.get("error", ""))[:200],
+            })
+
+    # Flush remaining rows without holding the full market in memory.
+    try:
+        total_rows += flush_buffer("daily_kline", daily_buffer)
+        total_rows += flush_buffer("minute_kline_period", minute_buffer)
+    except Exception as e:
+        failed_files.append({"file": "__batch_insert__", "error": str(e)[:200]})
+        fail_count += 1
 
     elapsed = time.time() - t0
     return {
-        "ok": True,
+        "ok": fail_count == 0,
         "market": market,
         "total_files": len(all_files),
         "success": ok_count,

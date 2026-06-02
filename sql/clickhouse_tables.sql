@@ -1,5 +1,5 @@
 -- ClickHouse 表结构：行情数据存储
--- 在 192.168.1.18 的 ClickHouse strategy2560 数据库上执行
+-- 在 192.168.1.30 的 ClickHouse strategy2560 数据库上执行
 --
 -- MySQL 存储：workspace_status, analysis_batch, structure_2560_*, job_queue,
 --             job_execution, data_import_*, stock_info, strategy_config 等

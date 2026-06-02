@@ -50,6 +50,20 @@ class Annotation2568FreshnessTests(unittest.TestCase):
         self.assertEqual(fields["indicator_recalculated_at"], None)
         self.assertEqual(fields["latest_2560_status"], "未计算")
 
+    def test_indicator_freshness_hides_epoch_updated_at(self):
+        engine = AnnotationEngine2568(db=None)
+
+        fields = engine._freshness_fields(
+            indicator={"date": 20260527, "updated_at": "1970-01-01 00:00:00.000"},
+            latest_indicator_date=20260527,
+            latest_signal=None,
+            latest_batch={"batch_id": 20260528044807, "run_time": "2026-05-28 04:48:08"},
+        )
+
+        self.assertEqual(fields["indicator_freshness_status"], "已重算")
+        self.assertEqual(fields["indicator_date"], 20260527)
+        self.assertEqual(fields["indicator_recalculated_at"], None)
+
 
 if __name__ == "__main__":
     unittest.main()

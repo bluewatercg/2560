@@ -88,7 +88,14 @@
       "Bash(git *)",
       "Bash(docker exec strategy2560-web-1 sh -c 'PYTHONPATH=/app python -c \" *)",
       "Bash(bash *)",
-      "Bash(node *)"
+      "Bash(node *)",
+      "Bash(ls -la /deploy*)",
+      "Read(//root/**)",
+      "Bash(powershell.exe *)",
+      "Bash(docker -H tcp://192.168.1.18:2375 exec strategy2560-worker pkill -f import_job_runner)",
+      "Bash(docker -H ssh://root@192.168.1.18 exec strategy2560-worker pkill -f import_job_runner)",
+      "mcp__plugin_claude-mem_mcp-search__search",
+      "mcp__plugin_claude-mem_mcp-search__smart_search"
     ]
   }
 }

@@ -25,27 +25,30 @@ def latest_by_stock(
         params["kw"] = f"%{q.strip()}%"
     where_sql = " AND ".join(where)
     sql = f"""
+    WITH latest_batch AS (
+        SELECT batch_id, run_time
+        FROM analysis_batch
+        WHERE strategy_code='S2560' AND status='success'
+        ORDER BY run_time DESC
+        LIMIT 1
+    )
     SELECT
         s.code,
         s.name,
-        CASE WHEN a.id IS NULL THEN 'no_signal' ELSE 'signal' END AS latest_status,
-        a.batch_id,
+        CASE WHEN a.id IS NULL THEN '未命中' ELSE '命中' END AS latest_status,
+        lb.batch_id,
+        lb.run_time AS batch_run_time,
         a.signal_time,
         a.signal_period,
         a.price,
-        a.structure_status,
+        COALESCE(a.structure_status, '-') AS structure_status,
         a.missing_tags,
         a.missing_tag_count,
-        a.explain_text
+        CASE WHEN a.id IS NULL THEN '最新成功批次已计算，该股票未命中2560结构。' ELSE a.explain_text END AS explain_text
     FROM stock_info s
+    CROSS JOIN latest_batch lb
     LEFT JOIN structure_2560_analysis a ON a.code=s.code
-        AND a.batch_id = (
-            SELECT CAST(batch_id AS CHAR)
-            FROM analysis_batch
-            WHERE strategy_code='S2560' AND status='success'
-            ORDER BY run_time DESC
-            LIMIT 1
-        )
+        AND CAST(a.batch_id AS CHAR) = CAST(lb.batch_id AS CHAR)
     WHERE {where_sql}
     ORDER BY s.code
     LIMIT :limit

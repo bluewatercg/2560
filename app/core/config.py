@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     DB_POOL_SIZE: int = 20
 
     # ClickHouse (market data storage)
-    CLICKHOUSE_HOST: str = '192.168.1.18'
+    CLICKHOUSE_HOST: str = '192.168.1.30'
     CLICKHOUSE_PORT: int = 8123
     CLICKHOUSE_USER: str = 'default'
     CLICKHOUSE_PASSWORD: str = ''
