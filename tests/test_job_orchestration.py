@@ -169,13 +169,16 @@ class JobOrchestrationTests(unittest.TestCase):
         index_html = (jobs.PROJECT_ROOT / "app" / "static" / "index.html").read_text(encoding="utf-8")
         workflow_js = (jobs.PROJECT_ROOT / "app" / "static" / "post_workflow.js").read_text(encoding="utf-8")
 
-        self.assertIn("/static/post_workflow.js?v=workflow32-20260603", index_html)
+        self.assertIn("/static/post_workflow.js?v=workflow32-20260603-2", index_html)
         self.assertIn("WORKFLOW_CONCURRENCY = 32", workflow_js)
         self.assertIn("workers: WORKFLOW_CONCURRENCY", workflow_js)
         self.assertIn("shards: WORKFLOW_CONCURRENCY", workflow_js)
         self.assertIn('endpoint: "/api/jobs/run-all-markets"', workflow_js)
         self.assertIn('result.created', workflow_js)
         self.assertIn("/api/strategy/2568/annotations", workflow_js)
+        self.assertIn('if (!url || url === "undefined")', workflow_js)
+        self.assertIn('type: freshStep.type', workflow_js)
+        self.assertIn('endpoint: freshStep.endpoint || null', workflow_js)
         self.assertNotIn("workers: 2", workflow_js)
         self.assertNotIn("shards: 1", workflow_js)
 

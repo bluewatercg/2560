@@ -97,6 +97,9 @@
 
   // ====== 统一 POST 检查（复用 app.js 的 postJsonChecked 逻辑） ======
   async function postJson(url, body) {
+    if (!url || url === "undefined") {
+      throw new Error("工作流步骤缺少 endpoint");
+    }
     const r = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -479,10 +482,11 @@
         if (oldStep.status === "pending" || oldStep.status === "skipped") {
           workflowState.steps[i] = {
             ...oldStep,
+            type: freshStep.type,
             status: freshStep.status,
             reason: freshStep.reason,
             payload: freshStep.payload,
-            endpoint: freshStep.endpoint,
+            endpoint: freshStep.endpoint || null,
           };
         }
       }
