@@ -77,6 +77,10 @@ def classify_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
     reject_reason = ""
     if bucket == "淘汰":
         reasons = []
+        if score < 70:
+            reasons.append("2560评分不足")
+        if structure_status and structure_status != "结构完整":
+            reasons.append(structure_status)
         if action:
             reasons.append(action)
         if d_count >= 3:
@@ -85,11 +89,23 @@ def classify_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
             reasons.append(f"缺失条件{missing_count}项")
         reject_reason = "；".join(reasons) or "综合评分不足"
 
+    if bucket == "可执行":
+        report_action_label = f"可执行｜{trade_type}"
+    elif bucket == "观察":
+        report_action_label = "仅观察｜等待右侧确认"
+    elif score < 70:
+        report_action_label = "不符合2560买点｜评分不足"
+    else:
+        report_action_label = "不符合2560买点｜淘汰"
+
     logic_parts = []
     if structure_status:
         logic_parts.append(structure_status)
     if action:
-        logic_parts.append(f"2568 标注{action}")
+        if report_action_label.startswith("不符合") and ("重点关注" in action or "可关注" in action):
+            logic_parts.append(f"2568 原始标注{action}，但2560数据未达执行标准")
+        else:
+            logic_parts.append(f"2568 标注{action}")
     if missing_count:
         logic_parts.append(f"缺失条件{missing_count}项")
     if d_count:
@@ -99,6 +115,7 @@ def classify_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
         "report_score": score,
         "bucket": bucket,
         "trade_type": trade_type,
+        "report_action_label": report_action_label,
         "reject_reason": reject_reason,
         "logic": "，".join(logic_parts) + "。",
     }
@@ -140,7 +157,7 @@ def build_internal_market_model(candidates: list[dict[str, Any]]) -> dict[str, A
         "rejected_count": rejected_count,
         "average_score": avg_score,
         "market_distribution": market_distribution,
-        "basis": "内部2560命中数量、结构完整比例、2568强弱标注、淘汰比例",
+        "basis": "内部机会温度：仅基于2560候选、结构完整比例、2568强弱标注、淘汰比例",
     }
 
 
@@ -159,6 +176,90 @@ def _compact_missing_tags(v: Any) -> str:
             pass
         return s
     return _clean_text(str(v))
+
+
+_TAG_DETAILS = {
+    "#缺量": "#缺量：5日均量/量比未达到2560量能要求",
+    "#高位": "#高位：接近30m近20周期高点压力区",
+    "#震荡": "#震荡：ATR波动强度不足",
+    "#未突破": "#未突破：未突破30m近20周期高点/压力位",
+    "#逆势": "#逆势：日线价格趋势未站上核心均线",
+    "#趋势走弱": "#趋势走弱：日线趋势斜率不足",
+    "#未确认": "#未确认：5m回踩或阳线确认不足",
+    "#偏离MA25": "#偏离MA25：价格不在MA25有效回踩区",
+    "#MA25走弱": "#MA25走弱：30m MA25斜率不足",
+    "#数据不足": "#数据不足：行情或指标窗口不足",
+}
+
+
+def _expand_missing_tags(v: Any, row: dict[str, Any] | None = None) -> str:
+    text_value = _compact_missing_tags(v)
+    if not text_value:
+        return ""
+    parts = [x.strip() for x in text_value.split("/") if x.strip()]
+    details = []
+    for tag in parts:
+        details.append(_TAG_DETAILS.get(tag, tag))
+    return " / ".join(details)
+
+
+def _ma25_deviation_bucket(v: Any) -> str:
+    n = _num(v, default=None)
+    if n is None:
+        return "无法验证"
+    distance = abs(n)
+    if distance <= 3:
+        return "≤3% 有效回踩区"
+    if distance <= 5:
+        return "3%-5% 观察区"
+    return ">5% 非回踩买点"
+
+
+def _price_ma25_deviation(close: Any, ma25: Any) -> float | None:
+    c = _num(close, default=None)
+    m = _num(ma25, default=None)
+    if c is None or m in (None, 0):
+        return None
+    return (c - m) / m * 100
+
+
+def _execution_condition(x: dict[str, Any]) -> str:
+    if x.get("bucket") != "可执行":
+        return "当前不符合开仓条件；下个交易日仅继续观察，不触发则不交易。"
+    ma25 = _num(x.get("ma25"), default=None)
+    close = _num(x.get("close"), default=None)
+    vol_ma5 = _num(x.get("vol_ma5"), default=None)
+    vol_ma60 = _num(x.get("vol_ma60"), default=None)
+    price_part = "价格保持在25日线有效回踩区"
+    if ma25 is not None:
+        price_part = f"价格保持在25日线附近 {ma25 * 0.97:.2f}-{ma25 * 1.03:.2f}"
+    volume_part = "5日均量继续大于60日均量"
+    if vol_ma5 is not None and vol_ma60 is not None:
+        volume_part = f"5日均量({vol_ma5:.0f})继续大于60日均量({vol_ma60:.0f})"
+    close_part = "且不跌破前一交易日收盘价"
+    if close is not None:
+        close_part = f"且不有效跌破当前收盘参考价 {close:.2f}"
+    return f"下个交易日若{price_part}，{volume_part}，{close_part}，并出现右侧确认，则按报告仓位执行；否则不交易。"
+
+
+def _position_metrics_note(x: dict[str, Any]) -> str:
+    if x.get("bucket") != "可执行":
+        return "无可执行交易时跳过；可执行标的需结合次日确认后计算"
+    return "需结合次日右侧确认、止损价和目标价后计算"
+
+
+def _right_side_confirmation(x: dict[str, Any]) -> str:
+    parts = []
+    pullback = x.get("pullback_ok")
+    bullish = x.get("bullish_confirm")
+    if pullback is not None:
+        parts.append(f"5m回踩确认={_fmt_bool(_boolish(pullback))}")
+    if bullish is not None:
+        parts.append(f"5m阳线确认={_fmt_bool(_boolish(bullish))}")
+    if not parts:
+        parts.append("内部5m确认字段无法验证")
+    parts.append("KDJ/MACD暂无，暂不计算")
+    return "；".join(parts)
 
 
 def _clean_text(v: Any) -> str:
@@ -182,6 +283,7 @@ class DailySelectionReportService:
                 "market": _market_from_code(s.get("code")),
                 "name": _clean_text(s.get("name")),
                 "missing_tags_text": _compact_missing_tags(s.get("missing_tags")),
+                "missing_tags_detail": _expand_missing_tags(s.get("missing_tags"), s),
                 "annotation": ann,
                 "highlight_level": ann.get("highlight_level"),
                 "manual_action_label": ann.get("manual_action_label"),
@@ -204,6 +306,9 @@ class DailySelectionReportService:
                 "vol_ma5_gt_vol_ma60": ann.get("vol_ma5_gt_vol_ma60"),
                 "vol_ratio": ann.get("vol_ratio"),
             }
+            if item["price_ma25_deviation_pct"] is None:
+                item["price_ma25_deviation_pct"] = _price_ma25_deviation(item.get("close"), item.get("ma25"))
+            item["ma25_deviation_bucket"] = _ma25_deviation_bucket(item.get("price_ma25_deviation_pct"))
             item.update(classify_candidate(item))
             candidates.append(item)
 
@@ -265,7 +370,11 @@ class DailySelectionReportService:
             SELECT a.id, a.batch_id, a.code, a.name, a.signal_time, a.signal_period,
                    a.price, a.structure_status, a.strength_score_raw, a.missing_tags,
                    a.missing_tag_count, a.explain_text, a.data_quality_status,
-                   a.selected_signal, s.industry_name, s.board_name
+                   a.selected_signal, a.price_near_ma25, a.ma25_slope_ok,
+                   a.volume_structure_ok, a.abnormal_filter_ok, a.trend_price_ok,
+                   a.trend_slope_ok, a.volatility_ok, a.breakout_ok, a.volume_ok,
+                   a.near_resistance, a.pullback_ok, a.bullish_confirm,
+                   s.industry_name, s.board_name
             FROM structure_2560_analysis a
             LEFT JOIN stock_info s ON s.code=a.code
             WHERE CAST(a.batch_id AS CHAR)=CAST(:batch_id AS CHAR)
@@ -387,8 +496,9 @@ def render_markdown_report(report: dict[str, Any]) -> str:
         "",
         "| 指标 | 数值 | 依据 |",
         "|------|------|------|",
-        f"| 市场温度 | {mm.get('temperature', '-')} | {mm.get('basis', '-')} |",
-        f"| 市场拥挤度 | 无外部数据 | 第一版暂不计算 |",
+        f"| 内部机会温度 | {mm.get('temperature', '-')} | {mm.get('basis', '-')} |",
+        f"| 真实市场温度 | 无外部数据 | 需要指数、成交额、涨跌停、上涨家数等外部/全市场宽度数据，当前暂不计算 |",
+        f"| 市场拥挤度 | 无外部数据 | 当前暂不计算 |",
         f"| 风险状态 | {mm.get('risk_state', '-')} | 内部候选与淘汰比例 |",
         f"| 2560候选数量 | {mm.get('signal_count', 0)} | 最新 selected_signal |",
         f"| 市场分布 | {_format_distribution(mm.get('market_distribution') or {})} | 代码前缀 |",
@@ -399,17 +509,17 @@ def render_markdown_report(report: dict[str, Any]) -> str:
     core = report.get("core_candidates") or []
     if core:
         lines.extend([
-            "| 代码 | 名称 | 分组 | 评分 | 收盘价 | 25日线 | 距离25日线% | 25日方向 | 当日成交量 | 5日均量线 | 60日均量线 | 5量>60量 | 2560状态 | 2568建议 |",
-            "|------|------|------|------|--------|--------|-------------|----------|------------|------------|-------------|----------|----------|----------|",
+            "| 代码 | 名称 | 分组 | 报告执行判断 | 评分 | 收盘价 | 25日线 | 距离25日线% | 25线区间 | 25日方向 | 当日成交量 | 5日均量线 | 60日均量线 | 5量>60量 | 2560状态 | 缺失明细 | 2568原始标注 |",
+            "|------|------|------|--------------|------|--------|--------|-------------|----------|----------|------------|------------|-------------|----------|----------|----------|--------------|",
         ])
         for x in core:
             lines.append(
                 f"| {x.get('code','-')} | {x.get('name','-')} | {x.get('bucket','-')} | "
-                f"{x.get('report_score','-')} | {_fmt_num(x.get('close'))} | {_fmt_num(x.get('ma25'))} | "
-                f"{_fmt_num(x.get('price_ma25_deviation_pct'))} | {x.get('ma25_direction') or '-'} | "
+                f"{x.get('report_action_label','-')} | {x.get('report_score','-')} | {_fmt_num(x.get('close'))} | {_fmt_num(x.get('ma25'))} | "
+                f"{_fmt_num(x.get('price_ma25_deviation_pct'))} | {x.get('ma25_deviation_bucket') or '-'} | {x.get('ma25_direction') or '-'} | "
                 f"{_fmt_num(x.get('volume'), 0)} | {_fmt_num(x.get('vol_ma5'), 0)} | {_fmt_num(x.get('vol_ma60'), 0)} | "
                 f"{_fmt_bool(x.get('vol_ma5_gt_vol_ma60'))} | {x.get('structure_status','-')} | "
-                f"{x.get('manual_action_label','-')} |"
+                f"{x.get('missing_tags_detail') or '-'} | {x.get('manual_action_label','-')} |"
             )
     else:
         lines.append("无符合内部 2560 候选条件的标的。")
@@ -425,22 +535,27 @@ def render_markdown_report(report: dict[str, Any]) -> str:
             f"| 2560状态 | {x.get('structure_status') or '-'} |",
             f"| 2560评分 | {x.get('report_score') if x.get('report_score') is not None else '-'} |",
             f"| 缺失条件 | {x.get('missing_tags_text') or '-'} |",
+            f"| 缺失条件明细 | {x.get('missing_tags_detail') or '-'} |",
             f"| 收盘价 | {_fmt_num(x.get('close'))} |",
             f"| 25日价格均线 | {_fmt_num(x.get('ma25'))} |",
             f"| 25日方向 | {x.get('ma25_direction') or '-'} |",
             f"| 距离25日线% | {_fmt_num(x.get('price_ma25_deviation_pct'))} |",
+            f"| 25线区间判断 | {x.get('ma25_deviation_bucket') or '无法验证'} |",
             f"| 当日成交量 | {_fmt_num(x.get('volume'), 0)} |",
             f"| 5日均量线 | {_fmt_num(x.get('vol_ma5'), 0)} |",
             f"| 60日均量线 | {_fmt_num(x.get('vol_ma60'), 0)} |",
             f"| 5日均量线是否在60日均量线上方 | {_fmt_bool(x.get('vol_ma5_gt_vol_ma60'))} |",
             f"| 量比 | {_fmt_num(x.get('vol_ratio'))} |",
             f"| 2568等级 | {x.get('highlight_level') or '-'} |",
-            f"| 2568建议 | {x.get('manual_action_label') or '-'} |",
+            f"| 2568原始标注 | {x.get('manual_action_label') or '-'} |",
+            f"| 报告执行判断 | {x.get('report_action_label') or '-'} |",
             f"| MA25/MA60 | {x.get('ma25_status') or '-'} / {x.get('ma60_status') or '-'} |",
             f"| 量能/趋势 | {x.get('volume_status') or '-'} / {x.get('trend_status') or '-'} |",
+            f"| 右侧确认 | {_right_side_confirmation(x)} |",
+            f"| 胜率/盈亏比/Kelly | {_position_metrics_note(x)} |",
             f"| 风险标签 | {x.get('risk_tags') or '-'} |",
             f"| 交易类型 | {x.get('trade_type') or '-'} |",
-            f"| 开仓条件 | 下个交易日若不跌破前一日低点，且结构、量能、板块方向未恶化，则按分组执行；否则不交易。 |",
+            f"| 开仓条件 | {_execution_condition(x)} |",
             f"| 止损条件 | 跌破25日均线或回踩平台低点；若数据无法验证，该交易作废。 |",
             f"| 执行判断 | {x.get('bucket') or '-'} |",
             f"| 逻辑 | {x.get('logic') or '-'} |",
@@ -509,3 +624,19 @@ def _fmt_bool(v: Any) -> str:
     if v is False:
         return "否"
     return "无法验证"
+
+
+def _boolish(v: Any) -> bool | None:
+    if v is None:
+        return None
+    if isinstance(v, bool):
+        return v
+    try:
+        return bool(int(v))
+    except Exception:
+        s = str(v).strip().lower()
+        if s in ("true", "yes", "是", "1"):
+            return True
+        if s in ("false", "no", "否", "0"):
+            return False
+        return None

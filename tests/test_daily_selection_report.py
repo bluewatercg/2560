@@ -6,6 +6,8 @@ from app.services.daily_selection_report import (
     _clean_text,
     render_markdown_report,
     _compact_missing_tags,
+    _expand_missing_tags,
+    _ma25_deviation_bucket,
 )
 
 
@@ -41,6 +43,44 @@ def test_classify_candidate_uses_2560_signal_and_2568_risk_annotation():
     assert "风险较多" in classify_candidate(risky)["reject_reason"]
 
 
+def test_report_action_downgrades_strong_2568_when_2560_score_is_not_qualified():
+    candidate = {
+        "structure_status": "部分满足",
+        "missing_tag_count": 1,
+        "strength_score_raw": 30,
+        "annotation": {
+            "highlight_level": "A2+",
+            "manual_action_label": "强势票｜重点关注",
+            "a_count": 2,
+            "b_count": 1,
+            "d_count": 0,
+        },
+    }
+
+    result = classify_candidate(candidate)
+
+    assert result["bucket"] == "淘汰"
+    assert result["report_action_label"] == "不符合2560买点｜评分不足"
+    assert "强势票｜重点关注" not in result["report_action_label"]
+
+
+def test_missing_tags_are_expanded_to_actionable_2560_reasons():
+    row = {"breakout_ok": 0, "near_resistance": 1}
+
+    assert _compact_missing_tags('["#未突破"]') == "#未突破"
+    assert _expand_missing_tags('["#未突破", "#高位"]', row) == (
+        "#未突破：未突破30m近20周期高点/压力位 / "
+        "#高位：接近30m近20周期高点压力区"
+    )
+
+
+def test_ma25_deviation_bucket_labels_retrace_zone():
+    assert _ma25_deviation_bucket(1.22) == "≤3% 有效回踩区"
+    assert _ma25_deviation_bucket(4.2) == "3%-5% 观察区"
+    assert _ma25_deviation_bucket(7.0) == ">5% 非回踩买点"
+    assert _ma25_deviation_bucket(None) == "无法验证"
+
+
 def test_markdown_report_renders_internal_a_b_scope_without_external_claims():
     report = {
         "title": "内部数据版 2560 盘后选股报告",
@@ -70,15 +110,20 @@ def test_markdown_report_renders_internal_a_b_scope_without_external_claims():
                 "report_score": 0,
                 "structure_status": "结构完整",
                 "missing_tags_text": "#未突破",
+                "missing_tags_detail": "#未突破：未突破30m近20周期高点/压力位",
                 "manual_action_label": "强势票｜重点关注",
+                "report_action_label": "可执行｜轻仓试错",
                 "close": 10.5,
                 "ma25": 10.0,
                 "ma25_direction": "向上",
                 "price_ma25_deviation_pct": 5.0,
+                "ma25_deviation_bucket": "3%-5% 观察区",
                 "volume": 1200000,
                 "vol_ma5": 1500000,
                 "vol_ma60": 1000000,
                 "vol_ma5_gt_vol_ma60": True,
+                "pullback_ok": 1,
+                "bullish_confirm": 0,
                 "logic": "结构完整，2568 标注强势票｜重点关注。",
             }
         ],
@@ -106,6 +151,11 @@ def test_markdown_report_renders_internal_a_b_scope_without_external_claims():
     assert "25日方向" in markdown
     assert "| 2560评分 | 0 |" in markdown
     assert "| 缺失条件 | #未突破 |" in markdown
+    assert "| 缺失条件明细 | #未突破：未突破30m近20周期高点/压力位 |" in markdown
+    assert "3%-5% 观察区" in markdown
+    assert "可执行｜轻仓试错" in markdown
+    assert "右侧确认 | 5m回踩确认=是；5m阳线确认=否；KDJ/MACD暂无，暂不计算" in markdown
+    assert "胜率/盈亏比/Kelly | 需结合次日右侧确认、止损价和目标价后计算" in markdown
     assert "指数锚点" in markdown
 
 
