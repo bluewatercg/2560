@@ -12,6 +12,7 @@ import os
 import threading
 import time
 from functools import partial
+from pathlib import Path
 
 from sqlalchemy import text
 from pymysql.err import OperationalError
@@ -21,6 +22,7 @@ from app.services.job_orchestrator import (
     finalize_data_import_batch,
     update_job_execution,
 )
+from app.services.job_runtime_store import JobProgressReporter, JobRuntimeStore
 
 from scripts.import_vipdoc_clickhouse import (
     read_daily_rows,
@@ -55,6 +57,8 @@ def main():
     a = parse_args()
     if not a.job_id or not a.batch_id:
         raise RuntimeError("job-id and batch-id are required")
+    runtime_store = JobRuntimeStore(Path(__file__).resolve().parents[1] / "logs")
+    progress_reporter = JobProgressReporter(a.job_id, runtime_store)
 
     if not ch_ping():
         raise RuntimeError("ClickHouse not reachable")
@@ -107,6 +111,17 @@ def main():
 
     all_files = lday_files + lc5_files
     total = len(all_files)
+    progress_reporter.report(
+        {
+            "status": "running",
+            "done": 0,
+            "total": total,
+            "success_count": 0,
+            "failed_count": 0,
+            "message": f"running import job #{a.job_id} (ClickHouse)",
+        },
+        force_mysql=True,
+    )
 
     # Thread-safe counters
     _lock = threading.Lock()
@@ -144,7 +159,7 @@ def main():
                 _file_results[filepath] = ("failed", str(result.get("error", ""))[:500])
                 return "", []
 
-    # Background reporter: single thread writes MySQL every 2s (zero contention)
+    # Background reporter: writes runtime snapshots every 2s; MySQL progress is throttled.
     _stop_report = threading.Event()
     _reported_ids = set()  # file_ids already updated in MySQL
     _phase = [1]  # 1=reading, 2=inserting
@@ -183,12 +198,23 @@ def main():
                         with _lock:
                             _reported_ids.update(pending_updates.keys())
 
-                    update_job_execution(
-                        db, a.job_id, status="running",
-                        progress_current=d, progress_total=total,
-                        success_count=s, failed_count=f,
-                        message=msg,
+                    should_flush_mysql = progress_reporter.report(
+                        {
+                            "status": "running",
+                            "done": d,
+                            "total": total,
+                            "success_count": s,
+                            "failed_count": f,
+                            "message": msg,
+                        }
                     )
+                    if should_flush_mysql:
+                        update_job_execution(
+                            db, a.job_id, status="running",
+                            progress_current=d, progress_total=total,
+                            success_count=s, failed_count=f,
+                            message=msg,
+                        )
                     db.commit()
             except Exception as e:
                 print(f"[reporter] MySQL update failed: {e}", flush=True)
@@ -307,6 +333,17 @@ def main():
             db, a.batch_id, status=status,
             success_files=s, failed_files=f,
             total_rows=r, message=batch_message,
+        )
+        progress_reporter.report(
+            {
+                "status": status,
+                "done": total,
+                "total": total,
+                "success_count": s,
+                "failed_count": f,
+                "message": batch_message,
+            },
+            force_mysql=True,
         )
         update_job_execution(
             db, a.job_id, status=status,

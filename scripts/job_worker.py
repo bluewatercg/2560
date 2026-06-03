@@ -16,10 +16,13 @@ from typing import Any
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 
+from app.services.job_runtime_store import JobRuntimeStore
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 load_dotenv(PROJECT_ROOT / ".env")
 STOP = False
+RUNTIME_STORE = JobRuntimeStore(PROJECT_ROOT / "logs")
 
 
 def log(msg: str) -> None:
@@ -139,6 +142,13 @@ def _payload_int(payload: dict[str, Any], key: str) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def execution_log_path(payload: dict[str, Any]) -> Path:
+    job_execution_id = _payload_int(payload, "job_execution_id")
+    if job_execution_id:
+        return RUNTIME_STORE.log_path(job_execution_id)
+    return PROJECT_ROOT / "logs" / f"job_worker_{datetime.now():%Y%m%d}.log"
 
 
 def mark_execution_started(en, payload: dict[str, Any], log_file: Path, pid: int) -> None:
@@ -344,19 +354,12 @@ def main():
             payload.setdefault("job_execution_id", payload.get("job_execution_id"))
             payload.setdefault("import_batch_id", payload.get("import_batch_id"))
             cmd, env = build_job_command(job["job_type"], payload)
-            log_path = PROJECT_ROOT / "logs" / f"job_worker_{datetime.now():%Y%m%d}.log"
+            log_path = execution_log_path(payload)
             log_path.parent.mkdir(exist_ok=True)
             log(f"[worker] command: {' '.join(cmd)}")
 
-            # Per-job error log (stderr only)
-            job_execution_id = payload.get("job_execution_id")
-            err_log = None
-            if job_execution_id:
-                err_log_path = PROJECT_ROOT / "logs" / f"job_{job_execution_id}.err.log"
-                err_log = open(err_log_path, "wb")
-
             with open(log_path, "ab") as out:
-                proc = subprocess.Popen(cmd, cwd=str(PROJECT_ROOT), env=env, stdout=out, stderr=subprocess.STDOUT if err_log is None else err_log)
+                proc = subprocess.Popen(cmd, cwd=str(PROJECT_ROOT), env=env, stdout=out, stderr=subprocess.STDOUT)
                 mark_execution_started(en, payload, log_path, proc.pid)
                 while True:
                     rc = proc.poll()
@@ -373,9 +376,6 @@ def main():
                         mark_execution_cancelled(en, payload, f"user cancelled queue #{job['id']}")
                         break
                     time.sleep(5)
-                if err_log:
-                    err_log.close()
-                    err_log = None
             log(f"[worker] queue #{job['id']} finished rc={rc}")
             was_cancelled = cancel_requested(en, payload)
             if rc != 0 and not was_cancelled:

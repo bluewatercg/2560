@@ -18,9 +18,11 @@ from app.core.market_scope import market_sql_where
 from app.db.session import get_db
 from app.services.job_orchestrator import create_job_execution
 from app.services.job_orchestrator import ensure_job_tables as _ensure_tables
+from app.services.job_runtime_store import JobRuntimeStore, tail_lines
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+RUNTIME_STORE = JobRuntimeStore(PROJECT_ROOT / "logs")
 
 
 class EnqueueJobRequest(BaseModel):
@@ -88,6 +90,55 @@ def _execution_order_sql() -> str:
 
 def _queue_order_sql() -> str:
     return "CASE status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 WHEN 'pending' THEN 1 ELSE 2 END, created_at DESC, id DESC"
+
+
+def _build_progress_response(row: dict[str, Any], runtime: dict[str, Any] | None = None) -> dict[str, Any]:
+    d = dict(row)
+    if runtime:
+        mapping = {
+            "done": "progress_current",
+            "total": "progress_total",
+        }
+        for source_key, target_key in mapping.items():
+            if source_key in runtime:
+                d[target_key] = runtime[source_key]
+        for key in ("status", "success_count", "failed_count", "current_code", "message"):
+            if key in runtime:
+                d[key] = runtime[key]
+        d["runtime_updated_at"] = runtime.get("updated_at")
+
+    done = int(d.get("progress_current") or 0)
+    total = int(d.get("progress_total") or 0)
+    elapsed = int(d.get("elapsed_seconds") or 0)
+    percent = round(done * 100 / total, 2) if total else 0.0
+    avg = round(elapsed / done, 3) if done else None
+    eta = int((total - done) * avg) if avg and total >= done else None
+    d.update(
+        {
+            "ok": True,
+            "done": done,
+            "total": total,
+            "percent": percent,
+            "avg_seconds_per_code": avg,
+            "eta_seconds": eta,
+            "eta_text": _format_seconds(eta),
+            "elapsed_text": _format_seconds(elapsed),
+            "error_log_url": f"/api/jobs/executions/{int(d['id'])}/error-log",
+        }
+    )
+    return d
+
+
+def _resolve_execution_log_file(row: dict[str, Any], job_id: int, store: JobRuntimeStore = RUNTIME_STORE) -> Path | None:
+    runtime_log = store.log_path(job_id)
+    if runtime_log.exists():
+        return runtime_log
+    if not row or not row.get("log_file"):
+        return None
+    log_file = Path(str(row["log_file"]))
+    if not log_file.is_absolute():
+        log_file = PROJECT_ROOT / log_file
+    return log_file
 
 
 def _cancel_job_execution(db: Session, job_id: int, reason: str) -> dict[str, Any]:
@@ -291,27 +342,7 @@ def execution_progress(job_id: int, db: Session = Depends(get_db)):
     )
     if not row:
         return {"ok": False, "message": "job not found"}
-    d = dict(row)
-    done = int(d.get("progress_current") or 0)
-    total = int(d.get("progress_total") or 0)
-    elapsed = int(d.get("elapsed_seconds") or 0)
-    percent = round(done * 100 / total, 2) if total else 0.0
-    avg = round(elapsed / done, 3) if done else None
-    eta = int((total - done) * avg) if avg and total >= done else None
-    d.update(
-        {
-            "ok": True,
-            "done": done,
-            "total": total,
-            "percent": percent,
-            "avg_seconds_per_code": avg,
-            "eta_seconds": eta,
-            "eta_text": _format_seconds(eta),
-            "elapsed_text": _format_seconds(elapsed),
-            "error_log_url": f"/api/jobs/executions/{job_id}/error-log",
-        }
-    )
-    return d
+    return _build_progress_response(dict(row), RUNTIME_STORE.read_progress(job_id))
 
 
 
@@ -499,17 +530,15 @@ def execution_logs(
         .mappings()
         .first()
     )
-    if not row or not row.get("log_file"):
-        return {"ok": False, "lines": []}
-    log_file = Path(str(row["log_file"]))
-    if not log_file.is_absolute():
-        log_file = PROJECT_ROOT / log_file
+    log_file = _resolve_execution_log_file(dict(row) if row else {}, job_id)
+    if not log_file:
+        return {"ok": False, "job_id": job_id, "lines": []}
     try:
         return {
             "ok": True,
             "job_id": job_id,
             "log_file": str(log_file),
-            "lines": _tail_lines(log_file, tail),
+            "lines": tail_lines(log_file, tail),
         }
     except FileNotFoundError:
         return {"ok": False, "job_id": job_id, "log_file": str(log_file), "lines": []}
@@ -521,6 +550,14 @@ def execution_error_log(job_id: int, db: Session = Depends(get_db)):
     err_path = PROJECT_ROOT / "logs" / f"job_{job_id}.err.log"
     try:
         if not err_path.exists():
+            runtime_log = RUNTIME_STORE.log_path(job_id)
+            if runtime_log.exists():
+                return {
+                    "ok": True,
+                    "job_id": job_id,
+                    "message": "stderr is merged into job log",
+                    "content": "\n".join(tail_lines(runtime_log, 500)),
+                }
             return {"ok": False, "job_id": job_id, "message": "error log not found", "content": ""}
         with open(err_path, "r") as f:
             content = f.read()
@@ -645,7 +682,7 @@ def run_now(payload: RunNowRequest, db: Session = Depends(get_db)):
         },
     )
     job_id = int(res.lastrowid)
-    log_file = log_dir / f"job_{job_id}_progress.log"
+    log_file = RUNTIME_STORE.ensure_log_file(job_id)
     db.execute(
         text("UPDATE job_execution SET log_file=:log_file WHERE id=:id"),
         {"id": job_id, "log_file": str(log_file)},

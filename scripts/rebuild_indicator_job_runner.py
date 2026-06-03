@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Runner for rebuild_indicator jobs.
 
-Uses direct function call to rebuild_period_parallel with on_result callback
-for real-time MySQL progress updates (same pattern as build_30m_job_runner.py).
+Uses direct function call to rebuild_period with on_result callback.
+Realtime progress goes to runtime files; MySQL receives throttled summaries.
 """
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from sqlalchemy import text
 
 from app.db.session import SessionLocal
 from app.services.job_orchestrator import update_job_execution
+from app.services.job_runtime_store import JobProgressReporter, JobRuntimeStore
 from scripts.rebuild_technical_indicator import rebuild_period
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -38,6 +39,7 @@ def main():
     a = parse_args()
     if not a.job_id or not a.batch_id:
         raise RuntimeError("job-id and batch-id are required")
+    progress_reporter = JobProgressReporter(a.job_id, JobRuntimeStore(PROJECT_ROOT / "logs"))
 
     with SessionLocal() as db:
         db.execute(text("""
@@ -52,6 +54,17 @@ def main():
             message=f"rebuild indicators started market={a.market}, periods={a.periods}",
         )
         db.commit()
+    progress_reporter.report(
+        {
+            "status": "running",
+            "done": 0,
+            "total": 0,
+            "success_count": 0,
+            "failed_count": 0,
+            "message": f"rebuild indicators started market={a.market}, periods={a.periods}",
+        },
+        force_mysql=True,
+    )
 
     periods = [p.strip() for p in a.periods.split(",") if p.strip()]
     limit_codes = a.limit_codes
@@ -85,8 +98,21 @@ def main():
                 return
 
             try:
+                msg = f"{result.get('period', '?')}: {_state['total_codes_done']}/{_state['total_codes_all']} (inserted={_state['total_inserted']})"
+                should_flush_mysql = progress_reporter.report(
+                    {
+                        "status": "running",
+                        "done": _state["total_codes_done"],
+                        "total": _state["total_codes_all"],
+                        "success_count": _state["success"],
+                        "failed_count": _state["failed"],
+                        "current_code": result.get("code", ""),
+                        "message": msg,
+                    }
+                )
+                if not should_flush_mysql:
+                    return
                 with SessionLocal() as db:
-                    msg = f"{result.get('period', '?')}: {_state['total_codes_done']}/{_state['total_codes_all']} (inserted={_state['total_inserted']})"
                     update_job_execution(
                         db,
                         a.job_id,
@@ -135,6 +161,17 @@ def main():
             SET status=:status, finished_at=NOW(), message=:message, updated_at=NOW()
             WHERE id=:id
         """), {"id": a.batch_id, "status": status, "message": message})
+        progress_reporter.report(
+            {
+                "status": status,
+                "done": total_all,
+                "total": total_all,
+                "success_count": _state["success"],
+                "failed_count": _state["failed"],
+                "message": message,
+            },
+            force_mysql=True,
+        )
         update_job_execution(
             db, a.job_id, status=status,
             progress_current=total_all, progress_total=total_all,

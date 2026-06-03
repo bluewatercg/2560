@@ -33,6 +33,7 @@ from sqlalchemy import create_engine, text
 
 from app.core.market_scope import market_sql_where
 from app.db.clickhouse import get_clickhouse
+from app.services.job_runtime_store import JobProgressReporter, JobRuntimeStore
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -45,6 +46,8 @@ BATCH_SIZE = int(os.getenv("BATCH_SIZE", "30"))
 LIMIT_CODES = int(os.getenv("LIMIT_CODES", "0") or 0)
 WEB_BASE_URL = os.getenv("WEB_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
 RUN_MODE = os.getenv("RUN_2560_MODE", "fast").lower()
+RUNTIME_STORE = JobRuntimeStore(PROJECT_ROOT / "logs")
+PROGRESS_REPORTER = JobProgressReporter(JOB_ID, RUNTIME_STORE)
 
 
 def log(msg: str):
@@ -110,6 +113,17 @@ def chunks(seq: list[str], size: int) -> Iterable[list[str]]:
 
 
 def init_items(en, codes: list[str]):
+    PROGRESS_REPORTER.report(
+        {
+            "status": "running",
+            "done": 0,
+            "total": len(codes),
+            "success_count": 0,
+            "failed_count": 0,
+            "message": f"initialized total={len(codes)}, concurrency={SHARDS}, batch_size={BATCH_SIZE}",
+        },
+        force_mysql=True,
+    )
     with en.begin() as conn:
         conn.execute(
             text("""
@@ -136,7 +150,7 @@ def init_items(en, codes: list[str]):
             )
 
 
-def update_counts(en, current_code: str | None = None, message: str | None = None):
+def update_counts(en, current_code: str | None = None, message: str | None = None, force_mysql: bool = False):
     with en.begin() as conn:
         c = conn.execute(
             text("""
@@ -150,6 +164,24 @@ def update_counts(en, current_code: str | None = None, message: str | None = Non
             """),
             {"job_id": JOB_ID},
         ).mappings().first()
+        done = int(c["done"] or 0)
+        total = int(c["total"] or 0)
+        success_count = int(c["success_count"] or 0)
+        failed_count = int(c["failed_count"] or 0)
+        should_flush_mysql = PROGRESS_REPORTER.report(
+            {
+                "status": "running",
+                "done": done,
+                "total": total,
+                "success_count": success_count,
+                "failed_count": failed_count,
+                "current_code": current_code,
+                "message": message,
+            },
+            force_mysql=force_mysql,
+        )
+        if not should_flush_mysql:
+            return
         conn.execute(
             text("""
             UPDATE job_execution
@@ -164,10 +196,10 @@ def update_counts(en, current_code: str | None = None, message: str | None = Non
             """),
             {
                 "job_id": JOB_ID,
-                "done": int(c["done"] or 0),
-                "total": int(c["total"] or 0),
-                "success_count": int(c["success_count"] or 0),
-                "failed_count": int(c["failed_count"] or 0),
+                "done": done,
+                "total": total,
+                "success_count": success_count,
+                "failed_count": failed_count,
                 "current_code": current_code,
                 "message": message,
             },
@@ -290,6 +322,17 @@ def main():
         from app.services.signal_engine_2560_fast import SignalEngine2560Fast
 
         with en.begin() as conn:
+            PROGRESS_REPORTER.report(
+                {
+                    "status": "running",
+                    "done": 0,
+                    "total": 1,
+                    "success_count": 0,
+                    "failed_count": 0,
+                    "message": f"fast ClickHouse 2560 started market={MARKET}",
+                },
+                force_mysql=True,
+            )
             conn.execute(
                 text("""
                 UPDATE job_execution
@@ -313,6 +356,18 @@ def main():
                     limit_codes=LIMIT_CODES if LIMIT_CODES > 0 else None,
                 )
             status = "success" if result.get("ok") else "failed"
+            finished_message = f"fast finished market={MARKET}, trade_date={result.get('trade_date')}, signals={result.get('signals')}, elapsed={time.time()-t0:.1f}s"
+            PROGRESS_REPORTER.report(
+                {
+                    "status": status,
+                    "done": 1,
+                    "total": 1,
+                    "success_count": int(result.get("signals", 0) or 0),
+                    "failed_count": 0 if status == "success" else 1,
+                    "message": finished_message,
+                },
+                force_mysql=True,
+            )
             with en.begin() as conn:
                 conn.execute(
                     text("""
@@ -334,13 +389,21 @@ def main():
                         "batch_id": str(result.get("batch_id", "")),
                         "success_count": int(result.get("signals", 0) or 0),
                         "failed_count": 0 if status == "success" else 1,
-                        "msg": f"fast finished market={MARKET}, trade_date={result.get('trade_date')}, signals={result.get('signals')}, elapsed={time.time()-t0:.1f}s",
+                        "msg": finished_message,
                     },
                 )
             log(f"[fast] {result}")
             return
         except Exception as exc:
             log(traceback.format_exc())
+            PROGRESS_REPORTER.report(
+                {
+                    "status": "failed",
+                    "failed_count": 1,
+                    "message": str(exc)[:1000],
+                },
+                force_mysql=True,
+            )
             with en.begin() as conn:
                 conn.execute(
                     text("UPDATE job_execution SET status='failed', failed_count=1, message=:msg, finished_at=NOW(), updated_at=NOW() WHERE id=:id"),
@@ -372,13 +435,28 @@ def main():
                     update_counts(en, info["last"], f"batch {done_batches}/{total_batches}")
         with en.begin() as conn:
             failed = int(conn.execute(text("SELECT failed_count FROM job_execution WHERE id=:id"), {"id": JOB_ID}).scalar() or 0)
+            final_status = "success" if failed == 0 else "failed"
+            PROGRESS_REPORTER.report(
+                {
+                    "status": final_status,
+                    "done": total,
+                    "total": total,
+                    "failed_count": failed,
+                    "message": f"finished total={total}, failed={failed}, batches={total_batches}",
+                },
+                force_mysql=True,
+            )
             conn.execute(
                 text("UPDATE job_execution SET status=:status, message=:msg, finished_at=NOW(), updated_at=NOW() WHERE id=:id"),
-                {"id": JOB_ID, "status": "success" if failed == 0 else "failed", "msg": f"finished total={total}, failed={failed}, batches={total_batches}"},
+                {"id": JOB_ID, "status": final_status, "msg": f"finished total={total}, failed={failed}, batches={total_batches}"},
             )
         log(f"[parallel] finished job_id={JOB_ID}")
     except Exception as exc:
         log(traceback.format_exc())
+        PROGRESS_REPORTER.report(
+            {"status": "failed", "message": str(exc)[:1000]},
+            force_mysql=True,
+        )
         with en.begin() as conn:
             conn.execute(text("UPDATE job_execution SET status='failed', message=:msg, finished_at=NOW(), updated_at=NOW() WHERE id=:id"), {"id": JOB_ID, "msg": str(exc)[:1000]})
         raise
