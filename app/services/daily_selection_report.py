@@ -7,6 +7,7 @@ from typing import Any
 from sqlalchemy import bindparam, text
 from sqlalchemy.orm import Session
 
+from app.db.clickhouse import get_clickhouse
 from app.services.annotation_engine_2568 import AnnotationEngine2568
 
 
@@ -44,30 +45,20 @@ def _market_from_code(code: str | None) -> str:
 def classify_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
     ann = candidate.get("annotation") or {}
     structure_status = candidate.get("structure_status") or ""
-    missing_count = _int(candidate.get("missing_tag_count"))
-    raw_score = _num(candidate.get("strength_score_raw"), 50.0)
     a_count = _int(ann.get("a_count"))
     b_count = _int(ann.get("b_count"))
     d_count = _int(ann.get("d_count"))
     action = ann.get("manual_action_label") or ""
-    level = ann.get("highlight_level") or ""
+    hard_failures = _hard_condition_failures(candidate)
+    buy_point_type = candidate.get("buy_point_type") or "未分类"
 
-    score = raw_score
-    if structure_status == "结构完整":
-        score += 12
-    elif structure_status == "部分满足":
-        score += 4
-    score += a_count * 8 + b_count * 4
-    score -= min(missing_count * 5, 25)
-    score -= d_count * 7
-    if "风险较多" in action or str(level).startswith("D"):
-        score -= 18
-    score = max(0, min(100, round(score)))
-
-    if score >= 75 and d_count <= 1 and ("重点关注" in action or "可关注" in action):
+    if not hard_failures and buy_point_type in {"二类做量", "三类缩量"}:
         bucket = "可执行"
-        trade_type = "轻仓试错"
-    elif score >= 58 and d_count <= 2 and "建议移出" not in action:
+        trade_type = buy_point_type
+    elif not hard_failures and buy_point_type == "一类冲量":
+        bucket = "观察"
+        trade_type = "一类冲量"
+    elif not hard_failures:
         bucket = "观察"
         trade_type = "仅观察"
     else:
@@ -76,43 +67,40 @@ def classify_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
 
     reject_reason = ""
     if bucket == "淘汰":
-        reasons = []
-        if score < 70:
-            reasons.append("2560评分不足")
-        if structure_status and structure_status != "结构完整":
-            reasons.append(structure_status)
+        reasons = list(hard_failures)
         if action:
-            reasons.append(action)
+            reasons.append(f"2568原始标注：{action}")
         if d_count >= 3:
             reasons.append(f"D项较多({d_count})")
-        if missing_count:
-            reasons.append(f"缺失条件{missing_count}项")
-        reject_reason = "；".join(reasons) or "综合评分不足"
+        reject_reason = "；".join(reasons) or "不符合2560基础条件"
 
     if bucket == "可执行":
         report_action_label = f"可执行｜{trade_type}"
     elif bucket == "观察":
-        report_action_label = "仅观察｜等待右侧确认"
-    elif score < 70:
-        report_action_label = "不符合2560买点｜评分不足"
+        report_action_label = f"仅观察｜{trade_type}"
+    elif hard_failures:
+        report_action_label = f"不符合2560买点｜{hard_failures[0]}"
     else:
         report_action_label = "不符合2560买点｜淘汰"
 
     logic_parts = []
+    logic_parts.append(f"基础条件{'通过' if not hard_failures else '未通过'}")
+    if buy_point_type:
+        logic_parts.append(f"买点类型{buy_point_type}")
     if structure_status:
-        logic_parts.append(structure_status)
+        logic_parts.append(f"原2560结构{structure_status}")
     if action:
-        if report_action_label.startswith("不符合") and ("重点关注" in action or "可关注" in action):
-            logic_parts.append(f"2568 原始标注{action}，但2560数据未达执行标准")
+        if hard_failures and ("重点关注" in action or "可关注" in action):
+            logic_parts.append(f"2568 原始标注{action}，但硬条件未通过")
         else:
-            logic_parts.append(f"2568 标注{action}")
-    if missing_count:
-        logic_parts.append(f"缺失条件{missing_count}项")
+            logic_parts.append(f"2568原始标注{action}")
     if d_count:
         logic_parts.append(f"风险项{d_count}个")
 
     return {
-        "report_score": score,
+        "hard_condition_status": "通过" if not hard_failures else "未通过",
+        "hard_condition_failures": hard_failures,
+        "objective_sort_reason": _objective_sort_reason(candidate),
         "bucket": bucket,
         "trade_type": trade_type,
         "report_action_label": report_action_label,
@@ -128,14 +116,17 @@ def build_internal_market_model(candidates: list[dict[str, Any]]) -> dict[str, A
     rejected_count = sum(1 for x in candidates if x.get("bucket") == "淘汰")
     complete_count = sum(1 for x in candidates if x.get("structure_status") == "结构完整")
     partial_count = sum(1 for x in candidates if x.get("structure_status") == "部分满足")
-    avg_score = round(sum(_num(x.get("report_score")) for x in candidates) / signal_count, 1) if signal_count else 0
+    type_counts: dict[str, int] = {}
+    for x in candidates:
+        t = x.get("buy_point_type") or "未分类"
+        type_counts[t] = type_counts.get(t, 0) + 1
 
     market_distribution: dict[str, int] = {}
     for x in candidates:
         market = _market_from_code(x.get("code"))
         market_distribution[market] = market_distribution.get(market, 0) + 1
 
-    temperature = min(100, round(signal_count * 2 + executable_count * 12 + watch_count * 5 + avg_score * 0.35))
+    temperature = min(100, round(signal_count * 2 + executable_count * 14 + watch_count * 5))
     if temperature >= 75 and executable_count >= 3:
         risk_state = "风险可控"
     elif temperature >= 45 and executable_count:
@@ -155,9 +146,9 @@ def build_internal_market_model(candidates: list[dict[str, Any]]) -> dict[str, A
         "executable_count": executable_count,
         "watch_count": watch_count,
         "rejected_count": rejected_count,
-        "average_score": avg_score,
+        "buy_point_type_counts": type_counts,
         "market_distribution": market_distribution,
-        "basis": "内部机会温度：仅基于2560候选、结构完整比例、2568强弱标注、淘汰比例",
+        "basis": "内部机会温度：仅基于2560基础条件、买点类型、可执行/观察/淘汰数量",
     }
 
 
@@ -223,6 +214,143 @@ def _price_ma25_deviation(close: Any, ma25: Any) -> float | None:
     return (c - m) / m * 100
 
 
+def _hard_condition_failures(candidate: dict[str, Any]) -> list[str]:
+    failures = []
+    direction = candidate.get("ma25_direction") or ""
+    ma25_status = candidate.get("ma25_status") or ""
+    if direction != "向上" and "上行" not in ma25_status:
+        failures.append("25日均线未上行")
+
+    vol_ok = candidate.get("vol_ma5_gt_vol_ma60")
+    vol_ma5 = _num(candidate.get("vol_ma5"), default=None)
+    vol_ma60 = _num(candidate.get("vol_ma60"), default=None)
+    if vol_ok is not True:
+        if vol_ma5 is None or vol_ma60 is None:
+            failures.append("5日/60日均量线无法验证")
+        elif vol_ma5 <= vol_ma60:
+            failures.append("5日均量线未站上60日均量线")
+
+    deviation = _num(candidate.get("price_ma25_deviation_pct"), default=None)
+    if deviation is None:
+        failures.append("距离25日线无法验证")
+    elif deviation < -1.0:
+        failures.append("跌破25日线未收回")
+    elif abs(deviation) > 5.0:
+        failures.append("距离25日线超过5%")
+    return failures
+
+
+def _objective_sort_reason(candidate: dict[str, Any]) -> str:
+    return (
+        f"买点类型={candidate.get('buy_point_type') or '未分类'}；"
+        f"距25日线={_fmt_num(candidate.get('price_ma25_deviation_pct'))}%；"
+        f"压量={candidate.get('volume_compression_label') or '无法验证'}；"
+        f"MAVOL5/60={_fmt_num(candidate.get('vol_ratio'))}"
+    )
+
+
+def _volume_profile_from_daily_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    if len(rows) < 60:
+        return {
+            "buy_point_type": "未分类",
+            "volume_compression_label": "日线窗口不足",
+            "volume_sort_rank": 9,
+        }
+
+    ordered = sorted(rows, key=lambda x: _date_sort_key(x.get("date")))
+    volumes = [_num(x.get("volume"), default=None) for x in ordered]
+    closes = [_num(x.get("close"), default=None) for x in ordered]
+    opens = [_num(x.get("open"), default=None) for x in ordered]
+    highs = [_num(x.get("high"), default=None) for x in ordered]
+    lows = [_num(x.get("low"), default=None) for x in ordered]
+    if any(v is None for v in volumes[-60:]):
+        return {
+            "buy_point_type": "未分类",
+            "volume_compression_label": "成交量无法验证",
+            "volume_sort_rank": 9,
+        }
+
+    vol_ma5_series = [_rolling_avg(volumes, i, 5) for i in range(len(volumes))]
+    vol_ma60_series = [_rolling_avg(volumes, i, 60) for i in range(len(volumes))]
+    diff_series = [
+        (v5 - v60) / v60 if v5 is not None and v60 not in (None, 0) else None
+        for v5, v60 in zip(vol_ma5_series, vol_ma60_series)
+    ]
+    current_diff = diff_series[-1]
+    previous_diff = diff_series[-2] if len(diff_series) >= 2 else None
+    recent_before = [x for x in diff_series[-15:-1] if x is not None]
+    had_positive_before = any(x > 0 for x in diff_series[-30:-5] if x is not None)
+    stayed_positive_recently = all((x is not None and x > 0) for x in diff_series[-15:])
+    compressed_recently = len(volumes) >= 3 and volumes[-1] < volumes[-2] < volumes[-3]
+    latest_below_ma60 = vol_ma60_series[-1] not in (None, 0) and volumes[-1] < vol_ma60_series[-1]
+    small_k = False
+    if closes[-1] not in (None, 0) and None not in (opens[-1], highs[-1], lows[-1], closes[-1]):
+        body_pct = abs(closes[-1] - opens[-1]) / closes[-1] * 100
+        amplitude_pct = (highs[-1] - lows[-1]) / closes[-1] * 100
+        small_k = body_pct <= 1.5 and amplitude_pct <= 4.0
+
+    prior_positive = any(x > 0 for x in diff_series[:-1] if x is not None)
+    if current_diff is None:
+        buy_point_type = "未分类"
+    elif current_diff > 0 and ((previous_diff is not None and previous_diff <= 0) or not prior_positive):
+        buy_point_type = "一类冲量"
+    elif had_positive_before and recent_before and min(abs(x) for x in recent_before[-8:]) <= 0.08 and current_diff > 0:
+        buy_point_type = "二类做量"
+    elif stayed_positive_recently and (compressed_recently or latest_below_ma60):
+        buy_point_type = "三类缩量"
+    elif current_diff > 0:
+        buy_point_type = "趋势量能"
+    else:
+        buy_point_type = "未分类"
+
+    compression_parts = []
+    if compressed_recently:
+        compression_parts.append("连续缩量")
+    if latest_below_ma60:
+        compression_parts.append("当日量低于60日均量")
+    if small_k:
+        compression_parts.append("小K线")
+    compression_label = " / ".join(compression_parts) if compression_parts else "无明显压量"
+    volume_sort_rank = 0 if latest_below_ma60 and compressed_recently else (1 if compressed_recently or latest_below_ma60 else 2)
+
+    return {
+        "buy_point_type": buy_point_type,
+        "volume_compression_label": compression_label,
+        "volume_sort_rank": volume_sort_rank,
+        "daily_vol_ma5": vol_ma5_series[-1],
+        "daily_vol_ma60": vol_ma60_series[-1],
+        "daily_vol_ma5_ma60_diff_pct": current_diff * 100 if current_diff is not None else None,
+        "latest_volume_below_ma60": bool(latest_below_ma60),
+    }
+
+
+def _rolling_avg(values: list[float | None], idx: int, window: int) -> float | None:
+    if idx + 1 < window:
+        return None
+    subset = values[idx - window + 1 : idx + 1]
+    if any(v is None for v in subset):
+        return None
+    return sum(float(v) for v in subset) / window
+
+
+def _date_sort_key(v: Any) -> tuple[int, str]:
+    if isinstance(v, (int, float)):
+        return (0, f"{int(v):020d}")
+    return (1, str(v or ""))
+
+
+def _technical_sort_key(candidate: dict[str, Any]) -> tuple[Any, ...]:
+    type_rank = {"二类做量": 0, "三类缩量": 1, "一类冲量": 2, "趋势量能": 3, "未分类": 4}
+    return (
+        _bucket_rank(candidate.get("bucket")),
+        type_rank.get(candidate.get("buy_point_type") or "未分类", 9),
+        abs(_num(candidate.get("price_ma25_deviation_pct"), default=999)),
+        _int(candidate.get("volume_sort_rank"), 9),
+        -_num(candidate.get("vol_ratio"), default=0),
+        str(candidate.get("code") or ""),
+    )
+
+
 def _execution_condition(x: dict[str, Any]) -> str:
     if x.get("bucket") != "可执行":
         return "当前不符合开仓条件；下个交易日仅继续观察，不触发则不交易。"
@@ -275,11 +403,14 @@ class DailySelectionReportService:
         latest_batch = self._latest_batch()
         signals = self._latest_selected_signals(latest_batch, limit) if latest_batch else []
         annotations = self._annotations_for_codes([s["code"] for s in signals])
+        volume_profiles = self._daily_volume_profiles([s["code"] for s in signals])
         candidates = []
         for s in signals:
             ann = annotations.get(s["code"], {})
+            volume_profile = volume_profiles.get(s["code"], {})
             item = {
                 **s,
+                **volume_profile,
                 "market": _market_from_code(s.get("code")),
                 "name": _clean_text(s.get("name")),
                 "missing_tags_text": _compact_missing_tags(s.get("missing_tags")),
@@ -313,7 +444,7 @@ class DailySelectionReportService:
             candidates.append(item)
 
         candidates = self._dedupe_candidates(candidates)
-        candidates.sort(key=lambda x: (_bucket_rank(x.get("bucket")), -_num(x.get("report_score"))))
+        candidates.sort(key=_technical_sort_key)
         market_model = build_internal_market_model(candidates)
         data_validation = self._data_validation(latest_batch, market_model)
         executable = [x for x in candidates if x["bucket"] == "可执行"][:3]
@@ -349,9 +480,12 @@ class DailySelectionReportService:
             if current is None:
                 best[code] = item
                 continue
-            item_key = (_num(item.get("report_score")), _num(item.get("strength_score_raw")), str(item.get("signal_time") or ""))
-            cur_key = (_num(current.get("report_score")), _num(current.get("strength_score_raw")), str(current.get("signal_time") or ""))
-            if item_key > cur_key:
+            item_sort = _technical_sort_key(item)
+            cur_sort = _technical_sort_key(current)
+            if item_sort < cur_sort:
+                best[code] = item
+                continue
+            if item_sort == cur_sort and str(item.get("signal_time") or "") > str(current.get("signal_time") or ""):
                 best[code] = item
         return list(best.values())
 
@@ -379,7 +513,7 @@ class DailySelectionReportService:
             LEFT JOIN stock_info s ON s.code=a.code
             WHERE CAST(a.batch_id AS CHAR)=CAST(:batch_id AS CHAR)
               AND a.selected_signal=1
-            ORDER BY COALESCE(a.strength_score_raw, 0) DESC, a.signal_time DESC, a.id DESC
+            ORDER BY a.signal_time DESC, a.id DESC
             LIMIT :limit
         """)
         rows = self.db.execute(sql, {"batch_id": latest_batch["batch_id"], "limit": limit}).mappings().all()
@@ -390,6 +524,27 @@ class DailySelectionReportService:
             return {}
         engine = AnnotationEngine2568(self.db)
         return {x.get("code"): x for x in engine.annotations_for_codes(codes).get("items", [])}
+
+    def _daily_volume_profiles(self, codes: list[str]) -> dict[str, dict[str, Any]]:
+        out: dict[str, dict[str, Any]] = {}
+        if not codes:
+            return out
+        ch = get_clickhouse()
+        for code in dict.fromkeys(codes):
+            try:
+                rows = ch.query(
+                    f"""
+                    SELECT date,open,high,low,close,volume
+                    FROM daily_kline
+                    WHERE code='{code}'
+                    ORDER BY date DESC
+                    LIMIT 90
+                    """
+                )
+            except Exception:
+                rows = []
+            out[code] = _volume_profile_from_daily_rows([dict(r) for r in rows])
+        return out
 
     def _data_validation(self, latest_batch: dict[str, Any] | None, market_model: dict[str, Any]) -> dict[str, Any]:
         readiness = []
@@ -501,6 +656,7 @@ def render_markdown_report(report: dict[str, Any]) -> str:
         f"| 市场拥挤度 | 无外部数据 | 当前暂不计算 |",
         f"| 风险状态 | {mm.get('risk_state', '-')} | 内部候选与淘汰比例 |",
         f"| 2560候选数量 | {mm.get('signal_count', 0)} | 最新 selected_signal |",
+        f"| 买点类型分布 | {_format_distribution(mm.get('buy_point_type_counts') or {})} | 日线MAVOL5/60节奏 |",
         f"| 市场分布 | {_format_distribution(mm.get('market_distribution') or {})} | 代码前缀 |",
         "",
         "## 【5】核心交易候选",
@@ -509,17 +665,18 @@ def render_markdown_report(report: dict[str, Any]) -> str:
     core = report.get("core_candidates") or []
     if core:
         lines.extend([
-            "| 代码 | 名称 | 分组 | 报告执行判断 | 评分 | 收盘价 | 25日线 | 距离25日线% | 25线区间 | 25日方向 | 当日成交量 | 5日均量线 | 60日均量线 | 5量>60量 | 2560状态 | 缺失明细 | 2568原始标注 |",
-            "|------|------|------|--------------|------|--------|--------|-------------|----------|----------|------------|------------|-------------|----------|----------|----------|--------------|",
+            "| 代码 | 名称 | 分组 | 报告执行判断 | 基础条件 | 买点类型 | 收盘价 | 25日线 | 距离25日线% | 25线区间 | 25日方向 | 当日成交量 | 5日均量线 | 60日均量线 | 5量>60量 | 压量 | 排序依据 | 2568原始标注 |",
+            "|------|------|------|--------------|----------|----------|--------|--------|-------------|----------|----------|------------|------------|-------------|----------|------|----------|--------------|",
         ])
         for x in core:
             lines.append(
                 f"| {x.get('code','-')} | {x.get('name','-')} | {x.get('bucket','-')} | "
-                f"{x.get('report_action_label','-')} | {x.get('report_score','-')} | {_fmt_num(x.get('close'))} | {_fmt_num(x.get('ma25'))} | "
+                f"{x.get('report_action_label','-')} | {x.get('hard_condition_status','-')} | {x.get('buy_point_type','-')} | "
+                f"{_fmt_num(x.get('close'))} | {_fmt_num(x.get('ma25'))} | "
                 f"{_fmt_num(x.get('price_ma25_deviation_pct'))} | {x.get('ma25_deviation_bucket') or '-'} | {x.get('ma25_direction') or '-'} | "
                 f"{_fmt_num(x.get('volume'), 0)} | {_fmt_num(x.get('vol_ma5'), 0)} | {_fmt_num(x.get('vol_ma60'), 0)} | "
-                f"{_fmt_bool(x.get('vol_ma5_gt_vol_ma60'))} | {x.get('structure_status','-')} | "
-                f"{x.get('missing_tags_detail') or '-'} | {x.get('manual_action_label','-')} |"
+                f"{_fmt_bool(x.get('vol_ma5_gt_vol_ma60'))} | {x.get('volume_compression_label') or '-'} | "
+                f"{x.get('objective_sort_reason') or '-'} | {x.get('manual_action_label','-')} |"
             )
     else:
         lines.append("无符合内部 2560 候选条件的标的。")
@@ -533,7 +690,10 @@ def render_markdown_report(report: dict[str, Any]) -> str:
             "|------|------|",
             f"| 所属行业/板块 | {x.get('industry_name') or '-'} / {x.get('board_name') or '-'} |",
             f"| 2560状态 | {x.get('structure_status') or '-'} |",
-            f"| 2560评分 | {x.get('report_score') if x.get('report_score') is not None else '-'} |",
+            f"| 基础条件 | {x.get('hard_condition_status') or '-'} |",
+            f"| 基础条件不通过原因 | {'；'.join(x.get('hard_condition_failures') or []) or '-'} |",
+            f"| 买点类型 | {x.get('buy_point_type') or '-'} |",
+            f"| 客观排序依据 | {x.get('objective_sort_reason') or '-'} |",
             f"| 缺失条件 | {x.get('missing_tags_text') or '-'} |",
             f"| 缺失条件明细 | {x.get('missing_tags_detail') or '-'} |",
             f"| 收盘价 | {_fmt_num(x.get('close'))} |",
@@ -546,6 +706,7 @@ def render_markdown_report(report: dict[str, Any]) -> str:
             f"| 60日均量线 | {_fmt_num(x.get('vol_ma60'), 0)} |",
             f"| 5日均量线是否在60日均量线上方 | {_fmt_bool(x.get('vol_ma5_gt_vol_ma60'))} |",
             f"| 量比 | {_fmt_num(x.get('vol_ratio'))} |",
+            f"| 压量形态 | {x.get('volume_compression_label') or '-'} |",
             f"| 2568等级 | {x.get('highlight_level') or '-'} |",
             f"| 2568原始标注 | {x.get('manual_action_label') or '-'} |",
             f"| 报告执行判断 | {x.get('report_action_label') or '-'} |",
