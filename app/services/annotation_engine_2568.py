@@ -369,6 +369,8 @@ class AnnotationEngine2568:
         today = indicators[0]
         yesterday = indicators[1] if len(indicators) > 1 else {}
         close = self._latest_close(recent)
+        volume = self._latest_value(recent, "volume")
+        amount = self._latest_value(recent, "amount")
         ma25 = today.get("ma25")
         ma60 = today.get("ma60")
         ma25_y = yesterday.get("ma25")
@@ -413,8 +415,20 @@ class AnnotationEngine2568:
             "name": name,
             "date": today.get("date"),
             "close": close,
+            "volume": volume,
+            "amount": amount,
             "ma25": ma25,
             "ma60": ma60,
+            "ma25_direction": self._direction_label(ma25, ma25_y),
+            "ma60_direction": self._direction_label(ma60, ma60_y),
+            "price_ma25_deviation_pct": today.get("price_ma25_deviation_pct"),
+            "vol_ma5": vol_ma5,
+            "vol_ma60": vol_ma60,
+            "vol_ma5_gt_vol_ma60": (
+                bool(vol_ma5 > vol_ma60)
+                if self._num(vol_ma5) is not None and self._num(vol_ma60) is not None
+                else None
+            ),
             "vol_ratio": vol_ratio,
             "ma25_status": ma25_status,
             "ma60_status": ma60_status,
@@ -690,6 +704,31 @@ class AnnotationEngine2568:
         if df is None or df.empty or "close" not in df.columns:
             return None
         return float(df.sort_values("date").iloc[-1]["close"])
+
+    @staticmethod
+    def _latest_value(df: pd.DataFrame, column: str):
+        if df is None or df.empty or column not in df.columns:
+            return None
+        v = df.sort_values("date").iloc[-1][column]
+        try:
+            if pd.isna(v):
+                return None
+            return float(v)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _direction_label(current, previous) -> str:
+        c = AnnotationEngine2568._num(current)
+        p = AnnotationEngine2568._num(previous)
+        if c is None or p is None or p == 0:
+            return "无法验证"
+        pct = (c - p) / abs(p) * 100
+        if pct > 0.05:
+            return "向上"
+        if pct < -0.05:
+            return "向下"
+        return "走平"
 
     def _slope_label(self, value, name: str, neg_word: str) -> str:
         v = self._num(value)

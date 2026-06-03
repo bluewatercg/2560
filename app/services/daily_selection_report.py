@@ -177,8 +177,16 @@ class DailySelectionReportService:
                 "volume_status": ann.get("volume_status"),
                 "trend_status": ann.get("trend_status"),
                 "close": ann.get("close") if ann.get("close") is not None else s.get("price"),
+                "volume": ann.get("volume"),
+                "amount": ann.get("amount"),
                 "ma25": ann.get("ma25"),
                 "ma60": ann.get("ma60"),
+                "ma25_direction": ann.get("ma25_direction"),
+                "ma60_direction": ann.get("ma60_direction"),
+                "price_ma25_deviation_pct": ann.get("price_ma25_deviation_pct"),
+                "vol_ma5": ann.get("vol_ma5"),
+                "vol_ma60": ann.get("vol_ma60"),
+                "vol_ma5_gt_vol_ma60": ann.get("vol_ma5_gt_vol_ma60"),
                 "vol_ratio": ann.get("vol_ratio"),
             }
             item.update(classify_candidate(item))
@@ -358,14 +366,17 @@ def render_markdown_report(report: dict[str, Any]) -> str:
     core = report.get("core_candidates") or []
     if core:
         lines.extend([
-            "| 代码 | 名称 | 分组 | 评分 | 2560状态 | 2568建议 | 逻辑 |",
-            "|------|------|------|------|----------|----------|------|",
+            "| 代码 | 名称 | 分组 | 评分 | 收盘价 | 25日线 | 距离25日线% | 25日方向 | 当日成交量 | 5日均量线 | 60日均量线 | 5量>60量 | 2560状态 | 2568建议 |",
+            "|------|------|------|------|--------|--------|-------------|----------|------------|------------|-------------|----------|----------|----------|",
         ])
         for x in core:
             lines.append(
                 f"| {x.get('code','-')} | {x.get('name','-')} | {x.get('bucket','-')} | "
-                f"{x.get('report_score','-')} | {x.get('structure_status','-')} | "
-                f"{x.get('manual_action_label','-')} | {x.get('logic','-')} |"
+                f"{x.get('report_score','-')} | {_fmt_num(x.get('close'))} | {_fmt_num(x.get('ma25'))} | "
+                f"{_fmt_num(x.get('price_ma25_deviation_pct'))} | {x.get('ma25_direction') or '-'} | "
+                f"{_fmt_num(x.get('volume'), 0)} | {_fmt_num(x.get('vol_ma5'), 0)} | {_fmt_num(x.get('vol_ma60'), 0)} | "
+                f"{_fmt_bool(x.get('vol_ma5_gt_vol_ma60'))} | {x.get('structure_status','-')} | "
+                f"{x.get('manual_action_label','-')} |"
             )
     else:
         lines.append("无符合内部 2560 候选条件的标的。")
@@ -379,7 +390,17 @@ def render_markdown_report(report: dict[str, Any]) -> str:
             "|------|------|",
             f"| 所属行业/板块 | {x.get('industry_name') or '-'} / {x.get('board_name') or '-'} |",
             f"| 2560状态 | {x.get('structure_status') or '-'} |",
+            f"| 2560评分 | {x.get('report_score') or '-'} |",
             f"| 缺失条件 | {x.get('missing_tags_text') or '-'} |",
+            f"| 收盘价 | {_fmt_num(x.get('close'))} |",
+            f"| 25日价格均线 | {_fmt_num(x.get('ma25'))} |",
+            f"| 25日方向 | {x.get('ma25_direction') or '-'} |",
+            f"| 距离25日线% | {_fmt_num(x.get('price_ma25_deviation_pct'))} |",
+            f"| 当日成交量 | {_fmt_num(x.get('volume'), 0)} |",
+            f"| 5日均量线 | {_fmt_num(x.get('vol_ma5'), 0)} |",
+            f"| 60日均量线 | {_fmt_num(x.get('vol_ma60'), 0)} |",
+            f"| 5日均量线是否在60日均量线上方 | {_fmt_bool(x.get('vol_ma5_gt_vol_ma60'))} |",
+            f"| 量比 | {_fmt_num(x.get('vol_ratio'))} |",
             f"| 2568等级 | {x.get('highlight_level') or '-'} |",
             f"| 2568建议 | {x.get('manual_action_label') or '-'} |",
             f"| MA25/MA60 | {x.get('ma25_status') or '-'} / {x.get('ma60_status') or '-'} |",
@@ -438,3 +459,20 @@ def _format_distribution(dist: dict[str, int]) -> str:
     if not dist:
         return "-"
     return " / ".join(f"{k}:{v}" for k, v in sorted(dist.items()))
+
+
+def _fmt_num(v: Any, digits: int = 2) -> str:
+    n = _num(v, default=None)
+    if n is None:
+        return "-"
+    if digits <= 0:
+        return str(int(round(n)))
+    return f"{n:.{digits}f}"
+
+
+def _fmt_bool(v: Any) -> str:
+    if v is True:
+        return "是"
+    if v is False:
+        return "否"
+    return "无法验证"

@@ -68,6 +68,14 @@ def test_markdown_report_renders_internal_a_b_scope_without_external_claims():
                 "report_score": 86,
                 "structure_status": "结构完整",
                 "manual_action_label": "强势票｜重点关注",
+                "close": 10.5,
+                "ma25": 10.0,
+                "ma25_direction": "向上",
+                "price_ma25_deviation_pct": 5.0,
+                "volume": 1200000,
+                "vol_ma5": 1500000,
+                "vol_ma60": 1000000,
+                "vol_ma5_gt_vol_ma60": True,
                 "logic": "结构完整，2568 标注强势票｜重点关注。",
             }
         ],
@@ -88,6 +96,11 @@ def test_markdown_report_renders_internal_a_b_scope_without_external_claims():
     assert "内部数据版" in markdown
     assert "## 【5】核心交易候选" in markdown
     assert "## 【7】可执行交易与淘汰交易" in markdown
+    assert "5日均量线" in markdown
+    assert "60日均量线" in markdown
+    assert "当日成交量" in markdown
+    assert "距离25日线%" in markdown
+    assert "25日方向" in markdown
     assert "指数锚点" in markdown
 
 
