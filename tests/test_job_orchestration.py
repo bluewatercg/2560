@@ -165,6 +165,20 @@ class JobOrchestrationTests(unittest.TestCase):
         self.assertEqual(env["SHARDS"], "1")
         self.assertEqual(env["LIMIT_CODES"], "1")
 
+    def test_post_workflow_uses_32_way_concurrency(self):
+        index_html = (jobs.PROJECT_ROOT / "app" / "static" / "index.html").read_text(encoding="utf-8")
+        workflow_js = (jobs.PROJECT_ROOT / "app" / "static" / "post_workflow.js").read_text(encoding="utf-8")
+
+        self.assertIn("/static/post_workflow.js?v=workflow32-20260603", index_html)
+        self.assertIn("WORKFLOW_CONCURRENCY = 32", workflow_js)
+        self.assertIn("workers: WORKFLOW_CONCURRENCY", workflow_js)
+        self.assertIn("shards: WORKFLOW_CONCURRENCY", workflow_js)
+        self.assertIn('endpoint: "/api/jobs/run-all-markets"', workflow_js)
+        self.assertIn('result.created', workflow_js)
+        self.assertIn("/api/strategy/2568/annotations", workflow_js)
+        self.assertNotIn("workers: 2", workflow_js)
+        self.assertNotIn("shards: 1", workflow_js)
+
     def test_jobs_page_requests_only_2560_execution_types(self):
         page_js = (jobs.PROJECT_ROOT / "app" / "static" / "jobs_page_bootstrap.js").read_text(encoding="utf-8")
         monitor_js = (jobs.PROJECT_ROOT / "app" / "static" / "job_progress_monitor.js").read_text(encoding="utf-8")

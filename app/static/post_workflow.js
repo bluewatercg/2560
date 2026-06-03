@@ -2,6 +2,7 @@
   "use strict";
 
   function $(id){ return document.getElementById(id); }
+  const WORKFLOW_CONCURRENCY = 32;
 
   // ====== 全局状态 ======
   let workflowState = {
@@ -54,13 +55,13 @@
         id: "import", label: stepLabels["import"], status: "pending",
         endpoint: "/api/import/run",
         reason: anyMissingData ? undefined : "按最近区间幂等刷新日线和5m",
-        payload: { source_dir: "/data/vipdoc", start: importStart, end: importEnd, workers: 2 },
+        payload: { source_dir: "/data/vipdoc", start: importStart, end: importEnd, workers: WORKFLOW_CONCURRENCY },
       },
       {
         id: "build30m", label: stepLabels["build30m"], status: "pending",
         endpoint: "/api/import/build-30m",
         reason: "5m 导入后必须幂等重建同范围 30m",
-        payload: { market: "all", start: importStart, end: importEnd, workers: 2 },
+        payload: { market: "all", start: importStart, end: importEnd, workers: WORKFLOW_CONCURRENCY },
       },
       {
         id: "indicators", label: stepLabels["indicators"], status: "skipped",
@@ -70,8 +71,8 @@
       },
       {
         id: "run2560", label: stepLabels["run2560"], status: "pending",
-        endpoint: "/api/jobs/enqueue",
-        payload: { job_type: "run_2560", market: "all", shards: 1 },
+        endpoint: "/api/jobs/run-all-markets",
+        payload: { shards: WORKFLOW_CONCURRENCY },
       },
       {
         id: "pool", label: stepLabels["pool"], status: "pending",
@@ -342,14 +343,26 @@
         step.summary = `导入完成 (lday + 5m)`;
         await refreshPlanAfter("import");
       } else if (step.id === "run2560") {
-        // fast 2560：单个 all-market job，避免四路并发写 MySQL 死锁。
+        // fast 2560：四市场 lane 并行，最大化利用 worker-sh60/sh68/sz00/sz30。
         result = await postJson(step.endpoint, step.payload);
-        step.jobId = result.payload && result.payload.job_execution_id;
-        step.progressUrl = step.jobId ? `/api/jobs/executions/${step.jobId}/progress` : null;
-        await pollJobProgress(step);
+        const created = result.created || [];
+        const skipped = result.skipped || [];
+        const lanes = created
+          .filter(x => x && x.execution_id)
+          .map(x => ({
+            market: x.market || "-",
+            progress_url: `/api/jobs/executions/${x.execution_id}/progress`,
+          }));
+        if (!lanes.length) {
+          step.log = skipped.length
+            ? `2560: 全部 lane 被跳过：${skipped.map(l => `${l.market}:${l.reason}`).join(" | ")}`
+            : "2560: 没有创建市场 lane";
+        } else {
+          await pollImportLanes(step, { lanes, skipped }, "2560");
+        }
         if (step.status === "failed") return;
         step.status = "done";
-        step.summary = "2560 fast 完成";
+        step.summary = `2560 fast 完成 (${lanes.length} 个市场 lane)`;
       } else {
         // build30m / indicators
         result = await postJson(step.endpoint, step.payload);

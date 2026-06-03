@@ -120,9 +120,9 @@
                                 </div>
                                 <div class="workflow-card orange">
                                     <div class="wf-card-head"><span class="wf-icon">&#9314;</span><h3>任务执行</h3></div>
-                                    <p>正式盘后只跑一个 all-market fast 任务，避免四路并发写 MySQL 死锁。</p>
-                                    <ul><li><b>日常入口：</b>一键盘后流程。</li><li><b>2560：</b><code>market=all</code>、<code>shards=1</code>。</li><li><b>手动任务：</b>只用于排查或小范围验证。</li></ul>
-                                    <div class="wf-tag">fast 2560 / all-market</div>
+                                    <p>正式盘后按四市场 lane 并行执行，最大化利用后台 worker。</p>
+                                    <ul><li><b>日常入口：</b>一键盘后流程。</li><li><b>2560：</b><code>sh60/sh68/sz00/sz30</code>、每路 <code>shards=32</code>。</li><li><b>手动任务：</b>只用于排查或小范围验证。</li></ul>
+                                    <div class="wf-tag">fast 2560 / 4 market lanes</div>
                                 </div>
                                 <div class="workflow-card purple">
                                     <div class="wf-card-head"><span class="wf-icon">&#9315;</span><h3>结果查看</h3></div>
@@ -450,7 +450,7 @@
         <script src="/static/module_reorg.js?v=final-reorg-2"></script>
         <script src="/static/nested_menu_reorg.js?v=4"></script>
         <script src="/static/data_import_page.js?v=9"></script>
-        <script src="/static/post_workflow.js?v=2"></script>
+        <script src="/static/post_workflow.js?v=workflow32-20260603"></script>
       <script src="/static/data_import_type_addon.js?v=8"></script>
         <script src="/static/observation_pool.js?v=2"></script>
 </body>
