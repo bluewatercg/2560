@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import pandas as pd
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 from sqlalchemy.orm import Session
 
 from app.core.market_scope import market_sql_where
@@ -249,6 +249,83 @@ class AnnotationEngine2568:
         if min_d is not None:
             items = [x for x in items if int(x.get("d_count") or 0) >= min_d]
 
+        summary_stats: dict[str, int] = {}
+        action_stats: dict[str, int] = {}
+        highlight_stats: dict[str, int] = {}
+        for x in items:
+            label = x.get("summary_label") or "未知"
+            action = x.get("manual_action_label") or "未知"
+            summary_stats[label] = summary_stats.get(label, 0) + 1
+            action_stats[action] = action_stats.get(action, 0) + 1
+            for part in (x.get("highlight_summary") or "").split(" / "):
+                if part:
+                    highlight_stats[part] = highlight_stats.get(part, 0) + 1
+
+        return {
+            "summary": {
+                "total": len(items),
+                "by_label": summary_stats,
+                "by_action": action_stats,
+                "by_highlight": highlight_stats,
+            },
+            "items": items,
+        }
+
+    def annotations_for_codes(self, codes: list[str]) -> dict[str, Any]:
+        ordered_codes = []
+        seen = set()
+        for code in codes:
+            c = (code or "").strip()
+            if c and c not in seen:
+                ordered_codes.append(c)
+                seen.add(c)
+        if not ordered_codes:
+            return {"summary": {"total": 0, "by_label": {}, "by_action": {}, "by_highlight": {}}, "items": []}
+
+        stmt = text("""
+            SELECT code, name, industry_name, board_name, source
+            FROM stock_info
+            WHERE code IN :codes
+        """).bindparams(bindparam("codes", expanding=True))
+        stock_map = {
+            r["code"]: dict(r)
+            for r in self.db.execute(stmt, {"codes": ordered_codes}).mappings().all()
+        }
+        stocks = [
+            stock_map.get(code) or {"code": code, "name": "", "industry_name": None, "board_name": None, "source": None}
+            for code in ordered_codes
+        ]
+        ind_map = self.read_latest_indicators(ordered_codes)
+        missing_indicator_codes = [c for c in ordered_codes if not ind_map.get(c)]
+        if missing_indicator_codes:
+            ind_map.update(self.build_daily_indicators_from_kline(missing_indicator_codes))
+        recent_map = self.read_recent_daily(ordered_codes, days=max(self.cfg.pullback_days + 1, 8))
+        latest_indicator_date = None
+        try:
+            latest_indicator_date = self.latest_daily_indicator_date("all")
+        except Exception:
+            latest_indicator_date = None
+        latest_batch = self.latest_2560_batch()
+        latest_batch_id = latest_batch.get("batch_id") if latest_batch else None
+        try:
+            latest_batch_id = int(latest_batch_id) if latest_batch_id is not None else None
+        except Exception:
+            latest_batch_id = None
+        latest_signals = self.latest_2560_signals(
+            ordered_codes,
+            latest_batch_id,
+        )
+        items = [
+            self.annotate_one(
+                s,
+                ind_map.get(s["code"], []),
+                recent_map.get(s["code"], pd.DataFrame()),
+                latest_indicator_date=latest_indicator_date,
+                latest_signal=latest_signals.get(s["code"]),
+                latest_batch=latest_batch,
+            )
+            for s in stocks
+        ]
         summary_stats: dict[str, int] = {}
         action_stats: dict[str, int] = {}
         highlight_stats: dict[str, int] = {}

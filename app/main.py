@@ -8,6 +8,7 @@ from app.api.data_quality import router as quality_router
 from app.api.latest import router as latest_router
 from app.api.jobs import router as jobs_router
 from app.api.import_data import router as import_router
+from app.api.reports import router as reports_router
 from app.db.session import ping_database
 from app.db.clickhouse import get_clickhouse
 
@@ -19,6 +20,7 @@ app.include_router(quality_router)
 app.include_router(latest_router)
 app.include_router(jobs_router)
 app.include_router(import_router)
+app.include_router(reports_router)
 app.mount('/static', StaticFiles(directory='app/static'), name='static')
 
 @app.get('/health')
