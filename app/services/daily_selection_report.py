@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -147,8 +148,21 @@ def _compact_missing_tags(v: Any) -> str:
     if not v:
         return ""
     if isinstance(v, list):
-        return " / ".join(str(x) for x in v)
-    return str(v)
+        return " / ".join(_clean_text(str(x)) for x in v)
+    if isinstance(v, str):
+        s = _clean_text(v)
+        try:
+            parsed = json.loads(s)
+            if isinstance(parsed, list):
+                return " / ".join(_clean_text(str(x)) for x in parsed)
+        except Exception:
+            pass
+        return s
+    return _clean_text(str(v))
+
+
+def _clean_text(v: Any) -> str:
+    return str(v or "").replace("\x00", "").strip()
 
 
 class DailySelectionReportService:
@@ -166,6 +180,7 @@ class DailySelectionReportService:
             item = {
                 **s,
                 "market": _market_from_code(s.get("code")),
+                "name": _clean_text(s.get("name")),
                 "missing_tags_text": _compact_missing_tags(s.get("missing_tags")),
                 "annotation": ann,
                 "highlight_level": ann.get("highlight_level"),
@@ -192,6 +207,7 @@ class DailySelectionReportService:
             item.update(classify_candidate(item))
             candidates.append(item)
 
+        candidates = self._dedupe_candidates(candidates)
         candidates.sort(key=lambda x: (_bucket_rank(x.get("bucket")), -_num(x.get("report_score"))))
         market_model = build_internal_market_model(candidates)
         data_validation = self._data_validation(latest_batch, market_model)
@@ -216,6 +232,23 @@ class DailySelectionReportService:
         }
         report["markdown"] = render_markdown_report(report)
         return report
+
+    @staticmethod
+    def _dedupe_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        best: dict[str, dict[str, Any]] = {}
+        for item in candidates:
+            code = item.get("code")
+            if not code:
+                continue
+            current = best.get(code)
+            if current is None:
+                best[code] = item
+                continue
+            item_key = (_num(item.get("report_score")), _num(item.get("strength_score_raw")), str(item.get("signal_time") or ""))
+            cur_key = (_num(current.get("report_score")), _num(current.get("strength_score_raw")), str(current.get("signal_time") or ""))
+            if item_key > cur_key:
+                best[code] = item
+        return list(best.values())
 
     def _latest_batch(self) -> dict[str, Any] | None:
         row = self.db.execute(text("""
@@ -390,7 +423,7 @@ def render_markdown_report(report: dict[str, Any]) -> str:
             "|------|------|",
             f"| 所属行业/板块 | {x.get('industry_name') or '-'} / {x.get('board_name') or '-'} |",
             f"| 2560状态 | {x.get('structure_status') or '-'} |",
-            f"| 2560评分 | {x.get('report_score') or '-'} |",
+            f"| 2560评分 | {x.get('report_score') if x.get('report_score') is not None else '-'} |",
             f"| 缺失条件 | {x.get('missing_tags_text') or '-'} |",
             f"| 收盘价 | {_fmt_num(x.get('close'))} |",
             f"| 25日价格均线 | {_fmt_num(x.get('ma25'))} |",

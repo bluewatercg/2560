@@ -3,7 +3,9 @@ from __future__ import annotations
 from app.services.daily_selection_report import (
     build_internal_market_model,
     classify_candidate,
+    _clean_text,
     render_markdown_report,
+    _compact_missing_tags,
 )
 
 
@@ -65,8 +67,9 @@ def test_markdown_report_renders_internal_a_b_scope_without_external_claims():
                 "code": "sh.600000",
                 "name": "样例股份",
                 "bucket": "可执行",
-                "report_score": 86,
+                "report_score": 0,
                 "structure_status": "结构完整",
+                "missing_tags_text": "#未突破",
                 "manual_action_label": "强势票｜重点关注",
                 "close": 10.5,
                 "ma25": 10.0,
@@ -101,6 +104,8 @@ def test_markdown_report_renders_internal_a_b_scope_without_external_claims():
     assert "当日成交量" in markdown
     assert "距离25日线%" in markdown
     assert "25日方向" in markdown
+    assert "| 2560评分 | 0 |" in markdown
+    assert "| 缺失条件 | #未突破 |" in markdown
     assert "指数锚点" in markdown
 
 
@@ -119,3 +124,8 @@ def test_internal_market_model_counts_buckets_and_distribution():
     assert model["rejected_count"] == 1
     assert model["market_distribution"] == {"sh60": 1, "sz30": 1, "sh68": 1}
     assert 0 <= model["temperature"] <= 100
+
+
+def test_report_cleans_nul_names_and_json_missing_tags():
+    assert _clean_text("多浦乐\x00\x00") == "多浦乐"
+    assert _compact_missing_tags('["#未突破", "#高位"]') == "#未突破 / #高位"

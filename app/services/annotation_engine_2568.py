@@ -214,7 +214,7 @@ class AnnotationEngine2568:
         stocks = self.list_stocks(market_type, limit, q)
         codes = [s["code"] for s in stocks]
         ind_map = self.read_latest_indicators(codes)
-        missing_indicator_codes = [c for c in codes if not ind_map.get(c)]
+        missing_indicator_codes = [c for c in codes if not self._has_usable_indicator(ind_map.get(c))]
         if missing_indicator_codes:
             ind_map.update(self.build_daily_indicators_from_kline(missing_indicator_codes))
         recent_map = self.read_recent_daily(codes, days=max(self.cfg.pullback_days + 1, 8))
@@ -296,7 +296,7 @@ class AnnotationEngine2568:
             for code in ordered_codes
         ]
         ind_map = self.read_latest_indicators(ordered_codes)
-        missing_indicator_codes = [c for c in ordered_codes if not ind_map.get(c)]
+        missing_indicator_codes = [c for c in ordered_codes if not self._has_usable_indicator(ind_map.get(c))]
         if missing_indicator_codes:
             ind_map.update(self.build_daily_indicators_from_kline(missing_indicator_codes))
         recent_map = self.read_recent_daily(ordered_codes, days=max(self.cfg.pullback_days + 1, 8))
@@ -467,6 +467,14 @@ class AnnotationEngine2568:
         if s.isdigit():
             return int(s[:8])
         return None
+
+    @staticmethod
+    def _has_usable_indicator(rows: list[dict[str, Any]] | None) -> bool:
+        if not rows:
+            return False
+        latest = rows[0]
+        required = ("ma25", "ma60", "vol_ma5", "vol_ma60")
+        return any(AnnotationEngine2568._num(latest.get(k)) is not None for k in required)
 
     @staticmethod
     def _freshness_fields(
