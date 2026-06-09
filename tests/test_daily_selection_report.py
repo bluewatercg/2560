@@ -612,7 +612,7 @@ def test_markdown_report_renders_internal_a_b_scope_without_external_claims():
         "title": "内部数据版 2560 盘后选股报告",
         "technical_metadata": {
             "skill_parse_version": "daily-selection-skill-v1",
-            "strategy_contract": "2560_v1.2.2_FinalFreeze",
+            "strategy_contract": "2560标准候选口径",
             "canonical_fields": ["selection_status", "final_score", "recent_3d_pct"],
             "announcement_policy": "默认禁止逐票联网公告/研报调用；未显式开启时按 unverified 审计。",
         },
@@ -687,8 +687,8 @@ def test_markdown_report_renders_internal_a_b_scope_without_external_claims():
 
     assert "【2560职业短线交易系统 v5.1】盘后复盘与候选说明" in markdown
     assert "Skill解析版本：daily-selection-skill-v1" in markdown
-    assert "策略冻结版本：2560_v1.2.2_FinalFreeze" in markdown
-    assert "## 【3】v1.2.2 Final Freeze 字段审计" in markdown
+    assert "策略口径：2560标准候选口径" in markdown
+    assert "## 【3】核心评估字段审计" in markdown
     assert "selection_status 分布" in markdown
     assert "focus" in markdown
     assert "score_components" in markdown
@@ -711,6 +711,7 @@ def test_markdown_report_renders_internal_a_b_scope_without_external_claims():
     assert "| 市场环境 / 环境分 | rebound / 0.70 |" in markdown
     assert "| 题材强度 / 题材地位 | strong / leader |" in markdown
     assert "v1.2.2 selection_status" not in markdown
+    assert "v1.2.2 Final Freeze" not in markdown
     assert "| 缺失条件 | #未突破 |" in markdown
     assert "| 缺失条件明细 | #未突破：未突破30m近20周期高点/压力位 |" in markdown
     assert "3%-5% 观察区" in markdown
