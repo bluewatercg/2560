@@ -10,6 +10,8 @@ const state = {
   selectedJobAutoRefresh: null,
   workspaceMarketReadiness: {},
   workspaceTargetDate: null,
+  workspaceReportPackageResult: null,
+  workspaceMorningReportPackageResult: null,
 };
 const $ = (id) => document.getElementById(id);
 async function api(url, opts) {
@@ -242,6 +244,14 @@ function renderWorkspace(data) {
 
   // 目标交易日
   $("workspaceDate").textContent = `目标交易日：${data.target_date || "-"}`;
+  if ($("reportPackageTradeDate")) {
+    $("reportPackageTradeDate").value = data.target_date || todayYmd();
+  }
+  if ($("morningReportTradeDate")) {
+    $("morningReportTradeDate").value = data.target_date || todayYmd();
+  }
+  renderWorkspaceReportPackageResult();
+  renderWorkspaceMorningReportPackageResult();
 
   // 四市场卡片
   const mr = data.market_readiness || [];
@@ -840,6 +850,13 @@ async function loadLatest() {
       { label: "批次", key: "batch_id" },
       { label: "计算时间", render: (r) => fmtTime(r.batch_run_time) },
       { label: "信号时间", render: (r) => fmtTime(r.signal_time) },
+      { label: "入选状态", key: "selection_status" },
+      { label: "最终分", render: (r) => r.final_score == null ? "-" : Number(r.final_score).toFixed(3) },
+      { label: "近3日%", render: (r) => r.recent_3d_pct == null ? "-" : Number(r.recent_3d_pct).toFixed(2) },
+      { label: "起爆状态", key: "explode_status" },
+      { label: "市场状态", key: "market_state" },
+      { label: "题材强度", key: "hot_topic_strength" },
+      { label: "题材地位", key: "position_in_hot_topic" },
       { label: "结构状态", render: (r) => badgeStatus(r.structure_status) },
       { label: "缺失标签", render: (r) => fmtTags(r.missing_tags) },
       { label: "说明", key: "explain_text" },
@@ -968,6 +985,7 @@ async function loadJobItems(id) {
 async function refresh() {
   await loadHealth();
   if (state.view === "workspace") await loadWorkspace();
+  if (state.view === "result-workbench" && typeof window.loadResultWorkbench === "function") await window.loadResultWorkbench();
   if (state.view === "overview") await loadOverview();
   if (state.view === "run") await loadStocks();
   if (state.view === "signals") await loadSignals();
@@ -1023,6 +1041,98 @@ function ymdFromInt(v) {
   return `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`;
 }
 
+function todayYmd() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function selectedReportTradeDate() {
+  const input = $("reportPackageTradeDate");
+  return (input && input.value) || state.workspaceTargetDate || todayYmd();
+}
+
+function selectedMorningTradeDate() {
+  const input = $("morningReportTradeDate");
+  return (input && input.value) || state.workspaceTargetDate || todayYmd();
+}
+
+function renderWorkspaceReportPackageResult(message) {
+  const host = $("workspaceReportPackage");
+  if (!host) return;
+  const result = state.workspaceReportPackageResult;
+  if (!result) {
+    host.innerHTML = `<p class="muted">先运行盘后流程，再按交易日生成当日报告包。</p>`;
+    return;
+  }
+  if (result.error) {
+    host.innerHTML = `<div class="panel"><p style="color:#F87171;margin:0"><b>生成失败</b>：${result.error}</p></div>`;
+    return;
+  }
+  const files = Array.isArray(result.files) ? result.files : [];
+  const tradeDate = result.trade_date || selectedReportTradeDate();
+  const skillInputUrl = `/api/reports/skill-input.md?trade_date=${encodeURIComponent(tradeDate)}`;
+  host.innerHTML = `
+    <div class="panel">
+      <div style="display:flex;justify-content:space-between;gap:16px;align-items:flex-start;flex-wrap:wrap">
+        <div>
+          <p style="margin:0"><b>生成状态</b>：${fmt(result.status || "generated")}</p>
+          <p class="muted" style="margin:6px 0 0">交易日：${fmt(tradeDate)}${result.batch_id ? ` · batch_id：${result.batch_id}` : ""}</p>
+          ${message ? `<p class="muted" style="margin:6px 0 0">${message}</p>` : ""}
+        </div>
+        <div>
+          <a class="ghost" href="${skillInputUrl}" target="_blank">查看 08_skill_input.md</a>
+        </div>
+      </div>
+      <div style="margin-top:12px">
+        <div class="muted" style="margin-bottom:8px">生成文件</div>
+        <ul style="margin:0;padding-left:20px;line-height:1.8">
+          ${files.map((path) => {
+            const filename = String(path || "").split("/").pop() || "";
+            const fileUrl = `/api/reports/daily-package/file?trade_date=${encodeURIComponent(tradeDate)}&filename=${encodeURIComponent(filename)}`;
+            return `<li><a href="${fileUrl}" target="_blank">${filename}</a></li>`;
+          }).join("")}
+        </ul>
+      </div>
+    </div>`;
+}
+
+function renderWorkspaceMorningReportPackageResult(message) {
+  const host = $("workspaceMorningReportPackage");
+  if (!host) return;
+  const result = state.workspaceMorningReportPackageResult;
+  if (!result) {
+    host.innerHTML = `<p class="muted">默认按该日期回看上一个交易日的 focus/watch 清单，生成 09 和 10 两份早盘报告。</p>`;
+    return;
+  }
+  if (result.error) {
+    host.innerHTML = `<div class="panel"><p style="color:#F87171;margin:0"><b>生成失败</b>：${result.error}</p></div>`;
+    return;
+  }
+  const files = Array.isArray(result.files) ? result.files : [];
+  const tradeDate = result.trade_date || selectedMorningTradeDate();
+  const confirmUrl = `/api/reports/morning-confirm.md?trade_date=${encodeURIComponent(tradeDate)}`;
+  const skillUrl = `/api/reports/skill-morning-input.md?trade_date=${encodeURIComponent(tradeDate)}`;
+  host.innerHTML = `
+    <div class="panel">
+      <div style="display:flex;justify-content:space-between;gap:16px;align-items:flex-start;flex-wrap:wrap">
+        <div>
+          <p style="margin:0"><b>生成状态</b>：${fmt(result.status || "generated")}</p>
+          <p class="muted" style="margin:6px 0 0">交易日：${fmt(tradeDate)} · 来源盘后日：${fmt(result.source_trade_date)}</p>
+          ${message ? `<p class="muted" style="margin:6px 0 0">${message}</p>` : ""}
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <a class="ghost" href="${confirmUrl}" target="_blank">查看 09_morning_confirm.md</a>
+          <a class="ghost" href="${skillUrl}" target="_blank">查看 10_skill_morning_input.md</a>
+        </div>
+      </div>
+      <div style="margin-top:12px">
+        <div class="muted" style="margin-bottom:8px">生成文件</div>
+        <ul style="margin:0;padding-left:20px;line-height:1.8">
+          ${files.map((path) => `<li>${String(path || "").split("/").pop() || ""}</li>`).join("")}
+        </ul>
+      </div>
+    </div>`;
+}
+
 function dateMinusDays(ymd, days) {
   const d = new Date(`${ymd}T00:00:00`);
   d.setDate(d.getDate() - days);
@@ -1058,9 +1168,99 @@ window.run2560 = function(market) {
     await postJsonChecked("/api/jobs/enqueue", { job_type: "run_2560", strategy_code: "S2560", market, shards: 1, priority: 3 });
   });
 };
+
+window.startDailyWorkflowFromWorkspace = function() {
+  navigateTo("workflow");
+  setTimeout(() => {
+    if (typeof window.startWorkflow === "function") {
+      window.startWorkflow();
+    }
+  }, 100);
+};
+
+window.openLatestResultsFromWorkspace = function() {
+  navigateTo("result-workbench");
+};
+
+window.generateDailyReportPackageFromWorkspace = async function() {
+  const btn = $("dailyGenerateReportPackageBtn");
+  const tradeDate = selectedReportTradeDate();
+  if (!tradeDate) {
+    state.workspaceReportPackageResult = { error: "无法确定交易日" };
+    renderWorkspaceReportPackageResult();
+    return;
+  }
+  const originalText = btn ? btn.textContent : "";
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "生成中...";
+  }
+  try {
+    const result = await api(`/api/reports/daily-package/new?trade_date=${encodeURIComponent(tradeDate)}`, {
+      method: "POST",
+    });
+    state.workspaceReportPackageResult = result;
+    renderWorkspaceReportPackageResult(`已写入 reports/${tradeDate}/`);
+  } catch (e) {
+    state.workspaceReportPackageResult = { error: e.message, trade_date: tradeDate };
+    renderWorkspaceReportPackageResult();
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = originalText || "生成盘后报告包";
+    }
+  }
+};
+
+window.generateMorningReportPackageFromWorkspace = async function() {
+  const btn = $("dailyGenerateMorningReportBtn");
+  const tradeDate = selectedMorningTradeDate();
+  if (!tradeDate) {
+    state.workspaceMorningReportPackageResult = { error: "无法确定交易日" };
+    renderWorkspaceMorningReportPackageResult();
+    return;
+  }
+  const sourceTradeDate = previousWeekday(tradeDate);
+  const originalText = btn ? btn.textContent : "";
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "生成中...";
+  }
+  try {
+    const result = await api(
+      `/api/reports/morning-package/new?trade_date=${encodeURIComponent(tradeDate)}&source_trade_date=${encodeURIComponent(sourceTradeDate)}`,
+      { method: "POST" },
+    );
+    state.workspaceMorningReportPackageResult = result;
+    renderWorkspaceMorningReportPackageResult(`已写入 reports/${tradeDate}/`);
+  } catch (e) {
+    state.workspaceMorningReportPackageResult = {
+      error: e.message,
+      trade_date: tradeDate,
+      source_trade_date: sourceTradeDate,
+    };
+    renderWorkspaceMorningReportPackageResult();
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = originalText || "生成早盘确认报告";
+    }
+  }
+};
+
+function previousWeekday(ymd) {
+  const d = new Date(`${ymd}T00:00:00`);
+  d.setDate(d.getDate() - 1);
+  while (d.getDay() === 0 || d.getDay() === 6) {
+    d.setDate(d.getDate() - 1);
+  }
+  return d.toISOString().slice(0, 10);
+}
+
 const titles = {
   workspace: ["今日工作台", "今天数据齐了吗、缺什么、点哪里、2560跑完了吗、最后看哪几只"],
   overview: ["总览", "查看最新批次、结构完整率、标签分布与系统状态"],
+  "result-workbench": ["结果工作台", "日常看今日可看；需要追溯时切全部最新、历史信号或标注明细"],
   workflow: ["一键盘后流程", "日常盘后入口：导入、重建30m、fast 2560、观察池"],
   run: ["入库计算", "支持选择股票、全选、四类股票范围摸底计算"],
   signals: ["信号列表", "逐条查看2560结构条件、标签与解释"],
@@ -1101,6 +1301,7 @@ function navigateTo(view) {
   const phaseMap = {
     "data-update": "数据准备",
     jobs: "任务管理",
+    "result-workbench": "结果中心",
     "observation-pool": "观察池",
     latest: "分析结果",
   };
@@ -1156,6 +1357,10 @@ document.querySelectorAll(".nav-item").forEach((b) =>
   }),
 );
 $("refreshBtn").onclick = refresh;
+if ($("dailyStartWorkflowBtn")) $("dailyStartWorkflowBtn").onclick = window.startDailyWorkflowFromWorkspace;
+if ($("dailyLatestResultsBtn")) $("dailyLatestResultsBtn").onclick = window.openLatestResultsFromWorkspace;
+if ($("dailyGenerateReportPackageBtn")) $("dailyGenerateReportPackageBtn").onclick = window.generateDailyReportPackageFromWorkspace;
+if ($("dailyGenerateMorningReportBtn")) $("dailyGenerateMorningReportBtn").onclick = window.generateMorningReportPackageFromWorkspace;
 $("searchStockBtn").onclick = loadStocks;
 $("selectCurrentBtn").onclick = selectCurrentStocks;
 $("selectByFilterBtn").onclick = selectByFilterLimit;

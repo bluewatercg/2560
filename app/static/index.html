@@ -143,6 +143,41 @@
                                 <span class="muted">今日盘后工作台</span>
                             </div>
 
+                            <div class="daily-action-strip">
+                                <div>
+                                    <div class="daily-action-title">日常盘后只按这个顺序</div>
+                                    <div class="daily-action-note">先运行流程，完成后看最新结果；任务进度只在排查时进入。</div>
+                                </div>
+                                <div class="daily-action-buttons">
+                                    <button id="dailyStartWorkflowBtn" class="primary" type="button">启动一键盘后流程</button>
+                                    <button id="dailyLatestResultsBtn" class="ghost" type="button">查看最新结果</button>
+                                </div>
+                            </div>
+
+                            <div class="panel" style="margin-top:16px">
+                                <div class="panel-head split">
+                                    <h3>盘后报告包</h3>
+                                    <span class="muted">生成 reports/YYYY-MM-DD/01-08</span>
+                                </div>
+                                <div class="filters" style="margin-top:12px;align-items:center">
+                                    <input id="reportPackageTradeDate" type="date" />
+                                    <button id="dailyGenerateReportPackageBtn" class="primary" type="button">生成盘后报告包</button>
+                                </div>
+                                <div id="workspaceReportPackage" style="margin-top:16px"></div>
+                            </div>
+
+                            <div class="panel" style="margin-top:16px">
+                                <div class="panel-head split">
+                                    <h3>早盘确认报告</h3>
+                                    <span class="muted">生成 reports/YYYY-MM-DD/09-10</span>
+                                </div>
+                                <div class="filters" style="margin-top:12px;align-items:center">
+                                    <input id="morningReportTradeDate" type="date" />
+                                    <button id="dailyGenerateMorningReportBtn" class="primary" type="button">生成早盘确认报告</button>
+                                </div>
+                                <div id="workspaceMorningReportPackage" style="margin-top:16px"></div>
+                            </div>
+
                             <!-- 四市场就绪状态 -->
                             <div id="workspaceMarketCards" class="cards" style="margin-top:16px"></div>
 
@@ -440,6 +475,7 @@
             </main>
         </div>
         <script src="/static/app.js?v=menu-clean-1"></script>
+        <script src="/static/results_workbench.js?v=1"></script>
         <script src="/static/annotation2568_report.js?v=pdf1"></script>
         <script src="/static/annotation2568.js?v=abcd-final"></script>
 
