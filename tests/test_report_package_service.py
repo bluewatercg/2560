@@ -146,6 +146,14 @@ def test_after_market_package_writes_required_files_and_skill_input_without_morn
     assert [path.name for path in sorted(package_dir.iterdir())] == expected_names
     assert result["files"] == [str(package_dir / name) for name in expected_names]
 
+    daily_selection = (package_dir / "01_daily_selection.md").read_text(encoding="utf-8")
+    assert "# 【2560职业短线交易系统 v5.1】盘后复盘与候选说明" in daily_selection
+    assert "## 【5】核心候选清单" in daily_selection
+    assert "## 【6】2560准量化候选明细" in daily_selection
+    assert "### 标的：焦点A（sh.600000）" in daily_selection
+    assert "## 【7】重点候选与淘汰原因" in daily_selection
+    assert "## 【10】最终复盘结论" in daily_selection
+
     skill_input = (package_dir / "08_skill_input.md").read_text(encoding="utf-8")
     assert "## 3. focus 全维度明细" in skill_input
     assert "sh.600000" in skill_input
@@ -158,6 +166,11 @@ def test_after_market_package_writes_required_files_and_skill_input_without_morn
     assert "volume_weak" in skill_input
     assert "## 6. 数据质量提示" in skill_input
     assert "sz30" in skill_input
+    assert "## 7. 详细复盘附录" in skill_input
+    assert "### 标的：焦点A（sh.600000）" in skill_input
+    assert "### 重点候选（全部符合条件）" in skill_input
+    assert "### 淘汰原因" in skill_input
+    assert "## 【10】最终复盘结论" in skill_input
     forbidden = ["集合竞价", "竞价", "早盘", "morning_confirm", "09_morning_confirm", "10_skill_morning_input"]
     assert not any(term in skill_input for term in forbidden)
 
@@ -174,3 +187,29 @@ def test_after_market_package_writes_required_files_and_skill_input_without_morn
     field_audit = json.loads((package_dir / "07_field_audit.json").read_text(encoding="utf-8"))
     assert field_audit["fields"]["final_score"]["missing_count"] == 1
     assert field_audit["data_sources"]["daily_package"]["available"] is True
+
+
+def test_after_market_skill_input_final_conclusion_uses_focus_watch_reject_counts(tmp_path):
+    report = _sample_report()
+    report["market_model"] = {
+        **report["market_model"],
+        "executable_count": 7,
+        "watch_count": 1,
+        "rejected_count": 21,
+    }
+    report["final_advice"] = {
+        "strategy": "主线交易",
+        "open_new_position": "是",
+        "summary": "内部2560候选29只，可执行7只，观察1只，淘汰21只。",
+    }
+
+    ReportPackageService(output_root=tmp_path).generate_after_market_package(
+        trade_date="2026-06-09",
+        report=report,
+    )
+
+    skill_input = (tmp_path / "2026-06-09" / "08_skill_input.md").read_text(encoding="utf-8")
+
+    assert "| 重点候选数量 | 1 |" in skill_input
+    assert "| 一句话结论 | 复盘交易日 2026-06-09：focus 1 只，watch 1 只，reject 1 只。 |" in skill_input
+    assert "可执行7只，观察1只，淘汰21只" not in skill_input

@@ -729,6 +729,14 @@ class DailySelectionReportService:
         executable = [x for x in candidates if x["bucket"] == "可执行"]
         watchlist = [x for x in candidates if x["bucket"] == "观察"]
         rejected = [x for x in candidates if x["bucket"] == "淘汰"]
+        final_advice = self._final_advice(market_model)
+        selection_counts = _selection_status_counts(candidates)
+        final_advice["summary"] = (
+            f"内部2560候选{len(candidates)}只，"
+            f"focus{selection_counts['focus']}只，"
+            f"watch{selection_counts['watch']}只，"
+            f"reject{selection_counts['reject']}只。"
+        )
 
         report = {
             "title": "内部数据版 2560 盘后选股报告",
@@ -765,7 +773,7 @@ class DailySelectionReportService:
             "rejected": rejected,
             "volume_pullback_candidates": volume_pullback_candidates,
             "hotspot_snapshot": hotspot_snapshot,
-            "final_advice": self._final_advice(market_model),
+            "final_advice": final_advice,
         }
         report = _sanitize_public_report_payload(report)
         report["markdown"] = render_markdown_report(report)
@@ -1029,6 +1037,7 @@ def render_markdown_report(report: dict[str, Any]) -> str:
     meta = report.get("technical_metadata") or {}
     candidates = report.get("candidates") or []
     core = report.get("core_candidates") or []
+    selection_counts = _selection_status_counts(candidates)
     lines = [
         "# 【2560职业短线交易系统 v5.1】盘后复盘与候选说明",
         "",
@@ -1230,7 +1239,7 @@ def render_markdown_report(report: dict[str, Any]) -> str:
         "|------|------|",
         f"| 最终策略 | {final.get('strategy','-')} |",
         f"| 是否继续跟踪 | {final.get('open_new_position','-')} |",
-        f"| 重点候选数量 | {mm.get('executable_count', 0)} |",
+        f"| 重点候选数量 | {selection_counts['focus']} |",
         f"| 一句话结论 | {final.get('summary','-')} |",
         "",
         "## 【合规声明】",
@@ -1496,6 +1505,15 @@ def _distribution_for_key(items: list[dict[str, Any]], key: str) -> str:
         label = "-" if value in (None, "") else str(value)
         counts[label] = counts.get(label, 0) + 1
     return _format_distribution(counts)
+
+
+def _selection_status_counts(items: list[dict[str, Any]]) -> dict[str, int]:
+    counts = {"focus": 0, "watch": 0, "reject": 0}
+    for item in items:
+        status = str(item.get("selection_status") or "").lower()
+        if status in counts:
+            counts[status] += 1
+    return counts
 
 
 def _score_triplet(x: dict[str, Any]) -> str:

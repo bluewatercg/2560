@@ -31,7 +31,7 @@ class ReportPackageService:
         watch = _watch_items(report)
         rejected = _reject_items(report)
         artifacts = {
-            "01_daily_selection.md": str(report.get("markdown") or ""),
+            "01_daily_selection.md": render_after_market_daily_selection(trade_date, report, focus, watch, rejected),
             "02_focus_full_reports.md": render_focus_full_reports(trade_date, focus),
             "03_watch_lite_reports.md": render_watch_lite_reports(trade_date, watch),
             "04_scan_summary.json": _to_json(build_scan_summary(trade_date, report, focus, watch, rejected)),
@@ -210,6 +210,7 @@ def render_after_market_skill_input(
     market_model = report.get("market_model") or {}
     data_validation = report.get("data_validation") or {}
     reject_summary = build_reject_summary(trade_date, rejected)
+    detail_appendix = render_skill_input_detail_appendix(trade_date, report, focus, watch, rejected)
     lines = [
         "# 2560 盘后 Skill 输入报告",
         "",
@@ -262,7 +263,214 @@ def render_after_market_skill_input(
     lines.append(f"- missing_markets: {_join(data_validation.get('missing_markets'))}")
     lines.append(f"- unverified_items: {_join(data_validation.get('unverified_items'))}")
     lines.append(f"- data_scope: {_v(data_validation.get('data_scope'))}")
+    lines.extend(["", "## 7. 详细复盘附录", ""])
+    lines.extend(detail_appendix)
     return "\n".join(lines)
+
+
+def render_after_market_daily_selection(
+    trade_date: str,
+    report: dict[str, Any],
+    focus: list[dict[str, Any]],
+    watch: list[dict[str, Any]],
+    rejected: list[dict[str, Any]],
+) -> str:
+    existing = str(report.get("markdown") or "").strip()
+    if "# 【2560职业短线交易系统 v5.1】盘后复盘与候选说明" in existing:
+        return existing
+    return "\n".join(_daily_selection_lines(trade_date, report, focus, watch, rejected))
+
+
+def render_skill_input_detail_appendix(
+    trade_date: str,
+    report: dict[str, Any],
+    focus: list[dict[str, Any]],
+    watch: list[dict[str, Any]],
+    rejected: list[dict[str, Any]],
+) -> list[str]:
+    lines = ["### 市场复盘摘要", ""]
+    lines.extend(_market_summary_table(report, focus, watch, rejected))
+    lines.extend(["", "### 核心候选清单", ""])
+    lines.extend(_core_candidate_table(focus, watch))
+    lines.extend(["", "### 候选详细说明", ""])
+    lines.extend(_candidate_detail_sections(focus, watch))
+    lines.extend(["", "### 重点候选（全部符合条件）", ""])
+    lines.extend(_focus_bullet_summary(focus))
+    lines.extend(["", "### 淘汰原因", ""])
+    lines.extend(_reject_summary_lines(rejected))
+    lines.extend(["", "## 【10】最终复盘结论", ""])
+    lines.extend(_final_conclusion_table(report, focus, watch, rejected, trade_date))
+    return lines
+
+
+def _daily_selection_lines(
+    trade_date: str,
+    report: dict[str, Any],
+    focus: list[dict[str, Any]],
+    watch: list[dict[str, Any]],
+    rejected: list[dict[str, Any]],
+) -> list[str]:
+    technical_metadata = report.get("technical_metadata") or {}
+    data_validation = report.get("data_validation") or {}
+    market_model = report.get("market_model") or {}
+    hotspot_snapshot = report.get("hotspot_snapshot") or {}
+    lines = [
+        "# 【2560职业短线交易系统 v5.1】盘后复盘与候选说明",
+        "",
+        f"> 报告生成时间：{_v(report.get('report_time'))}",
+        "> 报告类型：内部数据版",
+        f"> Skill解析版本：{_v(technical_metadata.get('skill_parse_version') or 'daily-selection-skill-v1')}",
+        f"> 策略口径：{_v(technical_metadata.get('strategy_contract') or '2560标准候选口径')}",
+        f"> 数据截止：复盘交易日 {_v(report.get('review_trade_date') or trade_date)}",
+        f"> 观察日期：下一个A股交易日 {_v(report.get('next_trade_plan_date'))}",
+        "",
+        "## 【0】数据核验摘要",
+        "",
+        "| 项目 | 结果 |",
+        "|------|------|",
+        f"| 最新2560批次 | {_v(data_validation.get('latest_batch_id'))} |",
+        f"| 数据置信度 | {_v(data_validation.get('confidence'))} |",
+        f"| 已验证项目 | {_join(data_validation.get('verified_items'))} |",
+        f"| 无法验证项目 | {_join(data_validation.get('unverified_items'))} |",
+        f"| 数据范围 | {_v(data_validation.get('data_scope'))} |",
+        f"| 公告/研报策略 | {_v(technical_metadata.get('announcement_policy') or '默认禁止逐票联网公告/研报调用')} |",
+        "",
+        "## 【1】市场量化模型",
+        "",
+        "| 指标 | 数值 | 依据 |",
+        "|------|------|------|",
+        f"| 风险状态 | {_v(market_model.get('risk_state'))} | 内部候选与淘汰比例 |",
+        f"| 2560候选数量 | {market_model.get('signal_count', len(focus) + len(watch) + len(rejected))} | 最新 selected_signal |",
+        f"| focus/watch/reject | {len(focus)} / {len(watch)} / {len(rejected)} | 候选分层 |",
+        f"| 买点类型分布 | {_format_distribution(market_model.get('buy_point_type_counts') or {})} | 日线MAVOL5/60节奏 |",
+        f"| 市场分布 | {_format_distribution(market_model.get('market_distribution') or {})} | 代码前缀 |",
+        "",
+        "## 【2】今日热点主线",
+        "",
+        "| 项目 | 结果 |",
+        "|------|------|",
+        f"| 热点摘要 | {_v(hotspot_snapshot.get('hotspot_summary') or '热点主线未验证')} |",
+        f"| 主导市场状态 | {_v(_dominant_value(focus + watch, 'market_state'))} |",
+        "",
+        "## 【5】核心候选清单",
+        "",
+    ]
+    lines.extend(_core_candidate_table(focus, watch))
+    lines.extend(["", "## 【6】2560准量化候选明细", ""])
+    lines.extend(_candidate_detail_sections(focus, watch))
+    lines.extend(["", "## 【7】重点候选与淘汰原因", "", "### 重点候选（全部符合条件）", ""])
+    lines.extend(_focus_bullet_summary(focus))
+    lines.extend(["", "### 淘汰原因", ""])
+    lines.extend(_reject_summary_lines(rejected))
+    lines.extend(["", "## 【10】最终复盘结论", ""])
+    lines.extend(_final_conclusion_table(report, focus, watch, rejected, trade_date))
+    lines.extend(["", "## 【合规声明】", "", "本报告仅用于盘后复盘与下一观察日条件核验。"])
+    return lines
+
+
+def _market_summary_table(
+    report: dict[str, Any],
+    focus: list[dict[str, Any]],
+    watch: list[dict[str, Any]],
+    rejected: list[dict[str, Any]],
+) -> list[str]:
+    market_model = report.get("market_model") or {}
+    hotspot_snapshot = report.get("hotspot_snapshot") or {}
+    return [
+        "| 项目 | 结果 |",
+        "|------|------|",
+        f"| 风险状态 | {_v(market_model.get('risk_state'))} |",
+        f"| focus/watch/reject | {len(focus)} / {len(watch)} / {len(rejected)} |",
+        f"| 主导市场状态 | {_v(_dominant_value(focus + watch, 'market_state'))} |",
+        f"| 热点摘要 | {_v(hotspot_snapshot.get('hotspot_summary'))} |",
+    ]
+
+
+def _core_candidate_table(focus: list[dict[str, Any]], watch: list[dict[str, Any]]) -> list[str]:
+    rows = focus + watch
+    if not rows:
+        return ["无候选标的。"]
+    lines = [
+        "| 代码 | 名称 | selection_status | final_score | recent_3d_pct | explode_status | hot_topic_strength | position_in_hot_topic | 报告判断 |",
+        "|------|------|------------------|-------------|---------------|----------------|--------------------|-----------------------|----------|",
+    ]
+    for item in rows:
+        lines.append(
+            f"| {_v(item.get('code'))} | {_v(item.get('name'))} | {_status_label(item)} | "
+            f"{_fmt_num(item.get('final_score'))} | {_fmt_num(item.get('recent_3d_pct') or item.get('recent_3day_gain_pct'))} | "
+            f"{_v(item.get('explode_status'))} | {_v(item.get('hot_topic_strength'))} | "
+            f"{_v(item.get('position_in_hot_topic'))} | {_v(item.get('report_action_label') or item.get('logic'))} |"
+        )
+    return lines
+
+
+def _candidate_detail_sections(focus: list[dict[str, Any]], watch: list[dict[str, Any]]) -> list[str]:
+    rows = focus + watch
+    if not rows:
+        return ["无候选详细说明。"]
+    lines: list[str] = []
+    for item in rows:
+        lines.extend(
+            [
+                f"### 标的：{_v(item.get('name'))}（{_v(item.get('code'))}）",
+                "",
+                "| 项目 | 内容 |",
+                "|------|------|",
+                f"| 2560状态 | {_v(item.get('structure_status'))} |",
+                f"| 策略评估状态 | {_status_label(item)} |",
+                f"| 策略总分 | {_fmt_num(item.get('final_score'))} |",
+                f"| 买点类型 | {_v(item.get('buy_point_type'))} |",
+                f"| 近3日涨幅 / 起爆状态 | {_fmt_num(item.get('recent_3d_pct') or item.get('recent_3day_gain_pct'))} / {_v(item.get('explode_status'))} |",
+                f"| 市场环境 / 环境分 | {_v(item.get('market_state'))} / {_fmt_num(item.get('environment_score'))} |",
+                f"| 题材强度 / 题材地位 | {_v(item.get('hot_topic_strength'))} / {_v(item.get('position_in_hot_topic'))} |",
+                f"| 收盘价 / 25日线 | {_fmt_num(item.get('close'))} / {_fmt_num(item.get('ma25'))} |",
+                f"| 25日线位置% | {_fmt_num(item.get('price_ma25_deviation_pct'))} |",
+                f"| 5日均量线 / 60日均量线 | {_fmt_num(item.get('vol_ma5'), 0)} / {_fmt_num(item.get('vol_ma60'), 0)} |",
+                f"| 5量>60量 | {_fmt_bool(item.get('vol_ma5_gt_vol_ma60'))} |",
+                f"| 风险标签 | {_v(item.get('risk_tags') or item.get('missing_tags_detail'))} |",
+                f"| 候选类型 | {_v(item.get('trade_type') or item.get('selection_status'))} |",
+                f"| 逻辑 | {_v(item.get('logic'))} |",
+                "",
+            ]
+        )
+    if lines and lines[-1] == "":
+        lines.pop()
+    return lines
+
+
+def _focus_bullet_summary(focus: list[dict[str, Any]]) -> list[str]:
+    if not focus:
+        return ["无符合条件的重点候选。"]
+    return [f"- {_v(item.get('code'))} {_v(item.get('name'))}：{_v(item.get('logic'))}" for item in focus]
+
+
+def _reject_summary_lines(rejected: list[dict[str, Any]]) -> list[str]:
+    if not rejected:
+        return ["- 无"]
+    return [
+        f"- {_v(item.get('code'))} {_v(item.get('name'))}：{_v(item.get('reject_reason') or item.get('logic') or item.get('missing_tags_detail'))}"
+        for item in rejected
+    ]
+
+
+def _final_conclusion_table(
+    report: dict[str, Any],
+    focus: list[dict[str, Any]],
+    watch: list[dict[str, Any]],
+    rejected: list[dict[str, Any]],
+    trade_date: str,
+) -> list[str]:
+    market_model = report.get("market_model") or {}
+    final_advice = report.get("final_advice") or {}
+    summary = f"复盘交易日 {trade_date}：focus {len(focus)} 只，watch {len(watch)} 只，reject {len(rejected)} 只。"
+    return [
+        "| 项目 | 结论 |",
+        "|------|------|",
+        f"| 最终策略 | {_v(final_advice.get('strategy') or market_model.get('risk_state') or '观察筛选')} |",
+        f"| 是否继续跟踪 | {_v(final_advice.get('open_new_position') or ('是' if focus or watch else '否'))} |",
+        f"| 重点候选数量 | {len(focus)} |",
+        f"| 一句话结论 | {_v(summary)} |",
+    ]
 
 
 def _focus_detail_block(item: dict[str, Any]) -> list[str]:
@@ -346,6 +554,12 @@ def _score_sort_key(item: dict[str, Any]) -> tuple[float, str]:
 
 def _risk_summary(item: dict[str, Any]) -> str:
     return _v(item.get("risk_tags") or item.get("reject_reason") or item.get("missing_tags_detail") or item.get("logic"))
+
+
+def _format_distribution(dist: dict[str, int]) -> str:
+    if not dist:
+        return "-"
+    return " / ".join(f"{_v(key)}:{value}" for key, value in dist.items())
 
 
 def _fmt_num(value: Any, digits: int = 2) -> str:
