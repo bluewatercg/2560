@@ -20,6 +20,10 @@ from app.services.config_service import ConfigService
 from app.services.tag_service import build_tags, explain_text, structure_status
 
 
+def _quote(value: str) -> str:
+    return "'" + str(value).replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+
 class SignalEngine2560Fast:
     """ClickHouse-first daily 2560 scanner.
 
