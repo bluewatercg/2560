@@ -3,6 +3,27 @@ from sqlalchemy import text
 from app.core.market_scope import SUPPORTED_MARKET_SCOPES, market_sql_where
 from app.db.clickhouse import get_clickhouse
 
+
+NORMALIZED_ANALYSIS_CODE_SQL = (
+    "CASE "
+    "WHEN LOWER(a.code) LIKE 'sz.%' OR LOWER(a.code) LIKE 'sh.%' THEN SUBSTR(a.code, 4) "
+    "WHEN LOWER(a.code) LIKE 'sz%' OR LOWER(a.code) LIKE 'sh%' THEN SUBSTR(a.code, 3) "
+    "ELSE a.code END"
+)
+
+
+def normalize_signal_code(raw):
+    if raw is None:
+        return ""
+    s = str(raw).strip().lower().replace("-", "").replace("_", "")
+    if s.startswith("sz.") or s.startswith("sh."):
+        s = s[3:]
+    elif s.startswith("sz") or s.startswith("sh"):
+        s = s[2:]
+    digits = "".join(ch for ch in s if ch.isdigit())
+    return digits[-6:] if len(digits) >= 6 else digits
+
+
 def rows(result):
     return [dict(r._mapping) for r in result]
 
@@ -18,7 +39,11 @@ class Strategy2560Service:
         return {'latest_batch': dict(lb) if lb else None, 'summary': dict(s) if s else {}, 'tag_distribution': t}
     def list_signals(self, page=1, page_size=50, code=None, structure_status=None, tag=None, batch_id=None, selected_signal=None):
         where=[]; p={'limit': page_size, 'offset': (page-1)*page_size}
-        if code: where.append('a.code=:code'); p['code']=code
+        if code:
+            normalized_code = normalize_signal_code(code)
+            where.append(f"(a.code=:code OR {NORMALIZED_ANALYSIS_CODE_SQL}=:normalized_code)")
+            p['code']=code
+            p['normalized_code']=normalized_code or code
         if structure_status: where.append('a.structure_status=:st'); p['st']=structure_status
         if batch_id: where.append('a.batch_id=:batch_id'); p['batch_id']=batch_id
         if selected_signal is not None: where.append('a.selected_signal=:selected_signal'); p['selected_signal']=selected_signal
