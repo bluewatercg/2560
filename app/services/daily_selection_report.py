@@ -735,7 +735,7 @@ class DailySelectionReportService:
             f"内部2560候选{len(candidates)}只，"
             f"focus{selection_counts['focus']}只，"
             f"watch{selection_counts['watch']}只，"
-            f"reject{selection_counts['reject']}只。"
+            f"reject{len(rejected)}只。"
         )
 
         report = {

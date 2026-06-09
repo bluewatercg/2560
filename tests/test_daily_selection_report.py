@@ -726,6 +726,34 @@ def test_markdown_report_renders_internal_a_b_scope_without_external_claims():
     assert "是否开新仓" not in markdown
 
 
+def test_markdown_report_final_summary_uses_rendered_reject_count():
+    report = {
+        "report_time": "2026-06-09 18:00:00",
+        "review_trade_date": "2026-06-09",
+        "next_trade_plan_date": "2026-06-10",
+        "technical_metadata": {},
+        "data_validation": {"latest_batch_id": "20260609", "confidence": "高", "verified_items": [], "unverified_items": [], "data_scope": "内部数据版"},
+        "market_model": {"temperature": 60, "risk_state": "风险可控", "signal_count": 29, "executable_count": 7, "watch_count": 1, "rejected_count": 21},
+        "hotspot_snapshot": {},
+        "candidates": [{"selection_status": "reject"} for _ in range(29)],
+        "core_candidates": [],
+        "executable": [],
+        "watchlist": [],
+        "rejected": [{"code": f"sh.6000{i:02d}", "name": f"样例{i}", "reject_reason": "测试原因"} for i in range(21)],
+        "final_advice": {
+            "strategy": "主线交易",
+            "open_new_position": "是",
+            "summary": "内部2560候选29只，focus0只，watch0只，reject21只。",
+        },
+    }
+
+    markdown = render_markdown_report(report)
+
+    assert "| 重点候选数量 | 0 |" in markdown
+    assert "| 一句话结论 | 内部2560候选29只，focus0只，watch0只，reject21只。 |" in markdown
+    assert "reject29只" not in markdown
+
+
 def test_internal_market_model_counts_buckets_and_distribution():
     candidates = [
         {"code": "sh.600000", "bucket": "可执行", "structure_status": "结构完整"},
