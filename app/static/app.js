@@ -252,6 +252,7 @@ function renderWorkspace(data) {
   }
   renderWorkspaceReportPackageResult();
   renderWorkspaceMorningReportPackageResult();
+  window.restoreWorkspaceReportPackages();
 
   // 四市场卡片
   const mr = data.market_readiness || [];
@@ -1055,6 +1056,15 @@ function selectedMorningTradeDate() {
   return (input && input.value) || state.workspaceTargetDate || todayYmd();
 }
 
+async function reportFileExists(url) {
+  try {
+    const response = await fetch(url);
+    return response.ok;
+  } catch (e) {
+    return false;
+  }
+}
+
 function renderWorkspaceReportPackageResult(message) {
   const host = $("workspaceReportPackage");
   if (!host) return;
@@ -1132,6 +1142,52 @@ function renderWorkspaceMorningReportPackageResult(message) {
       </div>
     </div>`;
 }
+
+async function restoreExistingDailyReportPackage(tradeDate) {
+  const skillInputUrl = `/api/reports/skill-input.md?trade_date=${encodeURIComponent(tradeDate)}`;
+  if (!await reportFileExists(skillInputUrl)) return false;
+  state.workspaceReportPackageResult = {
+    status: "generated",
+    trade_date: tradeDate,
+    files: [
+      "01_daily_selection.md",
+      "02_focus_full_reports.md",
+      "03_watch_lite_reports.md",
+      "04_scan_summary.json",
+      "05_focus_watch_list.json",
+      "06_reject_summary.json",
+      "07_field_audit.json",
+      "08_skill_input.md",
+    ].map((filename) => `reports/${tradeDate}/${filename}`),
+  };
+  renderWorkspaceReportPackageResult("已检测到现有报告包");
+  return true;
+}
+
+async function restoreExistingMorningReportPackage(tradeDate) {
+  const confirmUrl = `/api/reports/morning-confirm.md?trade_date=${encodeURIComponent(tradeDate)}`;
+  if (!await reportFileExists(confirmUrl)) return false;
+  state.workspaceMorningReportPackageResult = {
+    status: "generated",
+    trade_date: tradeDate,
+    source_trade_date: previousWeekday(tradeDate),
+    files: [
+      "09_morning_confirm.md",
+      "10_skill_morning_input.md",
+    ].map((filename) => `reports/${tradeDate}/${filename}`),
+  };
+  renderWorkspaceMorningReportPackageResult("已检测到现有早盘报告");
+  return true;
+}
+
+window.restoreWorkspaceReportPackages = async function() {
+  if (!state.workspaceReportPackageResult) {
+    await restoreExistingDailyReportPackage(selectedReportTradeDate());
+  }
+  if (!state.workspaceMorningReportPackageResult) {
+    await restoreExistingMorningReportPackage(selectedMorningTradeDate());
+  }
+};
 
 function dateMinusDays(ymd, days) {
   const d = new Date(`${ymd}T00:00:00`);
@@ -1361,6 +1417,16 @@ if ($("dailyStartWorkflowBtn")) $("dailyStartWorkflowBtn").onclick = window.star
 if ($("dailyLatestResultsBtn")) $("dailyLatestResultsBtn").onclick = window.openLatestResultsFromWorkspace;
 if ($("dailyGenerateReportPackageBtn")) $("dailyGenerateReportPackageBtn").onclick = window.generateDailyReportPackageFromWorkspace;
 if ($("dailyGenerateMorningReportBtn")) $("dailyGenerateMorningReportBtn").onclick = window.generateMorningReportPackageFromWorkspace;
+if ($("reportPackageTradeDate")) $("reportPackageTradeDate").onchange = () => {
+  state.workspaceReportPackageResult = null;
+  renderWorkspaceReportPackageResult();
+  window.restoreWorkspaceReportPackages();
+};
+if ($("morningReportTradeDate")) $("morningReportTradeDate").onchange = () => {
+  state.workspaceMorningReportPackageResult = null;
+  renderWorkspaceMorningReportPackageResult();
+  window.restoreWorkspaceReportPackages();
+};
 $("searchStockBtn").onclick = loadStocks;
 $("selectCurrentBtn").onclick = selectCurrentStocks;
 $("selectByFilterBtn").onclick = selectByFilterLimit;

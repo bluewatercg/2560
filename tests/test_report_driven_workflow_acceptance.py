@@ -549,7 +549,9 @@ def test_workspace_page_exposes_after_market_report_package_controls():
     assert 'id="workspaceReportPackage"' in index_html
 
     assert "window.generateDailyReportPackageFromWorkspace" in app_js
+    assert "window.restoreWorkspaceReportPackages" in app_js
     assert "/api/reports/daily-package/new?trade_date=" in app_js
+    assert "/api/reports/daily-package/file?trade_date=" in app_js
     assert "/api/reports/skill-input.md?trade_date=" in app_js
 
 
@@ -565,3 +567,4 @@ def test_workspace_page_exposes_morning_report_package_controls():
     assert "/api/reports/morning-package/new?trade_date=" in app_js
     assert "/api/reports/morning-confirm.md?trade_date=" in app_js
     assert "/api/reports/skill-morning-input.md?trade_date=" in app_js
+    assert "restoreExistingMorningReportPackage" in app_js
