@@ -547,12 +547,19 @@ def test_workspace_page_exposes_after_market_report_package_controls():
     assert 'id="dailyGenerateReportPackageBtn"' in index_html
     assert 'id="reportPackageTradeDate"' in index_html
     assert 'id="workspaceReportPackage"' in index_html
+    assert "盘后报告工作区" in index_html
+    assert "先生成盘后报告与早盘确认，再进入结果工作台追溯明细。" in index_html
+    assert "打开结果工作台" in index_html
 
     assert "window.generateDailyReportPackageFromWorkspace" in app_js
     assert "window.restoreWorkspaceReportPackages" in app_js
     assert "/api/reports/daily-package/new?trade_date=" in app_js
     assert "/api/reports/daily-package/file?trade_date=" in app_js
     assert "/api/reports/skill-input.md?trade_date=" in app_js
+    assert "先生成盘后流程报告，再按交易日查看当日报告包。" in app_js
+    assert "已检测到现有报告工作区文件" in app_js
+    assert "打开结果工作台" in app_js
+    assert "查看最新结果" not in index_html
 
 
 def test_workspace_page_exposes_morning_report_package_controls():
@@ -568,3 +575,4 @@ def test_workspace_page_exposes_morning_report_package_controls():
     assert "/api/reports/morning-confirm.md?trade_date=" in app_js
     assert "/api/reports/skill-morning-input.md?trade_date=" in app_js
     assert "restoreExistingMorningReportPackage" in app_js
+    assert "已检测到现有早盘确认文件" in app_js

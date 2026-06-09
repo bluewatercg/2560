@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from app.core.market_scope import market_sql_where
 from app.db.clickhouse import get_clickhouse
 from app.db.repository import KlineRepository
+from app.services.canonical_signal_engine import build_canonical_fields_from_legacy_signal
 from app.services.config_service import ConfigService
 from app.services.tag_service import build_tags, explain_text, structure_status
 
@@ -44,6 +45,7 @@ class SignalEngine2560Fast:
         where = market_sql_where("code", market)
         threshold = float(cfg.get("pullback_threshold_pct", 2.0))
         min_volume = float(cfg.get("min_volume_ratio", 1.0))
+        volume_cross_ratio = float(cfg.get("volume_cross_confirm_ratio", min_volume))
         slope_threshold = float(cfg.get("ma_slope_medium_threshold", 0.0))
         atr_weak_ratio = float(cfg.get("atr_weak_ratio", 0.85))
         breakout_threshold = float(cfg.get("breakout_threshold", 1.0))
@@ -67,13 +69,14 @@ WITH
             avg(close) OVER w25 AS ma25,
             avg(volume) OVER w5 AS vol_ma5,
             avg(volume) OVER w60 AS vol_ma60,
+            (avg(volume) OVER w5) > (avg(volume) OVER w60) AS vol_ma5_cross_vol_ma60,
             avg(close) OVER w25_prev AS ma25_prev3,
             max(high) OVER w20 AS high_20,
             ((high - low) / nullIf(close, 0)) * 100 AS amplitude
         FROM m30_src
         WINDOW
             w5 AS (PARTITION BY code ORDER BY date ROWS BETWEEN 4 PRECEDING AND CURRENT ROW),
-            w20 AS (PARTITION BY code ORDER BY date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW),
+            w20 AS (PARTITION BY code ORDER BY date ROWS BETWEEN 20 PRECEDING AND 1 PRECEDING),
             w25 AS (PARTITION BY code ORDER BY date ROWS BETWEEN 24 PRECEDING AND CURRENT ROW),
             w25_prev AS (PARTITION BY code ORDER BY date ROWS BETWEEN 27 PRECEDING AND 3 PRECEDING),
             w60 AS (PARTITION BY code ORDER BY date ROWS BETWEEN 59 PRECEDING AND CURRENT ROW)
@@ -156,13 +159,13 @@ SELECT
     m.source AS source,
     abs(m.price_ma25_deviation_pct) <= {threshold} AS price_near_ma25,
     m.ma25_slope_3 >= {slope_threshold} AS ma25_slope_ok,
-    (m.vol_ratio >= {min_volume}) AS volume_structure_ok,
+    (m.vol_ratio >= {min_volume} OR (m.vol_ma5_cross_vol_ma60 = 1 AND m.vol_ratio >= {volume_cross_ratio})) AS volume_structure_ok,
     (NOT m.is_abnormal_bar) AS abnormal_filter_ok,
     d.daily_close > d.daily_ma AS trend_price_ok,
     d.daily_slope > {slope_threshold} AS trend_slope_ok,
     d.atr14 > d.atr20_avg * {atr_weak_ratio} AS volatility_ok,
     m.close > m.high_20 * {breakout_threshold} AS breakout_ok,
-    (m.vol_ratio >= {min_volume}) AS volume_ok,
+    (m.vol_ratio >= {min_volume} OR (m.vol_ma5_cross_vol_ma60 = 1 AND m.vol_ratio >= {volume_cross_ratio})) AS volume_ok,
     m.close >= m.high_20 * {resistance_threshold} AS near_resistance,
     (f.last_5m_close >= f.ma25_approx OR abs((f.last_5m_close - f.ma25_approx) / nullIf(f.ma25_approx, 0) * 100) <= {threshold}) AS pullback_ok,
     f.has_bullish AS bullish_confirm,
@@ -174,12 +177,84 @@ INNER JOIN daily_latest d ON d.code=m.code
 LEFT JOIN m5_recent f ON f.code=m.code
 WHERE abs(m.price_ma25_deviation_pct) <= {threshold}
   AND m.ma25_slope_3 >= {slope_threshold}
-  AND m.vol_ratio >= {min_volume}
+  AND (m.vol_ratio >= {min_volume} OR (m.vol_ma5_cross_vol_ma60 = 1 AND m.vol_ratio >= {volume_cross_ratio}))
   AND NOT m.is_abnormal_bar
   AND d.daily_close > d.daily_ma
   AND d.daily_slope > {slope_threshold}
 ORDER BY m.date DESC, m.code
 """
+
+    def _load_signal_window_rows(self, codes: list[str], trade_date: str) -> list[dict[str, Any]]:
+        if not codes:
+            return []
+        quoted_codes = ",".join(_quote(code) for code in codes)
+        return get_clickhouse().query(
+            f"""
+            SELECT
+                m.code AS code,
+                toString(m.date) AS date,
+                m.open AS open,
+                m.close AS close,
+                t.ma25 AS ma25,
+                t.price_ma25_deviation_pct AS price_ma25_deviation_pct
+            FROM minute_kline_period m
+            LEFT JOIN technical_indicator t
+              ON t.code = m.code
+             AND t.period = '5m'
+             AND t.date = m.date
+            WHERE m.period='5m'
+              AND m.code IN ({quoted_codes})
+              AND m.date >= toDateTime('{trade_date} 00:00:00')
+              AND m.date < toDateTime('{trade_date} 23:59:59') + INTERVAL 1 SECOND
+            ORDER BY m.code, m.date
+            """
+        )
+
+    def _apply_signal_window_confirmation(
+        self,
+        rows: list[dict[str, Any]],
+        minute_rows: list[dict[str, Any]],
+        cfg: dict[str, Any],
+    ) -> None:
+        threshold = float(cfg.get("pullback_threshold_pct", 2.0))
+        confirm_bars = int(cfg.get("confirm_5m_bars", 6))
+        by_code: dict[str, list[dict[str, Any]]] = {}
+        for minute in minute_rows:
+            code = str(minute.get("code") or "")
+            if not code:
+                continue
+            by_code.setdefault(code, []).append(minute)
+        for window_rows in by_code.values():
+            window_rows.sort(key=lambda item: str(item.get("date") or ""))
+
+        for row in rows:
+            code = str(row.get("code") or "")
+            signal_time = str(row.get("signal_time") or "")
+            history = [
+                item for item in by_code.get(code, [])
+                if str(item.get("date") or "") < signal_time
+            ][-confirm_bars:]
+            if not history:
+                row["pullback_ok"] = False
+                row["bullish_confirm"] = False
+                continue
+            last = history[-1]
+            ma25 = last.get("ma25")
+            deviation = last.get("price_ma25_deviation_pct")
+            close = last.get("close")
+            pullback_ok = False
+            if ma25 not in (None, "") and close not in (None, ""):
+                pullback_ok = float(close) >= float(ma25)
+            if not pullback_ok and deviation not in (None, ""):
+                pullback_ok = abs(float(deviation)) <= threshold
+            bullish_confirm = any(
+                item.get("close") not in (None, "")
+                and item.get("open") not in (None, "")
+                and float(item["close"]) > float(item["open"])
+                for item in history[-2:]
+            )
+            row["pullback_ok"] = bool(pullback_ok)
+            row["bullish_confirm"] = bool(bullish_confirm)
 
     def _load_stock_names(self, codes: list[str]) -> dict[str, str | None]:
         if not codes:
@@ -227,6 +302,13 @@ ORDER BY m.date DESC, m.code
             "missing_tag_count": 0,
             "explain_text": "",
         }
+        canonical_context = {
+            "market_state": "unknown",
+            "environment_score": 0.4,
+            "hot_topic_strength": "none",
+            "position_in_hot_topic": "edge",
+        }
+        row.update(build_canonical_fields_from_legacy_signal(row, r, canonical_context, cfg))
         tags = build_tags(row)
         row["structure_status"] = structure_status(tags)
         row["missing_tags"] = json.dumps([t["tag_name"] for t in tags], ensure_ascii=False)
@@ -311,6 +393,11 @@ ORDER BY m.date DESC, m.code
 
         t0 = time.time()
         rows = get_clickhouse().query(self._candidate_sql(market, trade_date, cfg, limit_codes))
+        self._apply_signal_window_confirmation(
+            rows,
+            self._load_signal_window_rows([r["code"] for r in rows], trade_date),
+            cfg,
+        )
         names = self._load_stock_names([r["code"] for r in rows])
         write_batch_size = max(1, int(os.getenv("FAST_2560_WRITE_BATCH_SIZE", "250")))
         pending: list[dict[str, Any]] = []

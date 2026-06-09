@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from app.db.clickhouse import get_clickhouse
+from app.db.repository import KlineRepository
 from app.services.config_service import ConfigService
 from app.services.morning_confirm_engine import build_morning_confirm_rows
 from app.services.morning_confirm_report import render_morning_report_package
@@ -68,9 +69,17 @@ class MorningReportPackageService:
 
     def _load_yesterday_candidates(self, source_trade_date: str) -> list[dict[str, Any]]:
         path = self.output_root / source_trade_date / "05_focus_watch_list.json"
-        if not path.is_file():
-            raise FileNotFoundError(f"focus/watch package not found: {path}")
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        if path.is_file():
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            return _normalize_candidate_payload(payload)
+
+        candidates = KlineRepository(self.db).list_latest_focus_watch_candidates()
+        if candidates:
+            return _normalize_candidate_payload(candidates)
+        raise FileNotFoundError(f"focus/watch package not found: {path}")
+
+
+def _normalize_candidate_payload(payload: Any) -> list[dict[str, Any]]:
         if isinstance(payload, dict):
             items = payload.get("items") or []
         elif isinstance(payload, list):

@@ -6,6 +6,7 @@ from typing import Optional
 import pandas as pd
 from app.db.repository import KlineRepository
 from app.services.config_service import ConfigService
+from app.services.canonical_signal_engine import build_canonical_fields_from_legacy_signal, legacy_volume_structure_ok
 from app.services.indicator_engine import enrich_indicators, to_indicator_rows
 from app.services.tag_service import build_tags, structure_status, explain_text
 
@@ -72,7 +73,8 @@ class SignalEngine2560:
     def confirm5(self, m5_i: pd.DataFrame, signal_time: int, cfg: dict):
         if m5_i.empty:
             return False, False
-        window = m5_i[m5_i['date'] <= signal_time].tail(6)
+        confirm_bars = int(cfg.get('confirm_5m_bars', 6))
+        window = m5_i[m5_i['date'] < signal_time].tail(confirm_bars)
         if window.empty:
             return False, False
         last = window.iloc[-1]
@@ -96,7 +98,7 @@ class SignalEngine2560:
                 continue
             price_near = abs(r.get('price_ma25_deviation_pct', 999)) <= threshold
             slope_ok = (r.get('ma25_slope_3') if pd.notna(r.get('ma25_slope_3')) else -999) >= slope_threshold
-            volume_ok = (r.get('vol_ratio') if pd.notna(r.get('vol_ratio')) else 0) >= min_volume or r.get('vol_ma5_cross_vol_ma60') == 1
+            volume_ok = legacy_volume_structure_ok(dict(r), cfg, base_ratio=min_volume)
             abnormal_ok = r.get('is_abnormal_bar', 1) == 0
             if not (price_near and slope_ok and volume_ok and abnormal_ok):
                 continue
@@ -114,6 +116,8 @@ class SignalEngine2560:
             breakout = bool(pd.notna(r.get('high_20')) and r['close'] > r['high_20'] * float(cfg.get('breakout_threshold', 1.0)))
             near = bool(pd.notna(r.get('high_20')) and r['close'] >= r['high_20'] * float(cfg.get('resistance_threshold', 0.95)))
             row = {'signal_uid': self.uid(code, signal_time, '30m'), 'batch_id': batch_id, 'strategy_code': 'S2560', 'strategy_version': self.strategy_version, 'code': code, 'name': info.get('name'), 'signal_time': signal_time, 'signal_period': '30m', 'price': float(r['close']), 'source': source or r.get('source'), 'stock_status': 'NORMAL', 'has_2560_signal': 1, 'price_near_ma25': int(price_near), 'ma25_slope_ok': int(slope_ok), 'volume_structure_ok': int(volume_ok), 'abnormal_filter_ok': int(abnormal_ok), 'trend_price_ok': int(trend_price), 'trend_slope_ok': int(trend_slope), 'volatility_ok': int(volatility), 'breakout_ok': int(breakout), 'volume_ok': int(volume_ok), 'near_resistance': int(near), 'pullback_ok': int(pullback), 'bullish_confirm': int(bullish), 'data_quality_status': data_quality, 'is_duplicate_signal': 0, 'selected_signal': 1, 'structure_status': '', 'strength_score_raw': 0, 'missing_tags': '', 'missing_tag_count': 0, 'explain_text': ''}
+            canonical_context = {'market_state': 'unknown', 'environment_score': 0.4, 'hot_topic_strength': 'none', 'position_in_hot_topic': 'edge'}
+            row.update(build_canonical_fields_from_legacy_signal(row, dict(r), canonical_context, cfg))
             tags = build_tags(row)
             row['structure_status'] = structure_status(tags)
             row['missing_tags'] = json.dumps([t['tag_name'] for t in tags])

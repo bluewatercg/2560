@@ -26,6 +26,7 @@ def _load_service_module():
             "app",
             "app.db",
             "app.db.clickhouse",
+            "app.db.repository",
             "app.services",
             "app.services.config_service",
             "app.services.strategy2560_constants",
@@ -37,6 +38,14 @@ def _load_service_module():
     app.__path__ = []
     db = types.ModuleType("app.db")
     db.__path__ = []
+    repository = types.ModuleType("app.db.repository")
+    class _KlineRepository:
+        def __init__(self, _db):
+            self.db = _db
+
+        def list_latest_focus_watch_candidates(self):
+            return []
+    repository.KlineRepository = _KlineRepository
     services = types.ModuleType("app.services")
     services.__path__ = []
     clickhouse = types.ModuleType("app.db.clickhouse")
@@ -55,6 +64,7 @@ def _load_service_module():
     sys.modules["app"] = app
     sys.modules["app.db"] = db
     sys.modules["app.db.clickhouse"] = clickhouse
+    sys.modules["app.db.repository"] = repository
     sys.modules["app.services"] = services
     sys.modules["app.services.config_service"] = config_service
 
@@ -109,6 +119,17 @@ class _FakeConfigService:
         }
 
 
+class _FakeRepository:
+    def __init__(self, _db):
+        self.db = _db
+
+    def list_latest_focus_watch_candidates(self):
+        return [
+            {"code": "sh.600000", "name": "浦发银行", "selection_status": "focus"},
+            {"code": "sz.000001", "name": "平安银行", "selection_status": "watch"},
+        ]
+
+
 def test_morning_report_package_service_generates_09_and_10_from_previous_package(
     tmp_path: Path,
     monkeypatch,
@@ -154,3 +175,24 @@ def test_morning_report_package_service_generates_09_and_10_from_previous_packag
     assert "# 2560 早盘 Skill 输入报告" in skill
     assert "- high: sh.600000 浦发银行" in skill
     assert "- hold: sz.000001 平安银行" in skill
+
+
+def test_morning_report_package_service_falls_back_to_repository_candidates_when_file_missing(
+    tmp_path: Path,
+    monkeypatch,
+):
+    monkeypatch.setattr(morning_report_package_service, "get_clickhouse", lambda: _FakeClickHouse())
+    monkeypatch.setattr(morning_report_package_service, "ConfigService", _FakeConfigService)
+    monkeypatch.setattr(morning_report_package_service, "KlineRepository", _FakeRepository)
+
+    result = MorningReportPackageService(db=object(), output_root=tmp_path).generate_morning_package(
+        trade_date="2026-06-10",
+        source_trade_date="2026-06-09",
+    )
+
+    target_dir = tmp_path / "2026-06-10"
+    confirm = (target_dir / "09_morning_confirm.md").read_text(encoding="utf-8")
+
+    assert result["status"] == "generated"
+    assert "sh.600000 | 浦发银行 | focus | high" in confirm
+    assert "sz.000001 | 平安银行 | watch | hold" in confirm

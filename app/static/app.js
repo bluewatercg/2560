@@ -1070,7 +1070,7 @@ function renderWorkspaceReportPackageResult(message) {
   if (!host) return;
   const result = state.workspaceReportPackageResult;
   if (!result) {
-    host.innerHTML = `<p class="muted">先运行盘后流程，再按交易日生成当日报告包。</p>`;
+    host.innerHTML = `<p class="muted">先生成盘后流程报告，再按交易日查看当日报告包。</p>`;
     return;
   }
   if (result.error) {
@@ -1160,7 +1160,7 @@ async function restoreExistingDailyReportPackage(tradeDate) {
       "08_skill_input.md",
     ].map((filename) => `reports/${tradeDate}/${filename}`),
   };
-  renderWorkspaceReportPackageResult("已检测到现有报告包");
+  renderWorkspaceReportPackageResult("已检测到现有报告工作区文件");
   return true;
 }
 
@@ -1176,7 +1176,7 @@ async function restoreExistingMorningReportPackage(tradeDate) {
       "10_skill_morning_input.md",
     ].map((filename) => `reports/${tradeDate}/${filename}`),
   };
-  renderWorkspaceMorningReportPackageResult("已检测到现有早盘报告");
+  renderWorkspaceMorningReportPackageResult("已检测到现有早盘确认文件");
   return true;
 }
 
@@ -1316,7 +1316,7 @@ function previousWeekday(ymd) {
 const titles = {
   workspace: ["今日工作台", "今天数据齐了吗、缺什么、点哪里、2560跑完了吗、最后看哪几只"],
   overview: ["总览", "查看最新批次、结构完整率、标签分布与系统状态"],
-  "result-workbench": ["结果工作台", "日常看今日可看；需要追溯时切全部最新、历史信号或标注明细"],
+  "result-workbench": ["结果工作台", "报告生成后的追溯入口：默认看今日可看，需要时再切全部最新、历史信号或标注明细"],
   workflow: ["一键盘后流程", "日常盘后入口：导入、重建30m、fast 2560、观察池"],
   run: ["入库计算", "支持选择股票、全选、四类股票范围摸底计算"],
   signals: ["信号列表", "逐条查看2560结构条件、标签与解释"],
@@ -1414,6 +1414,7 @@ document.querySelectorAll(".nav-item").forEach((b) =>
 );
 $("refreshBtn").onclick = refresh;
 if ($("dailyStartWorkflowBtn")) $("dailyStartWorkflowBtn").onclick = window.startDailyWorkflowFromWorkspace;
+if ($("dailyLatestResultsBtn")) $("dailyLatestResultsBtn").textContent = "打开结果工作台";
 if ($("dailyLatestResultsBtn")) $("dailyLatestResultsBtn").onclick = window.openLatestResultsFromWorkspace;
 if ($("dailyGenerateReportPackageBtn")) $("dailyGenerateReportPackageBtn").onclick = window.generateDailyReportPackageFromWorkspace;
 if ($("dailyGenerateMorningReportBtn")) $("dailyGenerateMorningReportBtn").onclick = window.generateMorningReportPackageFromWorkspace;
