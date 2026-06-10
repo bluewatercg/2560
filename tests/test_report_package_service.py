@@ -189,6 +189,47 @@ def test_after_market_package_writes_required_files_and_skill_input_without_morn
     assert field_audit["data_sources"]["daily_package"]["available"] is True
 
 
+def test_report_package_groups_by_execution_bucket_when_selection_status_conflicts(tmp_path):
+    report = _sample_report()
+    report["candidates"] = [
+        {
+            "code": "sh.600350",
+            "name": "山东高速",
+            "bucket": "可执行",
+            "selection_status": "reject",
+            "final_score": 0.54,
+            "buy_point_type": "二类做量",
+            "logic": "基础条件通过，买点类型二类做量。",
+        },
+        {
+            "code": "sz.002832",
+            "name": "比音勒芬",
+            "bucket": "观察",
+            "selection_status": "reject",
+            "final_score": 0.41,
+            "buy_point_type": "一类冲量",
+            "logic": "基础条件通过，买点类型一类冲量。",
+        },
+    ]
+    report["rejected"] = []
+
+    ReportPackageService(output_root=tmp_path).generate_after_market_package(
+        trade_date="2026-06-10",
+        report=report,
+    )
+
+    package_dir = tmp_path / "2026-06-10"
+    focus_report = (package_dir / "02_focus_full_reports.md").read_text(encoding="utf-8")
+    watch_report = (package_dir / "03_watch_lite_reports.md").read_text(encoding="utf-8")
+    focus_watch = json.loads((package_dir / "05_focus_watch_list.json").read_text(encoding="utf-8"))
+    scan_summary = json.loads((package_dir / "04_scan_summary.json").read_text(encoding="utf-8"))
+
+    assert "sh.600350" in focus_report
+    assert "sz.002832" in watch_report
+    assert [item["code"] for item in focus_watch["items"]] == ["sh.600350", "sz.002832"]
+    assert scan_summary["distribution"]["selection_status"] == {"focus": 1, "watch": 1, "reject": 0}
+
+
 def test_daily_selection_renders_external_evidence_section(tmp_path):
     report = _sample_report()
     report["external_context"] = {

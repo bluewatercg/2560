@@ -555,14 +555,14 @@ def _reject_items(report: dict[str, Any]) -> list[dict[str, Any]]:
 def _status_label(item: dict[str, Any]) -> str:
     status = str(item.get("selection_status") or "").lower()
     bucket = str(item.get("bucket") or "")
-    if status in {"focus", "watch", "reject"}:
-        return status
     if bucket == "可执行":
         return "focus"
     if bucket == "观察":
         return "watch"
     if bucket == "淘汰":
         return "reject"
+    if status in {"focus", "watch", "reject"}:
+        return status
     return status or "unknown"
 
 
