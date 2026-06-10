@@ -21,6 +21,7 @@ def _install_report_stubs():
         "app.services",
         "app.services.announcement_risk_service",
         "app.services.annotation_engine_2568",
+        "app.services.external_evidence_service",
         "app.services.market_hotspot_service",
     ]:
         sys.modules[name] = types.ModuleType(name)
@@ -36,6 +37,7 @@ def _install_report_stubs():
     sys.modules["app.db.clickhouse"].get_clickhouse = lambda: None
     sys.modules["app.services.announcement_risk_service"].CninfoAnnouncementRiskService = object
     sys.modules["app.services.annotation_engine_2568"].AnnotationEngine2568 = object
+    sys.modules["app.services.external_evidence_service"].ExternalEvidenceService = object
     hotspot = sys.modules["app.services.market_hotspot_service"]
     hotspot.DEFAULT_HOTSPOT_QUESTION = ""
     hotspot.EastmoneyHotspotDiscoveryService = object
@@ -65,6 +67,7 @@ def _load_report_module():
         "app.services",
         "app.services.announcement_risk_service",
         "app.services.annotation_engine_2568",
+        "app.services.external_evidence_service",
         "app.services.market_hotspot_service",
     ]
     saved = {name: sys.modules.get(name) for name in names}
@@ -114,6 +117,136 @@ def _bar(code: str, date: int, close: float, volume: float, open_price: float | 
         "close": close,
         "volume": volume,
     }
+
+
+def test_daily_report_enriches_only_focus_and_watch_external_evidence(monkeypatch):
+    class RecordingExternalEvidenceService:
+        seen_codes: list[str] = []
+
+        def __init__(self, db=None):
+            self.db = db
+
+        def enrich(self, candidates, trade_date):
+            self.__class__.seen_codes = [item.get("code") for item in candidates]
+            return {
+                "external_context": {
+                    "hotspot_summary": "机器人 / 算力",
+                    "source_status": {"eastmoney": "ok", "cninfo": "ok", "miaoxiang": "ok"},
+                },
+                "candidate_evidence": {
+                    item.get("code"): {
+                        "hotspot_match_level": "strong",
+                        "hotspot_theme": "机器人",
+                        "hotspot_reason": "热点强匹配：机器人",
+                        "announcement_status": "ok",
+                        "announcement_sentiment": "bearish",
+                        "announcement_summary": f"最新公告：利空｜{item.get('name')}风险提示",
+                        "announcement_source": "cninfo",
+                        "stock_fact_summary": f"{item.get('name')}外部事实摘要",
+                        "industry_theme_summary": "机器人概念",
+                        "valuation_summary": "估值未验证",
+                        "capital_flow_summary": "资金流未验证",
+                        "evidence_sources": ["eastmoney", "cninfo", "miaoxiang"],
+                        "evidence_quality": "official",
+                    }
+                    for item in candidates
+                },
+            }
+
+    monkeypatch.setattr(_report, "ExternalEvidenceService", RecordingExternalEvidenceService, raising=False)
+
+    class DummyDailySelectionReportService(DailySelectionReportService):
+        def __init__(self):
+            pass
+
+        def _latest_batch(self):
+            return {"batch_id": "test", "run_time": None}
+
+        def _latest_selected_signals(self, latest_batch, limit):
+            return [
+                {
+                    "code": "sh.600000",
+                    "name": "焦点A",
+                    "price": 10.0,
+                    "selection_status": "focus",
+                    "structure_status": "结构完整",
+                    "missing_tags": "",
+                },
+                {
+                    "code": "sz.300000",
+                    "name": "观察B",
+                    "price": 12.0,
+                    "selection_status": "watch",
+                    "structure_status": "结构完整",
+                    "missing_tags": "",
+                },
+                {
+                    "code": "sh.600001",
+                    "name": "淘汰C",
+                    "price": 9.0,
+                    "selection_status": "reject",
+                    "structure_status": "结构完整",
+                    "missing_tags": "",
+                },
+            ]
+
+        def _annotations_for_codes(self, codes):
+            return {
+                "sh.600000": {
+                    "close": 10.0,
+                    "ma25": 9.8,
+                    "ma25_direction": "向上",
+                    "vol_ma5": 1500,
+                    "vol_ma60": 1000,
+                    "vol_ma5_gt_vol_ma60": True,
+                    "vol_ratio": 1.5,
+                },
+                "sz.300000": {
+                    "close": 12.0,
+                    "ma25": 11.8,
+                    "ma25_direction": "向上",
+                    "vol_ma5": 1300,
+                    "vol_ma60": 1000,
+                    "vol_ma5_gt_vol_ma60": True,
+                    "vol_ratio": 1.3,
+                },
+                "sh.600001": {
+                    "close": 9.0,
+                    "ma25": 8.0,
+                    "ma25_direction": "向下",
+                    "vol_ma5": 800,
+                    "vol_ma60": 1000,
+                    "vol_ma5_gt_vol_ma60": False,
+                    "vol_ratio": 0.8,
+                },
+            }
+
+        def _daily_volume_profiles(self, codes):
+            return {
+                "sh.600000": {"buy_point_type": "二类做量"},
+                "sz.300000": {"buy_point_type": "一类冲量"},
+                "sh.600001": {"buy_point_type": "二类做量"},
+            }
+
+        def _data_validation(self, latest_batch, market_model):
+            return {"confidence": "中", "verified_items": [], "unverified_items": [], "data_scope": "test"}
+
+        def _volume_pullback_candidates(self, limit):
+            return []
+
+        def _announcement_risks_for_codes(self, codes, review_trade_date):
+            return {}
+
+        def _market_hotspot_snapshot(self, review_trade_date):
+            return {"hotspot_status": "unverified", "hotspot_items": []}
+
+    report = DummyDailySelectionReportService().build_report(limit=10)
+
+    assert RecordingExternalEvidenceService.seen_codes == ["sh.600000", "sz.300000"]
+    assert report["external_context"]["source_status"]["eastmoney"] == "ok"
+    assert report["candidates"][0]["external_evidence"]["stock_fact_summary"] == "焦点A外部事实摘要"
+    assert report["candidates"][1]["external_evidence"]["stock_fact_summary"] == "观察B外部事实摘要"
+    assert "external_evidence" not in report["rejected"][0]
 
 
 def test_volume_pullback_candidates_require_hard_filters_and_sort_by_ma25_distance():

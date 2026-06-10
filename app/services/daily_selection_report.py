@@ -12,6 +12,7 @@ from app.core.market_scope import market_sql_where
 from app.db.clickhouse import get_clickhouse
 from app.services.announcement_risk_service import CninfoAnnouncementRiskService
 from app.services.annotation_engine_2568 import AnnotationEngine2568
+from app.services.external_evidence_service import ExternalEvidenceService
 from app.services.market_hotspot_service import DEFAULT_HOTSPOT_QUESTION, EastmoneyHotspotDiscoveryService, match_candidate_to_hotspots
 
 
@@ -729,6 +730,8 @@ class DailySelectionReportService:
         executable = [x for x in candidates if x["bucket"] == "可执行"]
         watchlist = [x for x in candidates if x["bucket"] == "观察"]
         rejected = [x for x in candidates if x["bucket"] == "淘汰"]
+        external_evidence = self._external_evidence_for_candidates(executable + watchlist, review_trade_date)
+        self._attach_external_evidence(executable + watchlist, external_evidence.get("candidate_evidence") or {})
         final_advice = self._final_advice(market_model)
         selection_counts = _selection_status_counts(candidates)
         final_advice["summary"] = (
@@ -773,6 +776,7 @@ class DailySelectionReportService:
             "rejected": rejected,
             "volume_pullback_candidates": volume_pullback_candidates,
             "hotspot_snapshot": hotspot_snapshot,
+            "external_context": external_evidence.get("external_context") or {},
             "final_advice": final_advice,
         }
         report = _sanitize_public_report_payload(report)
@@ -948,6 +952,34 @@ class DailySelectionReportService:
         unverified = [x for x in unverified if x != "热点主线"]
         data_validation["verified_items"] = verified
         data_validation["unverified_items"] = unverified
+
+    def _external_evidence_for_candidates(
+        self,
+        candidates: list[dict[str, Any]],
+        review_trade_date: str | None,
+    ) -> dict[str, Any]:
+        try:
+            return ExternalEvidenceService(db=getattr(self, "db", None)).enrich(candidates, trade_date=review_trade_date)
+        except Exception as exc:
+            return {
+                "external_context": {
+                    "hotspot_summary": "外部事实未验证",
+                    "source_status": {"external_evidence": "error"},
+                    "error": str(exc),
+                },
+                "candidate_evidence": {},
+            }
+
+    @staticmethod
+    def _attach_external_evidence(
+        candidates: list[dict[str, Any]],
+        candidate_evidence: dict[str, dict[str, Any]],
+    ) -> None:
+        for item in candidates:
+            code = str(item.get("code") or "")
+            evidence = candidate_evidence.get(code)
+            if evidence:
+                item["external_evidence"] = evidence
 
     def _data_validation(self, latest_batch: dict[str, Any] | None, market_model: dict[str, Any]) -> dict[str, Any]:
         readiness = []
