@@ -189,6 +189,46 @@ def test_after_market_package_writes_required_files_and_skill_input_without_morn
     assert field_audit["data_sources"]["daily_package"]["available"] is True
 
 
+def test_daily_selection_renders_external_evidence_section(tmp_path):
+    report = _sample_report()
+    report["external_context"] = {
+        "market_temperature": "创业板指下跌2.29%，热点分化",
+        "index_summary": "沪指下跌0.58%",
+        "turnover_summary": "两市半日成交17302亿元",
+        "breadth_summary": "上涨1112家，下跌4346家，55只涨停",
+        "hotspot_summary": "机器人 / 算力",
+        "snapshot_time": "2026-06-09 17:42:00",
+        "source_status": {"eastmoney": "ok", "cninfo": "ok", "miaoxiang": "ok"},
+    }
+    report["candidates"][0]["external_evidence"] = {
+        "hotspot_match_level": "strong",
+        "hotspot_theme": "机器人",
+        "hotspot_reason": "热点强匹配：机器人",
+        "announcement_status": "ok",
+        "announcement_sentiment": "bearish",
+        "announcement_summary": "最新公告：利空｜焦点A股东拟减持",
+        "announcement_source": "cninfo",
+        "stock_fact_summary": "焦点A：主力资金净流入",
+        "industry_theme_summary": "机器人概念",
+        "valuation_summary": "估值未验证",
+        "capital_flow_summary": "主力资金净流入",
+        "evidence_quality": "official",
+    }
+
+    ReportPackageService(output_root=tmp_path).generate_after_market_package(
+        trade_date="2026-06-09",
+        report=report,
+    )
+
+    daily_selection = (tmp_path / "2026-06-09" / "01_daily_selection.md").read_text(encoding="utf-8")
+
+    assert "## 【3】外部事实核验" in daily_selection
+    assert "| EastMoney | ok |" in daily_selection
+    assert "| cninfo | ok |" in daily_selection
+    assert "| 妙想/妙梦 | ok |" in daily_selection
+    assert "| sh.600000 | 焦点A | strong | 机器人 | 最新公告：利空｜焦点A股东拟减持 | 焦点A：主力资金净流入 | official |" in daily_selection
+
+
 def test_after_market_skill_input_final_conclusion_uses_focus_watch_reject_counts(tmp_path):
     report = _sample_report()
     report["market_model"] = {

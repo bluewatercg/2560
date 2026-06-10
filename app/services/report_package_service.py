@@ -352,9 +352,10 @@ def _daily_selection_lines(
         f"| 热点摘要 | {_v(hotspot_snapshot.get('hotspot_summary') or '热点主线未验证')} |",
         f"| 主导市场状态 | {_v(_dominant_value(focus + watch, 'market_state'))} |",
         "",
-        "## 【5】核心候选清单",
-        "",
     ]
+    lines.extend(["## 【3】外部事实核验", ""])
+    lines.extend(_external_context_lines(report, focus, watch))
+    lines.extend(["", "## 【5】核心候选清单", ""])
     lines.extend(_core_candidate_table(focus, watch))
     lines.extend(["", "## 【6】2560准量化候选明细", ""])
     lines.extend(_candidate_detail_sections(focus, watch))
@@ -384,6 +385,51 @@ def _market_summary_table(
         f"| 主导市场状态 | {_v(_dominant_value(focus + watch, 'market_state'))} |",
         f"| 热点摘要 | {_v(hotspot_snapshot.get('hotspot_summary'))} |",
     ]
+
+
+def _external_context_lines(report: dict[str, Any], focus: list[dict[str, Any]], watch: list[dict[str, Any]]) -> list[str]:
+    context = report.get("external_context") or {}
+    source_status = context.get("source_status") or {}
+    lines = [
+        "| 项目 | 结果 |",
+        "|------|------|",
+        f"| 市场温度 | {_v(context.get('market_temperature') or '外部市场温度未验证')} |",
+        f"| 指数表现 | {_v(context.get('index_summary') or '指数表现未验证')} |",
+        f"| 成交额 | {_v(context.get('turnover_summary') or '成交额未验证')} |",
+        f"| 涨跌家数 | {_v(context.get('breadth_summary') or '涨跌家数未验证')} |",
+        f"| 热点快照 | {_v(context.get('hotspot_summary') or (report.get('hotspot_snapshot') or {}).get('hotspot_summary') or '热点主线未验证')} |",
+        f"| 快照时间 | {_v(context.get('snapshot_time'))} |",
+        "",
+        "| 数据源 | 状态 |",
+        "|--------|------|",
+        f"| EastMoney | {_v(source_status.get('eastmoney') or 'unverified')} |",
+        f"| cninfo | {_v(source_status.get('cninfo') or 'unverified')} |",
+        f"| 妙想/妙梦 | {_v(source_status.get('miaoxiang') or 'unverified')} |",
+        "",
+    ]
+    lines.extend(_external_evidence_rows(focus, watch))
+    return lines
+
+
+def _external_evidence_rows(focus: list[dict[str, Any]], watch: list[dict[str, Any]]) -> list[str]:
+    rows = focus + watch
+    if not rows:
+        return ["无 focus/watch 候选，未查询外部事实。"]
+    lines = [
+        "| 代码 | 名称 | 热点匹配 | 热点主题 | 公告摘要 | 个股事实摘要 | 证据质量 |",
+        "|------|------|----------|----------|----------|--------------|----------|",
+    ]
+    for item in rows:
+        evidence = item.get("external_evidence") or {}
+        lines.append(
+            f"| {_v(item.get('code'))} | {_v(item.get('name'))} | "
+            f"{_v(evidence.get('hotspot_match_level') or 'unverified')} | "
+            f"{_v(evidence.get('hotspot_theme'))} | "
+            f"{_v(evidence.get('announcement_summary') or '公告未验证')} | "
+            f"{_v(evidence.get('stock_fact_summary') or '外部事实未验证')} | "
+            f"{_v(evidence.get('evidence_quality') or 'unverified')} |"
+        )
+    return lines
 
 
 def _core_candidate_table(focus: list[dict[str, Any]], watch: list[dict[str, Any]]) -> list[str]:
