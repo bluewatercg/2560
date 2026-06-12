@@ -4,6 +4,9 @@ __pycache__/
 *.pyc
 .pytest_cache/
 logs/
+reports/
+project.md
+scripts/project.md
 .DS_Store
 .env.*
 .idea/
