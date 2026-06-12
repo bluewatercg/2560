@@ -2,6 +2,8 @@ from __future__ import annotations
 
 SUPPORTED_MARKET_SCOPES = ("sh60", "sh68", "sz00", "sz30")
 
+INDEX_PREFIXES = ("sh.000001", "sh.000300", "sh.000688", "sz.399001", "sz.399006")
+
 MARKET_PREFIXES: dict[str, tuple[str, ...]] = {
     "sh60": ("sh.60",),
     "sh68": ("sh.68",),
@@ -11,6 +13,8 @@ MARKET_PREFIXES: dict[str, tuple[str, ...]] = {
     "sz": ("sz.00", "sz.30"),
     "all": ("sh.60", "sh.68", "sz.00", "sz.30"),
     "": ("sh.60", "sh.68", "sz.00", "sz.30"),
+    "index": INDEX_PREFIXES,
+    "indices": INDEX_PREFIXES,
 }
 
 FILE_PREFIXES: dict[str, tuple[str, ...]] = {

@@ -90,6 +90,7 @@
               <option value="sh68">sh68 科创68</option>
               <option value="sz00">sz00 深主板00</option>
               <option value="sz30">sz30 创业板30</option>
+              <option value="index">index 大盘指数</option>
             </select>
           </label>
 

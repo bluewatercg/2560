@@ -82,6 +82,16 @@ def _quote(value: str) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
+def _dedupe_rows_by_table_key(table: str, rows: list[dict]) -> list[dict]:
+    if table == "daily_kline":
+        key = lambda row: (row["code"], row["date"])
+    elif table == "minute_kline_period":
+        key = lambda row: (row["code"], row.get("period", "5m"), row["date"])
+    else:
+        raise ValueError(f"ch_replace_rows does not support table={table}")
+    return list({key(row): row for row in rows}.values())
+
+
 def ch_replace_rows(table: str, rows: list[dict], chunk_size: int = 100_000) -> int:
     """Idempotent ClickHouse write for kline rows.
 
@@ -93,7 +103,7 @@ def ch_replace_rows(table: str, rows: list[dict], chunk_size: int = 100_000) -> 
     total = 0
     for i in range(0, len(rows), chunk_size):
         batch = rows[i:i + chunk_size]
-        unique = list({tuple(sorted(row.items())): row for row in batch}.values())
+        unique = _dedupe_rows_by_table_key(table, batch)
         codes = sorted({row["code"] for row in unique})
         dates = sorted({str(row["date"]) for row in unique})
         code_csv = ",".join(_quote(c) for c in codes)

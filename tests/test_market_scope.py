@@ -41,6 +41,22 @@ def test_vipdoc_file_matching_excludes_non_target_security_types():
     assert not _file_match(Path("sz399001.lc5"), "sz")
 
 
+def test_index_scope_matches_only_supported_benchmark_indices():
+    assert market_sql_where("code", "index") == (
+        "(code LIKE 'sh.000001%' OR code LIKE 'sh.000300%' OR code LIKE 'sh.000688%' "
+        "OR code LIKE 'sz.399001%' OR code LIKE 'sz.399006%')"
+    )
+
+    assert _file_match(Path("sh000001.day"), "index")
+    assert _file_match(Path("sh000300.day"), "indices")
+    assert _file_match(Path("sh000688.day"), "index")
+    assert _file_match(Path("sz399001.lc5"), "index")
+    assert _file_match(Path("sz399006.lc5"), "indices")
+
+    assert not _file_match(Path("sh600000.day"), "index")
+    assert not _file_match(Path("sz000001.lc5"), "index")
+
+
 def test_code_from_filename_uses_filename_side_for_all_scope():
     assert code_from_filename(Path("sh600000.day"), "all") == "sh.600000"
     assert code_from_filename(Path("sz300001.lc5"), "all") == "sz.300001"
