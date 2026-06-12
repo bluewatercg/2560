@@ -1,4 +1,5 @@
 -- MySQL 表结构重建（空表，无数据）
+-- WARNING: 本脚本会 DROP 并重建表，只能用于空库初始化；生产增量迁移请使用 scripts/apply_2560_v122_schema.py。
 -- 在 192.168.1.254 的 MySQL 上执行
 
 USE watchlist_decision_support;
@@ -111,6 +112,19 @@ CREATE TABLE structure_2560_analysis (
   data_quality_status VARCHAR(30),
   is_duplicate_signal TINYINT(1) DEFAULT 0,
   selected_signal TINYINT(1) DEFAULT 0,
+  selection_status VARCHAR(20),
+  final_score DECIMAL(5,4),
+  recent_3d_pct DECIMAL(6,3),
+  explode_status VARCHAR(20),
+  market_state VARCHAR(20),
+  environment_score DECIMAL(5,4),
+  hot_topic_strength VARCHAR(20),
+  position_in_hot_topic VARCHAR(20),
+  hot_topic_score DECIMAL(5,4),
+  volume_score DECIMAL(5,4),
+  structure_score DECIMAL(5,4),
+  intraday_score DECIMAL(5,4),
+  pressure_score DECIMAL(5,4),
   signal_type VARCHAR(30),
   status VARCHAR(20) DEFAULT 'active',
   entry_price DOUBLE, stop_loss DOUBLE, target_price DOUBLE,
@@ -152,6 +166,125 @@ CREATE TABLE structure_2560_statistics (
   INDEX idx_strategy_code (strategy_code),
   INDEX idx_code (code),
   INDEX idx_stat_date (stat_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+DROP TABLE IF EXISTS market_state_daily;
+CREATE TABLE market_state_daily (
+  trade_date DATE NOT NULL,
+  index_code VARCHAR(20) NOT NULL,
+  index_close DECIMAL(10,2),
+  index_pct DECIMAL(6,3),
+  limit_up_count INT,
+  limit_down_count INT,
+  up_count INT,
+  down_count INT,
+  up_ratio DECIMAL(5,4),
+  market_state VARCHAR(20),
+  environment_score DECIMAL(5,4),
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (trade_date, index_code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+DROP TABLE IF EXISTS hot_topic_daily;
+CREATE TABLE hot_topic_daily (
+  trade_date DATE NOT NULL,
+  topic_code VARCHAR(50) NOT NULL,
+  topic_name VARCHAR(100),
+  topic_pct DECIMAL(6,3),
+  topic_pct_rank INT,
+  limit_up_count INT,
+  consecutive_high INT,
+  leader_code VARCHAR(20),
+  leader_name VARCHAR(50),
+  hot_topic_strength VARCHAR(20),
+  topic_score DECIMAL(5,4),
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (trade_date, topic_code),
+  INDEX idx_strength (trade_date, hot_topic_strength)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+DROP TABLE IF EXISTS stock_topic_position_daily;
+CREATE TABLE stock_topic_position_daily (
+  trade_date DATE NOT NULL,
+  code VARCHAR(20) NOT NULL,
+  topic_code VARCHAR(50) NOT NULL,
+  rank_in_topic INT,
+  is_leader TINYINT,
+  is_consecutive_limit_up TINYINT,
+  consecutive_days INT,
+  position_label VARCHAR(20),
+  position_score DECIMAL(5,4),
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (trade_date, code, topic_code),
+  INDEX idx_code (trade_date, code),
+  INDEX idx_position (trade_date, position_label)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+DROP TABLE IF EXISTS morning_confirm_daily;
+CREATE TABLE morning_confirm_daily (
+  trade_date DATE NOT NULL,
+  code VARCHAR(20) NOT NULL,
+  yesterday_status VARCHAR(20),
+  yesterday_final_score DECIMAL(5,4),
+  yesterday_hot_topic VARCHAR(100),
+  today_auction_volume BIGINT,
+  yesterday_auction_volume BIGINT,
+  avg5_auction_volume DOUBLE,
+  auction_amplify_ratio DECIMAL(8,4),
+  is_significantly_amplified TINYINT,
+  open_gap_pct DECIMAL(6,3),
+  pre_market_state VARCHAR(20),
+  morning_grade VARCHAR(20),
+  morning_score DECIMAL(5,4),
+  missing_reason VARCHAR(100),
+  confirm_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (trade_date, code),
+  INDEX idx_grade (trade_date, morning_grade),
+  CONSTRAINT chk_skipped_code CHECK (
+    morning_grade IS NOT NULL
+    AND (
+      (morning_grade = 'skipped' AND code = '__skip__')
+      OR
+      (morning_grade != 'skipped' AND code != '__skip__')
+    )
+  )
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+DROP TABLE IF EXISTS external_data_cache;
+CREATE TABLE external_data_cache (
+  cache_key VARCHAR(120) NOT NULL PRIMARY KEY,
+  source VARCHAR(50),
+  data_json JSON,
+  cache_date DATE,
+  ttl_hours INT DEFAULT 24 COMMENT 'NULL=仅审计; 0=立即过期; >0=正常TTL',
+  expire_at DATETIME,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_expire (expire_at),
+  INDEX idx_source (source, cache_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+DROP TABLE IF EXISTS external_call_budget;
+CREATE TABLE external_call_budget (
+  source VARCHAR(50) NOT NULL PRIMARY KEY,
+  daily_limit INT,
+  today_used INT DEFAULT 0,
+  reset_at DATE,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+DROP TABLE IF EXISTS external_call_log;
+CREATE TABLE external_call_log (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  call_time DATETIME,
+  source VARCHAR(50),
+  endpoint VARCHAR(100),
+  params JSON,
+  status VARCHAR(20),
+  duration_ms INT,
+  response_size INT,
+  error_msg TEXT,
+  INDEX idx_time (call_time),
+  INDEX idx_source (source, call_time)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 DROP TABLE IF EXISTS analysis_batch;
@@ -334,14 +467,34 @@ CREATE TABLE data_quality_check (
 
 -- 插入默认策略配置
 INSERT INTO strategy_config (strategy_code, config_key, config_group, config_value, value_type, description, enabled) VALUES
-('S2560', 'ma_short', '均线参数', '25', 'int', '短期均线周期', 1),
-('S2560', 'ma_mid', '均线参数', '60', 'int', '中期均线周期', 1),
-('S2560', 'ma_long', '均线参数', '200', 'int', '长期均线周期', 1),
-('S2560', 'slope_periods', '斜率参数', '3', 'int', '斜率计算周期数', 1),
-('S2560', 'atp_period', 'ATR参数', '14', 'int', 'ATR 计算周期', 1),
-('S2560', 'vol_short', '量能参数', '5', 'int', '短期均量周期', 1),
-('S2560', 'vol_long', '量能参数', '60', 'int', '长期均量周期', 1),
-('S2560', 'high_low_window', '高低点窗口', '20', 'int', '高低点计算窗口', 1);
+('S2560', 'ma_price_period', '盘后均线参数', '25', 'int', '关键均线周期', 1),
+('S2560', 'vol_short_period', '盘后量能参数', '5', 'int', '短期均量周期', 1),
+('S2560', 'vol_long_period', '盘后量能参数', '60', 'int', '长期均量周期', 1),
+('S2560', 'atr_period', '盘后ATR参数', '14', 'int', 'ATR计算周期', 1),
+('S2560', 'atr_compare_period', '盘后ATR参数', '20', 'int', 'ATR对比周期', 1),
+('S2560', 'breakout_period', '盘后突破参数', '20', 'int', '突破计算周期', 1),
+('S2560', 'core_pullback_pct', '盘后回踩参数', '3.0', 'double', '核心回踩百分比', 1),
+('S2560', 'pullback_max_pct', '盘后回踩参数', '5.0', 'double', '价格距离关键均线最大百分比', 1),
+('S2560', 'recent_3d_normal_max', '盘后起爆段参数', '12.0', 'double', '近3日普通状态最大涨幅', 1),
+('S2560', 'recent_3d_warm_max', '盘后起爆段参数', '18.0', 'double', '近3日温热状态最大涨幅', 1),
+('S2560', 'recent_3d_acceleration_max', '盘后起爆段参数', '20.0', 'double', '近3日加速状态最大涨幅', 1),
+('S2560', 'recent_3d_overheat_min', '盘后起爆段参数', '20.0', 'double', '近3日过热状态最小涨幅', 1),
+('S2560', 'high_window_30m', '盘后30m参数', '20', 'int', '30m压力位窗口', 1),
+('S2560', 'confirm_5m_bars', '盘后5m参数', '6', 'int', '5m确认K线数量', 1),
+('S2560', 'volume_cross_fallback_enabled', '盘后量能参数', 'true', 'bool', '启用量能金叉回退确认', 1),
+('S2560', 'volume_cross_confirm_ratio', '盘后量能参数', '0.9', 'double', '量能金叉确认比例', 1),
+('S2560', 'market_state_enabled', '盘后市场状态参数', 'true', 'bool', '启用市场状态过滤', 1),
+('S2560', 'rebound_index_pct_min', '盘后市场状态参数', '0.5', 'double', '反弹环境指数涨幅下限', 1),
+('S2560', 'rebound_limitup_min', '盘后市场状态参数', '30', 'int', '反弹环境涨停家数下限', 1),
+('S2560', 'rebound_up_ratio_min', '盘后市场状态参数', '0.6', 'double', '反弹环境上涨比例下限', 1),
+('S2560', 'hot_topic_required', '盘后热点参数', 'true', 'bool', '要求热点题材匹配', 1),
+('S2560', 'hot_topic_strength_required', '盘后热点参数', 'medium', 'string', '要求热点强度下限', 1),
+('S2560', 'position_required_for_focus', '盘后热点参数', 'strong', 'string', 'focus要求题材地位下限', 1),
+('S2560', 'auction_amplify_ratio', '早盘竞价参数', '1.0', 'double', '集合竞价放量确认比例', 1),
+('S2560', 'auction_gap_pct_max', '早盘竞价参数', '3.0', 'double', '集合竞价高开谨慎阈值', 1),
+('S2560', 'auction_fallback_to_avg5', '早盘竞价参数', 'true', 'bool', '昨日竞价缺失时允许使用avg5兜底', 1),
+('S2560', 'avg5_min_valid_days', '早盘竞价参数', '3', 'int', 'avg5竞价量最少有效天数', 1),
+('S2560', 'display_emoji_enabled', '盘后展示参数', 'false', 'bool', '启用emoji展示', 1);
 
 SELECT 'Tables recreated successfully' AS result;
 SELECT COUNT(*) AS table_count FROM information_schema.tables WHERE table_schema = 'watchlist_decision_support';

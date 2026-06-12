@@ -1,4 +1,5 @@
 -- ClickHouse 表结构：行情数据存储
+-- WARNING: 本脚本会 DROP 并重建表，只能用于空库初始化；生产增量迁移请使用 scripts/apply_2560_v122_schema.py。
 -- 在 192.168.1.30 的 ClickHouse strategy2560 数据库上执行
 --
 -- MySQL 存储：workspace_status, analysis_batch, structure_2560_*, job_queue,
@@ -32,7 +33,8 @@ CREATE TABLE daily_kline (
     low Float64,
     close Float64,
     volume Float64,
-    amount Float64
+    amount Float64,
+    adjust_type LowCardinality(String) DEFAULT 'qfq'
 ) ENGINE = MergeTree()
 ORDER BY (code, date)
 PRIMARY KEY (code, date);
@@ -68,6 +70,9 @@ CREATE TABLE technical_indicator (
     ma200 Nullable(Float64),
     ma25_slope_3 Nullable(Float64),
     ma60_slope_3 Nullable(Float64),
+    ma25_slope_days UInt16 DEFAULT 0,
+    ma25_angle_deg Nullable(Float64),
+    ma5_slope_dir Int8 DEFAULT 0,
     atr14 Nullable(Float64),
     atr20_avg Nullable(Float64),
     vol_ma5 Nullable(Float64),
@@ -79,12 +84,40 @@ CREATE TABLE technical_indicator (
     low_20 Nullable(Float64),
     low_30 Nullable(Float64),
     resistance_level Nullable(Float64),
+    kdj_k Nullable(Float64),
+    kdj_d Nullable(Float64),
+    kdj_j Nullable(Float64),
+    kdj_j_cross_up UInt8 DEFAULT 0,
+    kdj_j_over_100 UInt8 DEFAULT 0,
+    macd_dif Nullable(Float64),
+    macd_dea Nullable(Float64),
+    macd_hist Nullable(Float64),
+    macd_hist_green_shrink UInt8 DEFAULT 0,
+    macd_hist_red_extend UInt8 DEFAULT 0,
+    recent_3d_pct Nullable(Float64),
+    recent_5d_pct Nullable(Float64),
     is_abnormal_bar Nullable(UInt8) DEFAULT 0,
     data_quality_status Nullable(String),
     created_at DateTime64(3) DEFAULT now64(3),
     updated_at DateTime64(3) DEFAULT now64(3)
 ) ENGINE = MergeTree()
 ORDER BY (code, period, date, source);
+
+CREATE TABLE IF NOT EXISTS auction_volume (
+    code String,
+    trade_date Date,
+    auction_volume UInt64,
+    auction_amount Float64,
+    auction_open_price Float64,
+    prev_close Float64,
+    open_gap_pct Float64,
+    yesterday_auction_volume UInt64,
+    avg5_auction_volume Float64,
+    auction_amplify_ratio Float64,
+    is_significantly_amplified UInt8 DEFAULT 0,
+    created_at DateTime64(3) DEFAULT now64(3)
+) ENGINE = MergeTree()
+ORDER BY (code, trade_date);
 
 SELECT 'ClickHouse tables created' AS result;
 SELECT name AS table_name FROM system.tables WHERE database = 'strategy2560' ORDER BY name;
