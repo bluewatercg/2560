@@ -50,9 +50,9 @@ def build_simple_hard_metric_rows(
         recent_25day_gain_pct = _recent_25day_gain_pct(closes)
         if ma25 == 0 or mavol60 == 0:
             continue
-        if recent_3day_gain_pct is None or recent_3day_gain_pct > 20.0:
+        if recent_3day_gain_pct is None or not (0.0 < recent_3day_gain_pct <= 20.0):
             continue
-        if recent_25day_gain_pct is None or recent_25day_gain_pct > 10.0:
+        if recent_25day_gain_pct is None or not (0.0 < recent_25day_gain_pct <= 10.0):
             continue
         if not (close > ma25 and mavol5 > mavol60):
             continue

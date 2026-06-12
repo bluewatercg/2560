@@ -330,7 +330,7 @@ def _simple_hard_metric_items_from_report(report: dict[str, Any]) -> list[dict[s
         recent_25d = _recent_25day_gain_value(item)
         if close is None or ma25 in (None, 0) or vol_ma5 is None or vol_ma60 in (None, 0) or recent_3d is None or recent_25d is None:
             continue
-        if not (close > ma25 and vol_ma5 > vol_ma60 and recent_3d <= 20 and recent_25d <= 10):
+        if not (close > ma25 and vol_ma5 > vol_ma60 and 0 < recent_3d <= 20 and 0 < recent_25d <= 10):
             continue
         row = dict(item)
         row["close_vs_ma25_pct"] = (close - ma25) / ma25 * 100

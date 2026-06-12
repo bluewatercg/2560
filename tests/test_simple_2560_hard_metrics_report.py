@@ -37,10 +37,22 @@ def test_build_simple_hard_metric_rows_keeps_only_close_above_ma25_mavol5_above_
     rows.extend(_daily_rows("sh.600003", closes=[10.0] * 35 + [12.0] * 24 + [13.0], volumes=[200.0] * 55 + [100.0] * 5, start=start))
     rows.extend(_daily_rows("sh.600004", closes=[10.0] * 56 + [10.0, 10.5, 11.0, 13.0], volumes=[100.0] * 55 + [200.0] * 5, start=start))
     rows.extend(_daily_rows("sh.600005", closes=[10.0] * 35 + [12.0] * 24 + [13.0], volumes=[100.0] * 55 + [200.0] * 5, start=start))
+    rows.extend(_daily_rows("sh.600006", closes=[10.0] * 34 + [14.0] + [12.0] * 21 + [12.5, 12.7, 12.9, 13.0], volumes=[100.0] * 55 + [200.0] * 5, start=start))
+    rows.extend(_daily_rows("sh.600007", closes=[10.0] * 34 + [13.0] + [12.0] * 21 + [12.5, 12.7, 12.9, 13.0], volumes=[100.0] * 55 + [200.0] * 5, start=start))
+    rows.extend(_daily_rows("sh.600008", closes=[10.0] * 34 + [12.0] * 22 + [13.5, 13.4, 13.2, 13.0], volumes=[100.0] * 55 + [200.0] * 5, start=start))
 
     result = build_simple_hard_metric_rows(
         daily_rows=rows,
-        names={"sh.600001": "通过A", "sh.600002": "未站上", "sh.600003": "量能弱", "sh.600004": "三日过热", "sh.600005": "25日过热"},
+        names={
+            "sh.600001": "通过A",
+            "sh.600002": "未站上",
+            "sh.600003": "量能弱",
+            "sh.600004": "三日过热",
+            "sh.600005": "25日过热",
+            "sh.600006": "25日负涨幅",
+            "sh.600007": "25日零涨幅",
+            "sh.600008": "3日负涨幅",
+        },
         trade_date=trade_date,
     )
 
@@ -52,8 +64,10 @@ def test_build_simple_hard_metric_rows_keeps_only_close_above_ma25_mavol5_above_
     assert result[0]["mavol60"] > 100.0
     assert result[0]["mavol_ratio"] > 1.0
     assert result[0]["recent_3day_gain_pct"] <= 20.0
+    assert result[0]["recent_3day_gain_pct"] > 0
     assert round(result[0]["recent_25day_gain_pct"], 2) == 8.33
     assert result[0]["recent_25day_gain_pct"] <= 10.0
+    assert result[0]["recent_25day_gain_pct"] > 0
 
 
 def test_render_simple_hard_metrics_report_displays_only_metric_rows():

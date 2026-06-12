@@ -200,23 +200,53 @@ def test_after_market_package_writes_required_files_and_skill_input_without_morn
     assert "| sh.600000 | 焦点A | 10.50 | 10.20 | 2.94% | 3.20% | 8.70% | 1500 | 1000 | 1.50 |" in simple_report
 
 
-def test_simple_hard_metrics_package_excludes_recent_25day_overheated_candidates(tmp_path):
+def test_simple_hard_metrics_package_excludes_non_positive_or_overheated_gain_candidates(tmp_path):
     report = _sample_report()
-    report["candidates"].append(
-        {
-            "code": "sh.600888",
-            "name": "25日过热",
-            "selection_status": "focus",
-            "final_score": 0.88,
-            "close": 13.0,
-            "ma25": 12.0,
-            "price_ma25_deviation_pct": 8.33,
-            "vol_ma5": 1500,
-            "vol_ma60": 1000,
-            "recent_3d_pct": 3.2,
-            "recent_25day_gain_pct": 15.0,
-            "logic": "基础条件通过，但25日涨幅过热。",
-        }
+    report["candidates"].extend(
+        [
+            {
+                "code": "sh.600888",
+                "name": "25日过热",
+                "selection_status": "focus",
+                "final_score": 0.88,
+                "close": 13.0,
+                "ma25": 12.0,
+                "price_ma25_deviation_pct": 8.33,
+                "vol_ma5": 1500,
+                "vol_ma60": 1000,
+                "recent_3d_pct": 3.2,
+                "recent_25day_gain_pct": 15.0,
+                "logic": "基础条件通过，但25日涨幅过热。",
+            },
+            {
+                "code": "sh.600889",
+                "name": "25日负涨幅",
+                "selection_status": "focus",
+                "final_score": 0.82,
+                "close": 13.0,
+                "ma25": 12.0,
+                "price_ma25_deviation_pct": 8.33,
+                "vol_ma5": 1500,
+                "vol_ma60": 1000,
+                "recent_3d_pct": 3.2,
+                "recent_25day_gain_pct": -5.0,
+                "logic": "基础条件通过，但25日涨幅不是正值。",
+            },
+            {
+                "code": "sh.600890",
+                "name": "3日负涨幅",
+                "selection_status": "focus",
+                "final_score": 0.81,
+                "close": 13.0,
+                "ma25": 12.0,
+                "price_ma25_deviation_pct": 8.33,
+                "vol_ma5": 1500,
+                "vol_ma60": 1000,
+                "recent_3d_pct": -1.0,
+                "recent_25day_gain_pct": 8.0,
+                "logic": "基础条件通过，但3日涨幅不是正值。",
+            },
+        ]
     )
 
     ReportPackageService(output_root=tmp_path).generate_after_market_package(
@@ -228,6 +258,8 @@ def test_simple_hard_metrics_package_excludes_recent_25day_overheated_candidates
 
     assert "焦点A" in simple_report
     assert "25日过热" not in simple_report
+    assert "25日负涨幅" not in simple_report
+    assert "3日负涨幅" not in simple_report
 
 
 def test_report_package_groups_by_execution_bucket_when_selection_status_conflicts(tmp_path):
