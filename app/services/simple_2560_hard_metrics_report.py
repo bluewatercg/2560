@@ -47,9 +47,12 @@ def build_simple_hard_metric_rows(
         mavol5 = sum(float(value) for value in volumes[-5:]) / 5
         mavol60 = sum(float(value) for value in volumes[-60:]) / 60
         recent_3day_gain_pct = _recent_3day_gain_pct(closes)
+        recent_25day_gain_pct = _recent_25day_gain_pct(closes)
         if ma25 == 0 or mavol60 == 0:
             continue
         if recent_3day_gain_pct is None or recent_3day_gain_pct > 20.0:
+            continue
+        if recent_25day_gain_pct is None or recent_25day_gain_pct > 10.0:
             continue
         if not (close > ma25 and mavol5 > mavol60):
             continue
@@ -63,6 +66,7 @@ def build_simple_hard_metric_rows(
                 "ma25": ma25,
                 "close_vs_ma25_pct": (close - ma25) / ma25 * 100,
                 "recent_3day_gain_pct": recent_3day_gain_pct,
+                "recent_25day_gain_pct": recent_25day_gain_pct,
                 "mavol5": mavol5,
                 "mavol60": mavol60,
                 "mavol_ratio": mavol5 / mavol60,
@@ -78,7 +82,7 @@ def render_simple_hard_metrics_report(*, trade_date: str, batch_id: Any, items: 
         f"# 2560 简化硬指标盘后报告 - {trade_date}",
         "",
         f"- batch_id: {_v(batch_id)}",
-        "- 只显示：收盘价高于25日均价、5日平均成交量高于60日平均成交量、近3日涨幅不超过20%",
+        "- 只显示：收盘价高于25日均价、5日平均成交量高于60日平均成交量、近3日涨幅不超过20%、近25日涨幅不超过10%",
         "- 短期量能倍数说明：例如 1.55 表示最近5日平均成交量是60日平均成交量的1.55倍",
         f"- 命中数量: {len(items)}",
         "",
@@ -89,8 +93,8 @@ def render_simple_hard_metrics_report(*, trade_date: str, batch_id: Any, items: 
 
     lines.extend(
         [
-            "| 代码 | 名称 | 收盘价 | 25日均价 | 高于25日均价幅度 | 近3日涨幅 | 5日平均成交量 | 60日平均成交量 | 短期量能倍数 |",
-            "|---|---|---:|---:|---:|---:|---:|---:|---:|",
+            "| 代码 | 名称 | 收盘价 | 25日均价 | 高于25日均价幅度 | 近3日涨幅 | 近25日涨幅 | 5日平均成交量 | 60日平均成交量 | 短期量能倍数 |",
+            "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
         ]
     )
     for item in items:
@@ -99,6 +103,7 @@ def render_simple_hard_metrics_report(*, trade_date: str, batch_id: Any, items: 
             f"{_fmt_num(item.get('close'))} | {_fmt_num(item.get('ma25'))} | "
             f"{_fmt_num(item.get('close_vs_ma25_pct'))}% | "
             f"{_fmt_num(item.get('recent_3day_gain_pct'))}% | "
+            f"{_fmt_num(item.get('recent_25day_gain_pct'))}% | "
             f"{_fmt_num(item.get('mavol5'), 0)} | {_fmt_num(item.get('mavol60'), 0)} | "
             f"{_fmt_num(item.get('mavol_ratio'))} |"
         )
@@ -204,6 +209,16 @@ def _recent_3day_gain_pct(closes: list[float | None]) -> float | None:
         return None
     current = closes[-1]
     base = closes[-4]
+    if current is None or base in (None, 0):
+        return None
+    return (float(current) - float(base)) / float(base) * 100
+
+
+def _recent_25day_gain_pct(closes: list[float | None]) -> float | None:
+    if len(closes) < 26:
+        return None
+    current = closes[-1]
+    base = closes[-26]
     if current is None or base in (None, 0):
         return None
     return (float(current) - float(base)) / float(base) * 100

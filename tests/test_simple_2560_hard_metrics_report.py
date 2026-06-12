@@ -32,14 +32,15 @@ def test_build_simple_hard_metric_rows_keeps_only_close_above_ma25_mavol5_above_
     start = date(2026, 4, 12)
     trade_date = "2026-06-10"
     rows = []
-    rows.extend(_daily_rows("sh.600001", closes=[10.0] * 35 + [12.0] * 24 + [13.0], volumes=[100.0] * 55 + [200.0] * 5, start=start))
+    rows.extend(_daily_rows("sh.600001", closes=[10.0] * 34 + [12.0] * 25 + [13.0], volumes=[100.0] * 55 + [200.0] * 5, start=start))
     rows.extend(_daily_rows("sh.600002", closes=[10.0] * 59 + [8.0], volumes=[100.0] * 55 + [200.0] * 5, start=start))
     rows.extend(_daily_rows("sh.600003", closes=[10.0] * 35 + [12.0] * 24 + [13.0], volumes=[200.0] * 55 + [100.0] * 5, start=start))
     rows.extend(_daily_rows("sh.600004", closes=[10.0] * 56 + [10.0, 10.5, 11.0, 13.0], volumes=[100.0] * 55 + [200.0] * 5, start=start))
+    rows.extend(_daily_rows("sh.600005", closes=[10.0] * 35 + [12.0] * 24 + [13.0], volumes=[100.0] * 55 + [200.0] * 5, start=start))
 
     result = build_simple_hard_metric_rows(
         daily_rows=rows,
-        names={"sh.600001": "通过A", "sh.600002": "未站上", "sh.600003": "量能弱", "sh.600004": "三日过热"},
+        names={"sh.600001": "通过A", "sh.600002": "未站上", "sh.600003": "量能弱", "sh.600004": "三日过热", "sh.600005": "25日过热"},
         trade_date=trade_date,
     )
 
@@ -51,6 +52,8 @@ def test_build_simple_hard_metric_rows_keeps_only_close_above_ma25_mavol5_above_
     assert result[0]["mavol60"] > 100.0
     assert result[0]["mavol_ratio"] > 1.0
     assert result[0]["recent_3day_gain_pct"] <= 20.0
+    assert round(result[0]["recent_25day_gain_pct"], 2) == 8.33
+    assert result[0]["recent_25day_gain_pct"] <= 10.0
 
 
 def test_render_simple_hard_metrics_report_displays_only_metric_rows():
@@ -65,6 +68,7 @@ def test_render_simple_hard_metrics_report_displays_only_metric_rows():
                 "ma25": 11.2,
                 "close_vs_ma25_pct": 7.1429,
                 "recent_3day_gain_pct": 8.3333,
+                "recent_25day_gain_pct": 9.5238,
                 "mavol5": 200.0,
                 "mavol60": 120.0,
                 "mavol_ratio": 1.6667,
@@ -74,10 +78,10 @@ def test_render_simple_hard_metrics_report_displays_only_metric_rows():
 
     assert SIMPLE_HARD_METRICS_FILENAME == "09_simple_2560_hard_metrics.md"
     assert "# 2560 简化硬指标盘后报告 - 2026-06-10" in markdown
-    assert "只显示：收盘价高于25日均价、5日平均成交量高于60日平均成交量、近3日涨幅不超过20%" in markdown
+    assert "只显示：收盘价高于25日均价、5日平均成交量高于60日平均成交量、近3日涨幅不超过20%、近25日涨幅不超过10%" in markdown
     assert "短期量能倍数说明：例如 1.55 表示最近5日平均成交量是60日平均成交量的1.55倍" in markdown
-    assert "| 代码 | 名称 | 收盘价 | 25日均价 | 高于25日均价幅度 | 近3日涨幅 | 5日平均成交量 | 60日平均成交量 | 短期量能倍数 |" in markdown
+    assert "| 代码 | 名称 | 收盘价 | 25日均价 | 高于25日均价幅度 | 近3日涨幅 | 近25日涨幅 | 5日平均成交量 | 60日平均成交量 | 短期量能倍数 |" in markdown
     assert "MA25" not in markdown
     assert "MAVOL5" not in markdown
     assert "MAVOL60" not in markdown
-    assert "| sh.600001 | 通过A | 12.00 | 11.20 | 7.14% | 8.33% | 200 | 120 | 1.67 |" in markdown
+    assert "| sh.600001 | 通过A | 12.00 | 11.20 | 7.14% | 8.33% | 9.52% | 200 | 120 | 1.67 |" in markdown

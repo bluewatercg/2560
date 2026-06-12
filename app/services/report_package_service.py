@@ -290,7 +290,7 @@ def render_simple_2560_hard_metrics_report(trade_date: str, report: dict[str, An
         f"# 2560 简化硬指标盘后报告 - {trade_date}",
         "",
         f"- batch_id: {_v(batch_id)}",
-        "- 只显示：收盘价高于25日均价、5日平均成交量高于60日平均成交量、近3日涨幅不超过20%",
+        "- 只显示：收盘价高于25日均价、5日平均成交量高于60日平均成交量、近3日涨幅不超过20%、近25日涨幅不超过10%",
         "- 短期量能倍数说明：例如 1.55 表示最近5日平均成交量是60日平均成交量的1.55倍",
         f"- 命中数量: {len(items)}",
         "",
@@ -302,8 +302,8 @@ def render_simple_2560_hard_metrics_report(trade_date: str, report: dict[str, An
         lines.append("无满足条件标的。")
         return "\n".join(lines)
     lines.extend([
-        "| 代码 | 名称 | 收盘价 | 25日均价 | 高于25日均价幅度 | 近3日涨幅 | 5日平均成交量 | 60日平均成交量 | 短期量能倍数 |",
-        "|---|---|---:|---:|---:|---:|---:|---:|---:|",
+        "| 代码 | 名称 | 收盘价 | 25日均价 | 高于25日均价幅度 | 近3日涨幅 | 近25日涨幅 | 5日平均成交量 | 60日平均成交量 | 短期量能倍数 |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ])
     for item in items:
         lines.append(
@@ -311,6 +311,7 @@ def render_simple_2560_hard_metrics_report(trade_date: str, report: dict[str, An
             f"{_fmt_num(item.get('close'))} | {_fmt_num(item.get('ma25'))} | "
             f"{_fmt_num(item.get('close_vs_ma25_pct') if item.get('close_vs_ma25_pct') is not None else item.get('price_ma25_deviation_pct'))}% | "
             f"{_fmt_num(item.get('recent_3day_gain_pct') if item.get('recent_3day_gain_pct') is not None else item.get('recent_3d_pct'))}% | "
+            f"{_fmt_num(_recent_25day_gain_value(item))}% | "
             f"{_fmt_num(item.get('mavol5') if item.get('mavol5') is not None else item.get('vol_ma5'), 0)} | "
             f"{_fmt_num(item.get('mavol60') if item.get('mavol60') is not None else item.get('vol_ma60'), 0)} | "
             f"{_fmt_num(item.get('mavol_ratio') if item.get('mavol_ratio') is not None else item.get('vol_ma5_mavol60_ratio'))} |"
@@ -326,9 +327,10 @@ def _simple_hard_metric_items_from_report(report: dict[str, Any]) -> list[dict[s
         vol_ma5 = _to_float(item.get("vol_ma5"))
         vol_ma60 = _to_float(item.get("vol_ma60"))
         recent_3d = _to_float(item.get("recent_3day_gain_pct") if item.get("recent_3day_gain_pct") is not None else item.get("recent_3d_pct"))
-        if close is None or ma25 in (None, 0) or vol_ma5 is None or vol_ma60 in (None, 0) or recent_3d is None:
+        recent_25d = _recent_25day_gain_value(item)
+        if close is None or ma25 in (None, 0) or vol_ma5 is None or vol_ma60 in (None, 0) or recent_3d is None or recent_25d is None:
             continue
-        if not (close > ma25 and vol_ma5 > vol_ma60 and recent_3d <= 20):
+        if not (close > ma25 and vol_ma5 > vol_ma60 and recent_3d <= 20 and recent_25d <= 10):
             continue
         row = dict(item)
         row["close_vs_ma25_pct"] = (close - ma25) / ma25 * 100
@@ -336,9 +338,18 @@ def _simple_hard_metric_items_from_report(report: dict[str, Any]) -> list[dict[s
         row["mavol60"] = vol_ma60
         row["mavol_ratio"] = vol_ma5 / vol_ma60
         row["recent_3day_gain_pct"] = recent_3d
+        row["recent_25day_gain_pct"] = recent_25d
         items.append(row)
     items.sort(key=lambda item: (-_to_float(item.get("mavol_ratio"), 0), -_to_float(item.get("close_vs_ma25_pct"), 0), str(item.get("code") or "")))
     return items
+
+
+def _recent_25day_gain_value(item: dict[str, Any]) -> float | None:
+    if item.get("recent_25day_gain_pct") is not None:
+        return _to_float(item.get("recent_25day_gain_pct"))
+    if item.get("recent_25d_pct") is not None:
+        return _to_float(item.get("recent_25d_pct"))
+    return None
 
 
 def render_after_market_daily_selection(

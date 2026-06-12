@@ -78,6 +78,7 @@ def _sample_report() -> dict:
                 "vol_ma60": 1000,
                 "vol_ma5_gt_vol_ma60": True,
                 "recent_3d_pct": 3.2,
+                "recent_25day_gain_pct": 8.7,
                 "explode_status": "normal",
                 "pressure_score": 0.8,
                 "intraday_score": 0.7,
@@ -190,13 +191,43 @@ def test_after_market_package_writes_required_files_and_skill_input_without_morn
     assert field_audit["data_sources"]["daily_package"]["available"] is True
 
     simple_report = (package_dir / "09_simple_2560_hard_metrics.md").read_text(encoding="utf-8")
-    assert "只显示：收盘价高于25日均价、5日平均成交量高于60日平均成交量、近3日涨幅不超过20%" in simple_report
+    assert "只显示：收盘价高于25日均价、5日平均成交量高于60日平均成交量、近3日涨幅不超过20%、近25日涨幅不超过10%" in simple_report
     assert "短期量能倍数说明：例如 1.55 表示最近5日平均成交量是60日平均成交量的1.55倍" in simple_report
-    assert "| 代码 | 名称 | 收盘价 | 25日均价 | 高于25日均价幅度 | 近3日涨幅 | 5日平均成交量 | 60日平均成交量 | 短期量能倍数 |" in simple_report
+    assert "| 代码 | 名称 | 收盘价 | 25日均价 | 高于25日均价幅度 | 近3日涨幅 | 近25日涨幅 | 5日平均成交量 | 60日平均成交量 | 短期量能倍数 |" in simple_report
     assert "MA25" not in simple_report
     assert "MAVOL5" not in simple_report
     assert "MAVOL60" not in simple_report
-    assert "| sh.600000 | 焦点A | 10.50 | 10.20 | 2.94% | 3.20% | 1500 | 1000 | 1.50 |" in simple_report
+    assert "| sh.600000 | 焦点A | 10.50 | 10.20 | 2.94% | 3.20% | 8.70% | 1500 | 1000 | 1.50 |" in simple_report
+
+
+def test_simple_hard_metrics_package_excludes_recent_25day_overheated_candidates(tmp_path):
+    report = _sample_report()
+    report["candidates"].append(
+        {
+            "code": "sh.600888",
+            "name": "25日过热",
+            "selection_status": "focus",
+            "final_score": 0.88,
+            "close": 13.0,
+            "ma25": 12.0,
+            "price_ma25_deviation_pct": 8.33,
+            "vol_ma5": 1500,
+            "vol_ma60": 1000,
+            "recent_3d_pct": 3.2,
+            "recent_25day_gain_pct": 15.0,
+            "logic": "基础条件通过，但25日涨幅过热。",
+        }
+    )
+
+    ReportPackageService(output_root=tmp_path).generate_after_market_package(
+        trade_date="2026-06-09",
+        report=report,
+    )
+
+    simple_report = (tmp_path / "2026-06-09" / "09_simple_2560_hard_metrics.md").read_text(encoding="utf-8")
+
+    assert "焦点A" in simple_report
+    assert "25日过热" not in simple_report
 
 
 def test_report_package_groups_by_execution_bucket_when_selection_status_conflicts(tmp_path):
