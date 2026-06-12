@@ -1,6 +1,7 @@
 # External Integrations
 
 **Analysis Date:** 2026-05-11
+**Data Sources Inventory:** See `.planning/codebase/DATA_SOURCES.md` for complete data source mapping (VIPDOC, MySQL, ClickHouse, EastMoney, AKShare, 妙想/妙梦, etc.)
 
 ## APIs & External Services
 
