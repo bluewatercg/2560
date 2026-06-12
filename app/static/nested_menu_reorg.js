@@ -6,6 +6,7 @@
 
   const VIRTUAL_VIEWS = new Set([
     'workspace',
+    'result-workbench',
     'simple-2560',
     'data-import',
     'data-maintenance',
@@ -28,7 +29,7 @@
       title: '盘后日常',
       items: [
         ['workspace', '今日工作台'],
-        ['workflow', '一键盘后流程'],
+        ['workflow', '运行盘后流程'],
         ['quality', '数据质量'],
         ['jobs', '任务进度']
       ]
@@ -43,6 +44,7 @@
     {
       title: '结果中心',
       items: [
+        ['result-workbench', '结果工作台'],
         ['simple-2560', '简版2560'],
         ['latest', '最新结果'],
         ['signals', '信号中心'],
@@ -83,7 +85,7 @@
       ['任务优先级（priority）', '优先级（数字越小越先跑）'],
       ['立即执行并行脚本', '立即执行并看进度'],
       ['入队执行', '加入队列后台跑'],
-      ['工作流指导', '工作流说明']
+      ['工作流指导', '运行盘后流程']
     ];
 
     const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null);
