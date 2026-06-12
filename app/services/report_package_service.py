@@ -16,6 +16,7 @@ PACKAGE_FILENAMES = (
     "06_reject_summary.json",
     "07_field_audit.json",
     "08_skill_input.md",
+    "09_simple_2560_hard_metrics.md",
 )
 
 
@@ -39,6 +40,7 @@ class ReportPackageService:
             "06_reject_summary.json": _to_json(build_reject_summary(trade_date, rejected)),
             "07_field_audit.json": _to_json(build_field_audit(trade_date, report, focus + watch + rejected)),
             "08_skill_input.md": render_after_market_skill_input(trade_date, report, focus, watch, rejected),
+            "09_simple_2560_hard_metrics.md": render_simple_2560_hard_metrics_report(trade_date, report),
         }
 
         files: list[Path] = []
@@ -58,6 +60,17 @@ class ReportPackageService:
         from app.services.daily_selection_report import DailySelectionReportService
 
         report = DailySelectionReportService(db).build_report(limit=limit)
+        batch_id = (report.get("data_validation") or {}).get("latest_batch_id")
+        if batch_id:
+            try:
+                from app.services.simple_2560_hard_metrics_report import Simple2560HardMetricsReportService
+
+                report["simple_hard_metrics"] = Simple2560HardMetricsReportService(db).build_for_batch(
+                    trade_date=trade_date,
+                    batch_id=batch_id,
+                )
+            except Exception as exc:
+                report["simple_hard_metrics_error"] = str(exc)
         return self.generate_after_market_package(trade_date=trade_date, report=report)
 
 
@@ -266,6 +279,66 @@ def render_after_market_skill_input(
     lines.extend(["", "## 7. 详细复盘附录", ""])
     lines.extend(detail_appendix)
     return "\n".join(lines)
+
+
+def render_simple_2560_hard_metrics_report(trade_date: str, report: dict[str, Any]) -> str:
+    items = list(report.get("simple_hard_metrics") or [])
+    if not items:
+        items = _simple_hard_metric_items_from_report(report)
+    batch_id = (report.get("data_validation") or {}).get("latest_batch_id")
+    lines = [
+        f"# 2560 简化硬指标盘后报告 - {trade_date}",
+        "",
+        f"- batch_id: {_v(batch_id)}",
+        "- 只显示：收盘价高于25日均价、5日平均成交量高于60日平均成交量、近3日涨幅不超过20%",
+        "- 短期量能倍数说明：例如 1.55 表示最近5日平均成交量是60日平均成交量的1.55倍",
+        f"- 命中数量: {len(items)}",
+        "",
+    ]
+    error = report.get("simple_hard_metrics_error")
+    if error:
+        lines.extend([f"- 数据生成提示: {_v(error)}", ""])
+    if not items:
+        lines.append("无满足条件标的。")
+        return "\n".join(lines)
+    lines.extend([
+        "| 代码 | 名称 | 收盘价 | 25日均价 | 高于25日均价幅度 | 近3日涨幅 | 5日平均成交量 | 60日平均成交量 | 短期量能倍数 |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|",
+    ])
+    for item in items:
+        lines.append(
+            f"| {_v(item.get('code'))} | {_v(item.get('name'))} | "
+            f"{_fmt_num(item.get('close'))} | {_fmt_num(item.get('ma25'))} | "
+            f"{_fmt_num(item.get('close_vs_ma25_pct') if item.get('close_vs_ma25_pct') is not None else item.get('price_ma25_deviation_pct'))}% | "
+            f"{_fmt_num(item.get('recent_3day_gain_pct') if item.get('recent_3day_gain_pct') is not None else item.get('recent_3d_pct'))}% | "
+            f"{_fmt_num(item.get('mavol5') if item.get('mavol5') is not None else item.get('vol_ma5'), 0)} | "
+            f"{_fmt_num(item.get('mavol60') if item.get('mavol60') is not None else item.get('vol_ma60'), 0)} | "
+            f"{_fmt_num(item.get('mavol_ratio') if item.get('mavol_ratio') is not None else item.get('vol_ma5_mavol60_ratio'))} |"
+        )
+    return "\n".join(lines)
+
+
+def _simple_hard_metric_items_from_report(report: dict[str, Any]) -> list[dict[str, Any]]:
+    items = []
+    for item in report.get("candidates") or []:
+        close = _to_float(item.get("close"))
+        ma25 = _to_float(item.get("ma25"))
+        vol_ma5 = _to_float(item.get("vol_ma5"))
+        vol_ma60 = _to_float(item.get("vol_ma60"))
+        recent_3d = _to_float(item.get("recent_3day_gain_pct") if item.get("recent_3day_gain_pct") is not None else item.get("recent_3d_pct"))
+        if close is None or ma25 in (None, 0) or vol_ma5 is None or vol_ma60 in (None, 0) or recent_3d is None:
+            continue
+        if not (close > ma25 and vol_ma5 > vol_ma60 and recent_3d <= 20):
+            continue
+        row = dict(item)
+        row["close_vs_ma25_pct"] = (close - ma25) / ma25 * 100
+        row["mavol5"] = vol_ma5
+        row["mavol60"] = vol_ma60
+        row["mavol_ratio"] = vol_ma5 / vol_ma60
+        row["recent_3day_gain_pct"] = recent_3d
+        items.append(row)
+    items.sort(key=lambda item: (-_to_float(item.get("mavol_ratio"), 0), -_to_float(item.get("close_vs_ma25_pct"), 0), str(item.get("code") or "")))
+    return items
 
 
 def render_after_market_daily_selection(
@@ -626,6 +699,15 @@ def _fmt_bool(value: Any) -> str:
     if value is False:
         return "否"
     return "无法验证"
+
+
+def _to_float(value: Any, default: float | None = None) -> float | None:
+    try:
+        if value is None or value == "":
+            return default
+        return float(value)
+    except Exception:
+        return default
 
 
 def _join(value: Any) -> str:

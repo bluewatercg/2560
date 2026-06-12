@@ -42,6 +42,10 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
+echo "[6/7] 确保并备份服务器报告目录..."
+sshpass -p "$SERVER_PASS" ssh -o StrictHostKeyChecking=no "${SERVER_USER}@${SERVER_HOST}" \
+  "printf '%s\n' '${SERVER_PASS}' | sudo -S mkdir -p /data1/2560/reports && if docker ps -a --format '{{.Names}}' | grep -qx strategy2560-web; then docker cp strategy2560-web:/app/reports/. /data1/2560/reports/ 2>/dev/null || true; fi"
+
 echo "[6/7] 服务器 docker load & compose 更新..."
 sshpass -p "$SERVER_PASS" ssh -o StrictHostKeyChecking=no "${SERVER_USER}@${SERVER_HOST}" \
   "docker load -i '${REMOTE_DEPLOY}/${TAR_NAME}' && cd /data1/2560 && docker compose up -d --force-recreate"

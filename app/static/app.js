@@ -987,6 +987,7 @@ async function refresh() {
   await loadHealth();
   if (state.view === "workspace") await loadWorkspace();
   if (state.view === "result-workbench" && typeof window.loadResultWorkbench === "function") await window.loadResultWorkbench();
+  if (state.view === "simple-2560" && typeof window.loadSimple2560Report === "function") await window.loadSimple2560Report();
   if (state.view === "overview") await loadOverview();
   if (state.view === "run") await loadStocks();
   if (state.view === "signals") await loadSignals();
@@ -1317,6 +1318,7 @@ const titles = {
   workspace: ["今日工作台", "今天数据齐了吗、缺什么、点哪里、2560跑完了吗、最后看哪几只"],
   overview: ["总览", "查看最新批次、结构完整率、标签分布与系统状态"],
   "result-workbench": ["结果工作台", "报告生成后的追溯入口：默认看今日可看，需要时再切全部最新、历史信号或标注明细"],
+  "simple-2560": ["简版2560", "按交易日日期查看简化硬指标计算结果"],
   workflow: ["一键盘后流程", "日常盘后入口：导入、重建30m、fast 2560、观察池"],
   run: ["入库计算", "支持选择股票、全选、四类股票范围摸底计算"],
   signals: ["信号列表", "逐条查看2560结构条件、标签与解释"],
@@ -1358,6 +1360,7 @@ function navigateTo(view) {
     "data-update": "数据准备",
     jobs: "任务管理",
     "result-workbench": "结果中心",
+    "simple-2560": "结果中心",
     "observation-pool": "观察池",
     latest: "分析结果",
   };

@@ -138,6 +138,7 @@ def test_after_market_package_writes_required_files_and_skill_input_without_morn
         "06_reject_summary.json",
         "07_field_audit.json",
         "08_skill_input.md",
+        "09_simple_2560_hard_metrics.md",
     ]
 
     assert result["trade_date"] == "2026-06-09"
@@ -187,6 +188,15 @@ def test_after_market_package_writes_required_files_and_skill_input_without_morn
     field_audit = json.loads((package_dir / "07_field_audit.json").read_text(encoding="utf-8"))
     assert field_audit["fields"]["final_score"]["missing_count"] == 1
     assert field_audit["data_sources"]["daily_package"]["available"] is True
+
+    simple_report = (package_dir / "09_simple_2560_hard_metrics.md").read_text(encoding="utf-8")
+    assert "只显示：收盘价高于25日均价、5日平均成交量高于60日平均成交量、近3日涨幅不超过20%" in simple_report
+    assert "短期量能倍数说明：例如 1.55 表示最近5日平均成交量是60日平均成交量的1.55倍" in simple_report
+    assert "| 代码 | 名称 | 收盘价 | 25日均价 | 高于25日均价幅度 | 近3日涨幅 | 5日平均成交量 | 60日平均成交量 | 短期量能倍数 |" in simple_report
+    assert "MA25" not in simple_report
+    assert "MAVOL5" not in simple_report
+    assert "MAVOL60" not in simple_report
+    assert "| sh.600000 | 焦点A | 10.50 | 10.20 | 2.94% | 3.20% | 1500 | 1000 | 1.50 |" in simple_report
 
 
 def test_report_package_groups_by_execution_bucket_when_selection_status_conflicts(tmp_path):

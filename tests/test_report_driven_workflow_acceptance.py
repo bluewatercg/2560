@@ -122,6 +122,7 @@ AFTER_MARKET_PACKAGE_FILES = [
     "06_reject_summary.json",
     "07_field_audit.json",
     "08_skill_input.md",
+    "09_simple_2560_hard_metrics.md",
 ]
 
 MORNING_PACKAGE_FILES = [
@@ -576,3 +577,19 @@ def test_workspace_page_exposes_morning_report_package_controls():
     assert "/api/reports/skill-morning-input.md?trade_date=" in app_js
     assert "restoreExistingMorningReportPackage" in app_js
     assert "已检测到现有早盘确认文件" in app_js
+
+
+def test_result_center_exposes_simple_2560_date_report_view():
+    menu_js = (PROJECT_ROOT / "app/static/nested_menu_reorg.js").read_text(encoding="utf-8")
+    app_js = (PROJECT_ROOT / "app/static/app.js").read_text(encoding="utf-8")
+    result_js = (PROJECT_ROOT / "app/static/results_workbench.js").read_text(encoding="utf-8")
+
+    assert "['simple-2560', '简版2560']" in menu_js
+    assert '"simple-2560": ["简版2560"' in app_js
+    assert 'state.view === "simple-2560"' in app_js
+
+    assert "view-simple-2560" in result_js
+    assert 'id="simple2560TradeDate"' in result_js
+    assert "window.loadSimple2560Report" in result_js
+    assert "/api/reports/daily-package/file?trade_date=" in result_js
+    assert "filename=09_simple_2560_hard_metrics.md" in result_js

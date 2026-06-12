@@ -172,6 +172,12 @@ button:focus-visible, .primary:focus-visible, .ghost:focus-visible, .soft:focus-
 .panel-head.split { justify-content: space-between; gap: 16px }
 .panel-head h3 { margin: 0; font-size: 18px }
 
+.simple-2560-report {
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 72vh;
+}
+
 .filters, .probe-actions, .diag-controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center }
 
 /* ===== Forms ===== */

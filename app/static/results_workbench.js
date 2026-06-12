@@ -15,6 +15,19 @@
     if(!r.ok || d.success === false) throw new Error(d.message || d.detail || r.statusText);
     return d.data || d;
   }
+  async function getText(url){
+    const r = await fetch(url);
+    const text = await r.text();
+    if(!r.ok){
+      let detail = text;
+      try {
+        const d = JSON.parse(text);
+        detail = d.message || d.detail || detail;
+      } catch(e) { /* keep raw response text */ }
+      throw new Error(detail || r.statusText);
+    }
+    return text;
+  }
 
   const state = { mode: "watch" };
 
@@ -96,6 +109,75 @@
       });
     });
     $("rwLoadBtn").onclick = loadResultWorkbench;
+  }
+
+  function ensureSimple2560View(){
+    const main = document.querySelector("main.main");
+    if(!main || $("view-simple-2560")) return;
+
+    const section = document.createElement("section");
+    section.id = "view-simple-2560";
+    section.className = "view";
+    section.innerHTML = `
+      <div class="panel result-workbench">
+        <div class="panel-head split">
+          <div>
+            <h3>简版2560</h3>
+            <p class="muted" style="margin:4px 0 0">按交易日读取盘后报告包里的简化硬指标计算结果。</p>
+          </div>
+          <a id="simple2560OpenRaw" class="ghost" href="#" target="_blank" rel="noopener">打开原文</a>
+        </div>
+
+        <div class="filters result-filters">
+          <input id="simple2560TradeDate" type="date" />
+          <button id="simple2560LoadBtn" class="primary" type="button">加载</button>
+        </div>
+
+        <div id="simple2560Hint" class="muted result-hint"></div>
+        <pre id="simple2560Report" class="json-box simple-2560-report">请选择交易日后加载。</pre>
+      </div>
+    `;
+
+    const drawer = $("detailDrawer");
+    if(drawer && drawer.parentNode) main.insertBefore(section, drawer);
+    else main.appendChild(section);
+
+    const dateInput = $("simple2560TradeDate");
+    if(dateInput && !dateInput.value) dateInput.value = defaultSimple2560TradeDate();
+    $("simple2560LoadBtn").onclick = loadSimple2560Report;
+    if(dateInput){
+      dateInput.addEventListener("change", () => {
+        updateSimple2560RawLink();
+        $("simple2560Hint").textContent = "日期已变更，点击加载查看对应结果。";
+      });
+    }
+    updateSimple2560RawLink();
+  }
+
+  function defaultSimple2560TradeDate(){
+    const workspaceDate = $("reportPackageTradeDate");
+    if(workspaceDate && workspaceDate.value) return workspaceDate.value;
+    const topbarDate = $("topbarDate");
+    if(topbarDate && /^\d{4}-\d{2}-\d{2}$/.test(topbarDate.textContent.trim())){
+      return topbarDate.textContent.trim();
+    }
+    return todayYmd();
+  }
+
+  function todayYmd(){
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  }
+
+  function simple2560ReportUrl(tradeDate){
+    return `/api/reports/daily-package/file?trade_date=${encodeURIComponent(tradeDate)}&filename=09_simple_2560_hard_metrics.md`;
+  }
+
+  function updateSimple2560RawLink(){
+    const link = $("simple2560OpenRaw");
+    const input = $("simple2560TradeDate");
+    if(!link || !input) return;
+    link.href = input.value ? simple2560ReportUrl(input.value) : "#";
   }
 
   function queryBase(){
@@ -250,6 +332,45 @@
     }
   }
 
+  async function loadSimple2560Report(){
+    ensureSimple2560View();
+    const input = $("simple2560TradeDate");
+    const report = $("simple2560Report");
+    const hint = $("simple2560Hint");
+    const btn = $("simple2560LoadBtn");
+    const tradeDate = input ? input.value : "";
+    updateSimple2560RawLink();
+    if(!tradeDate){
+      if(hint) hint.textContent = "请先选择交易日。";
+      if(report) report.textContent = "请选择交易日后加载。";
+      return;
+    }
+
+    if(btn) {
+      btn.disabled = true;
+      btn.textContent = "加载中...";
+    }
+    if(hint) hint.textContent = `正在加载 ${tradeDate} 的简版2560结果...`;
+    if(report) report.textContent = "加载中...";
+    try {
+      const markdown = await getText(simple2560ReportUrl(tradeDate));
+      if(report) report.textContent = markdown;
+      if(hint) hint.textContent = `已加载 ${tradeDate} / 09_simple_2560_hard_metrics.md`;
+    } catch(e) {
+      if(report) report.textContent = "未找到该交易日的简版2560结果。请先在今日工作台生成盘后报告包，或选择已有报告日期。";
+      if(hint) hint.textContent = `加载失败：${e.message}`;
+    } finally {
+      if(btn) {
+        btn.disabled = false;
+        btn.textContent = "加载";
+      }
+    }
+  }
+
   window.loadResultWorkbench = loadResultWorkbench;
-  document.addEventListener("DOMContentLoaded", ensureResultWorkbench);
+  window.loadSimple2560Report = loadSimple2560Report;
+  document.addEventListener("DOMContentLoaded", () => {
+    ensureResultWorkbench();
+    ensureSimple2560View();
+  });
 })();

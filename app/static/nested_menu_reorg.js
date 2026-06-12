@@ -6,6 +6,7 @@
 
   const VIRTUAL_VIEWS = new Set([
     'workspace',
+    'simple-2560',
     'data-import',
     'data-maintenance',
     'observation-pool',
@@ -42,6 +43,7 @@
     {
       title: '结果中心',
       items: [
+        ['simple-2560', '简版2560'],
         ['latest', '最新结果'],
         ['signals', '信号中心'],
         ['observation-pool', '今日观察池'],

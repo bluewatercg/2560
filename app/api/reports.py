@@ -52,6 +52,7 @@ ALLOWED_DAILY_PACKAGE_FILENAMES = {
     "06_reject_summary.json",
     "07_field_audit.json",
     "08_skill_input.md",
+    "09_simple_2560_hard_metrics.md",
     "09_morning_confirm.md",
     "10_skill_morning_input.md",
 }

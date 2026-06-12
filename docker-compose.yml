@@ -21,6 +21,7 @@ services:
       - CLICKHOUSE_DATABASE=${CLICKHOUSE_DATABASE:-strategy2560}
     volumes:
       - ./logs:/app/logs
+      - ./reports:/app/reports
       - ./sql:/app/sql
       - ./zd_ciccwm/vipdoc:/data/vipdoc:ro
 
