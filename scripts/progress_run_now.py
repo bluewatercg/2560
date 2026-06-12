@@ -329,7 +329,7 @@ def main():
                     "total": 1,
                     "success_count": 0,
                     "failed_count": 0,
-                    "message": f"fast ClickHouse 2560 started market={MARKET}",
+                    "message": f"2560 scan started market={MARKET}",
                 },
                 force_mysql=True,
             )
@@ -345,7 +345,7 @@ def main():
                     updated_at=NOW()
                 WHERE id=:id
                 """),
-                {"id": JOB_ID, "msg": f"fast ClickHouse 2560 started market={MARKET}"},
+                {"id": JOB_ID, "msg": f"2560 scan started market={MARKET}"},
             )
         t0 = time.time()
         try:
@@ -356,7 +356,23 @@ def main():
                     limit_codes=LIMIT_CODES if LIMIT_CODES > 0 else None,
                 )
             status = "success" if result.get("ok") else "failed"
-            finished_message = f"fast finished market={MARKET}, trade_date={result.get('trade_date')}, signals={result.get('signals')}, elapsed={time.time()-t0:.1f}s"
+            report_message = ""
+            if status == "success" and result.get("batch_id") and result.get("trade_date"):
+                try:
+                    from app.services.simple_2560_hard_metrics_report import Simple2560HardMetricsReportService
+
+                    with SessionLocal() as db:
+                        simple_report = Simple2560HardMetricsReportService(db).generate_for_batch(
+                            trade_date=str(result["trade_date"]),
+                            batch_id=result["batch_id"],
+                        )
+                    result["simple_hard_metrics_report"] = simple_report
+                    report_message = f", simple_report={simple_report.get('file')}, simple_count={simple_report.get('count')}"
+                except Exception as report_exc:
+                    log(traceback.format_exc())
+                    result["simple_hard_metrics_report_error"] = str(report_exc)
+                    report_message = f", simple_report_error={str(report_exc)[:200]}"
+            finished_message = f"2560 scan finished market={MARKET}, trade_date={result.get('trade_date')}, signals={result.get('signals')}, elapsed={time.time()-t0:.1f}s{report_message}"
             PROGRESS_REPORTER.report(
                 {
                     "status": status,
@@ -392,7 +408,7 @@ def main():
                         "msg": finished_message,
                     },
                 )
-            log(f"[fast] {result}")
+            log(f"[2560] {result}")
             return
         except Exception as exc:
             log(traceback.format_exc())
