@@ -7,23 +7,18 @@ WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app
-
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-    curl \
-    bash \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+ENV PIP_DEFAULT_TIMEOUT=300
 
 COPY requirements.txt .
 
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+RUN pip install --no-cache-dir --retries 10 --timeout 300 -i ${PIP_INDEX_URL} -r requirements.txt
 
 COPY app/ ./app/
 COPY scripts/ ./scripts/
 
-RUN mkdir -p /app/logs && \
+RUN mkdir -p /app/logs /app/reports && \
     chmod +x /app/scripts/*.sh || true
 
 RUN useradd -m appuser && \
@@ -34,6 +29,6 @@ USER appuser
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5).read()" || exit 1
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "8"]

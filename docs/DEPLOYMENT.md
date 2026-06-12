@@ -10,11 +10,10 @@
 
 | 组件 | 版本/地址 | 说明 |
 |------|-----------|------|
-| Docker | 24.0+ | 宿主机或 18 服务器 |
+| Docker | 24.0+ | 宿主机或部署服务器 |
 | Docker Compose | v2.0+ | `docker compose` 命令 |
 | MySQL | `192.168.1.254:3306` | 任务队列/分析结果/配置 |
-| ClickHouse | `192.168.1.18:8123` | 行情数据存储 |
-| Redis | `192.168.1.160:6379` | 导入进度缓冲（可选）|
+| ClickHouse | `192.168.1.30:8123` | 行情数据存储 |
 | vipdoc | `/data/vipdoc` 或本地挂载 | 通达信行情文件目录 |
 | 内存 | ≥ 4GB | 单容器约 200MB，6 容器共 ~1.2GB |
 | 磁盘 | ≥ 5GB | 镜像 ~800MB，日志/临时文件 |
@@ -44,14 +43,11 @@ cp .env.example .env
 | `MYSQL_USER` | 是 | 数据库用户名 |
 | `MYSQL_PASSWORD` | 是 | 数据库密码 |
 | `MYSQL_DATABASE` | 是 | 数据库名，默认 `watchlist_decision_support` |
-| `CLICKHOUSE_HOST` | 是 | ClickHouse 地址，默认 `192.168.1.18` |
+| `CLICKHOUSE_HOST` | 是 | ClickHouse 地址，默认 `192.168.1.30` |
 | `CLICKHOUSE_PORT` | 是 | HTTP 端口，默认 `8123` |
 | `CLICKHOUSE_USER` | 是 | 用户名，默认 `default` |
 | `CLICKHOUSE_PASSWORD` | 是 | 密码 |
 | `CLICKHOUSE_DATABASE` | 是 | 数据库名，默认 `strategy2560` |
-| `REDIS_HOST` | 否 | Redis 地址（可选，不填则禁用）|
-| `REDIS_PORT` | 否 | Redis 端口，默认 `6379` |
-| `REDIS_PASSWORD` | 否 | Redis 密码 |
 | `APP_PORT` | 否 | Web 端口，默认 `8000` |
 
 ### 3. 初始化数据库
@@ -65,7 +61,7 @@ mysql -h 192.168.1.254 -u root -p watchlist_decision_support < sql/recreate_tabl
 初始化 ClickHouse 表结构：
 
 ```bash
-curl -s "http://192.168.1.18:8123/?password=YOUR_PASSWORD&database=strategy2560" \
+curl -s "http://192.168.1.30:8123/?password=YOUR_PASSWORD&database=strategy2560" \
   --data-binary @sql/clickhouse_tables.sql
 ```
 
@@ -105,33 +101,15 @@ open http://localhost:8000/docs
 
 ---
 
-## 18 服务器更新流程
+## 一键更新流程
 
 ### 本地构建并传输
 
 ```bash
-# 本地构建
-docker build -t strategy2560:latest .
-docker save strategy2560:latest | gzip > /tmp/strategy2560_$(date +%Y%m%d_%H%M%S).tar.gz
-
-# 传输到 18 服务器
-scp /tmp/strategy2560_*.tar.gz user@192.168.1.18:/tmp/
+./deploy.sh
 ```
 
-### 18 服务器加载
-
-```bash
-ssh user@192.168.1.18
-cd /data1/2560/strategy2560_project_v2_engine
-
-# 加载镜像并重启
-./scripts/load_deploy.sh /tmp/strategy2560_xxx.tar.gz
-
-# 验证
-docker compose ps
-docker compose logs -f web
-curl http://127.0.0.1:8000/health
-```
+`deploy.sh` 会构建镜像、同步 `.env`/`docker-compose.yml`/`sql/` 到 `/data1/2560`，并在重建容器前把旧容器里的 `/app/reports` 备份到 `/data1/2560/reports`。
 
 ### 回滚
 
@@ -212,6 +190,7 @@ docker image prune -a
 ```
 strategy2560_project_v2_engine/
 ├── logs/           # 运行时日志（挂载到容器内 /app/logs）
+├── reports/        # 生成报告（挂载到所有容器 /app/reports，部署重建不删除）
 ├── sql/            # 表结构 DDL（挂载到容器内 /app/sql）
 ├── zd_ciccwm/vipdoc/  # 通达信行情文件（只读挂载到 /data/vipdoc）
 └── .env            # 环境变量（不提交到 git）
